@@ -17,11 +17,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -153,6 +155,13 @@ struct VideoRecordingConfig
     bool enabled = false;
     int fps = 30;
     std::string outputPath;
+};
+
+struct AcceptanceMetricsConfig
+{
+    bool enabled = false;
+    std::string label = "acceptance_baseline";
+    std::string csvPath;
 };
 
 struct InverseDepthCalibration
@@ -337,6 +346,12 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg == "--acceptance-baseline" ||
+            arg.rfind("--acceptance-label=", 0) == 0 ||
+            arg.rfind("--acceptance-csv=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--depth-stability-test" ||
             arg.rfind("--depth-stability-frames=", 0) == 0 ||
             arg.rfind("--depth-stability-warmup=", 0) == 0 ||
@@ -470,6 +485,45 @@ VideoRecordingConfig parseVideoRecordingConfig(int argc, char** argv, bool defau
     }
 
     config.fps = std::clamp(config.fps, 1, 120);
+    return config;
+}
+
+AcceptanceMetricsConfig parseAcceptanceMetricsConfig(int argc, char** argv)
+{
+    AcceptanceMetricsConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--acceptance-baseline")
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (parseStringOption(arg, "--acceptance-label=", config.label))
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (parseStringOption(arg, "--acceptance-csv=", config.csvPath))
+        {
+            config.enabled = true;
+            continue;
+        }
+    }
+
+    if (config.label.empty())
+    {
+        config.label = "acceptance_baseline";
+    }
+    for (char& character : config.label)
+    {
+        const unsigned char value = static_cast<unsigned char>(character);
+        if (!std::isalnum(value) && character != '_' && character != '-')
+        {
+            character = '_';
+        }
+    }
+
     return config;
 }
 
@@ -2299,6 +2353,45 @@ std::string defaultRecordingPath()
     return path.string();
 }
 
+std::string defaultAcceptanceRecordingPath(const std::string& label)
+{
+    const std::filesystem::path path =
+        projectRootForOutput() /
+        "recordings" /
+        (label + "_" + timestampForFilename() + ".avi");
+    return path.string();
+}
+
+std::string defaultAcceptanceMetricsPath(const std::string& label)
+{
+    std::filesystem::path path = defaultAcceptanceRecordingPath(label);
+    path.replace_extension(".csv");
+    return path.string();
+}
+
+std::filesystem::path resolveProjectOutputPath(
+    const std::filesystem::path& requestedPath,
+    const std::string& defaultExtension)
+{
+    std::filesystem::path output = requestedPath;
+    if (output.is_relative())
+    {
+        output = projectRootForOutput() / output;
+    }
+    if (output.extension().empty())
+    {
+        output += defaultExtension;
+    }
+    return std::filesystem::absolute(output);
+}
+
+std::string companionCsvPathForVideo(const std::string& videoPath)
+{
+    std::filesystem::path output = resolveProjectOutputPath(videoPath, ".avi");
+    output.replace_extension(".csv");
+    return output.string();
+}
+
 cv::Mat ensureBgrFrame(const cv::Mat& source)
 {
     if (source.empty())
@@ -2423,19 +2516,11 @@ public:
 private:
     void open(const cv::Size& frameSize)
     {
-        std::filesystem::path output =
+        const std::filesystem::path output = resolveProjectOutputPath(
             config_.outputPath.empty()
                 ? std::filesystem::path(defaultRecordingPath())
-                : std::filesystem::path(config_.outputPath);
-        if (output.is_relative())
-        {
-            output = projectRootForOutput() / output;
-        }
-        if (output.extension().empty())
-        {
-            output += ".avi";
-        }
-        output = std::filesystem::absolute(output);
+                : std::filesystem::path(config_.outputPath),
+            ".avi");
         if (output.has_parent_path())
         {
             std::filesystem::create_directories(output.parent_path());
@@ -2494,6 +2579,235 @@ private:
     cv::Size frameSize_;
     std::string outputPath_;
     int64_t writtenFrames_ = 0;
+};
+
+std::vector<cv::Point> shiftedContourForRoi(
+    const std::vector<cv::Point>& contour,
+    const cv::Rect& roi)
+{
+    std::vector<cv::Point> shifted;
+    shifted.reserve(contour.size());
+    for (const cv::Point& point : contour)
+    {
+        shifted.emplace_back(point.x - roi.x, point.y - roi.y);
+    }
+    return shifted;
+}
+
+cv::Rect contourBoundsInFrame(
+    const ObservationMaterial& material,
+    const cv::Size& frameSize)
+{
+    if (material.contour.empty())
+    {
+        return {};
+    }
+
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    return cv::boundingRect(material.contour) & frameRect;
+}
+
+double contourMaskIou(
+    const ObservationMaterial& current,
+    const ObservationMaterial& previous,
+    const cv::Size& frameSize)
+{
+    const cv::Rect currentBounds = contourBoundsInFrame(current, frameSize);
+    const cv::Rect previousBounds = contourBoundsInFrame(previous, frameSize);
+    if (currentBounds.empty() || previousBounds.empty())
+    {
+        return 0.0;
+    }
+
+    const cv::Rect roi = (currentBounds | previousBounds) & cv::Rect(0, 0, frameSize.width, frameSize.height);
+    if (roi.empty())
+    {
+        return 0.0;
+    }
+
+    cv::Mat currentMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+    cv::Mat previousMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+    const std::vector<std::vector<cv::Point>> currentContour{shiftedContourForRoi(current.contour, roi)};
+    const std::vector<std::vector<cv::Point>> previousContour{shiftedContourForRoi(previous.contour, roi)};
+    cv::drawContours(currentMask, currentContour, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+    cv::drawContours(previousMask, previousContour, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+
+    cv::Mat intersectionMask;
+    cv::Mat unionMask;
+    cv::bitwise_and(currentMask, previousMask, intersectionMask);
+    cv::bitwise_or(currentMask, previousMask, unionMask);
+    const int unionPixels = cv::countNonZero(unionMask);
+    if (unionPixels == 0)
+    {
+        return 0.0;
+    }
+    return static_cast<double>(cv::countNonZero(intersectionMask)) / static_cast<double>(unionPixels);
+}
+
+double contourBoundaryDistancePx(
+    const ObservationMaterial& current,
+    const ObservationMaterial& previous,
+    const cv::Size& frameSize)
+{
+    const cv::Rect currentBounds = contourBoundsInFrame(current, frameSize);
+    const cv::Rect previousBounds = contourBoundsInFrame(previous, frameSize);
+    if (currentBounds.empty() || previousBounds.empty() || current.contour.empty())
+    {
+        return 0.0;
+    }
+
+    const cv::Rect roi = (currentBounds | previousBounds) & cv::Rect(0, 0, frameSize.width, frameSize.height);
+    if (roi.empty())
+    {
+        return 0.0;
+    }
+
+    cv::Mat distanceSource(roi.size(), CV_8UC1, cv::Scalar(255));
+    const std::vector<std::vector<cv::Point>> previousContour{shiftedContourForRoi(previous.contour, roi)};
+    cv::drawContours(distanceSource, previousContour, -1, cv::Scalar(0), 1, cv::LINE_8);
+
+    cv::Mat distance;
+    cv::distanceTransform(distanceSource, distance, cv::DIST_L2, 3);
+
+    double totalDistance = 0.0;
+    int sampleCount = 0;
+    for (const cv::Point& point : current.contour)
+    {
+        const int x = point.x - roi.x;
+        const int y = point.y - roi.y;
+        if (x < 0 || x >= distance.cols || y < 0 || y >= distance.rows)
+        {
+            continue;
+        }
+
+        totalDistance += static_cast<double>(distance.at<float>(y, x));
+        ++sampleCount;
+    }
+
+    return sampleCount == 0 ? 0.0 : totalDistance / static_cast<double>(sampleCount);
+}
+
+class AcceptanceMetricsWriter
+{
+public:
+    explicit AcceptanceMetricsWriter(const AcceptanceMetricsConfig& config)
+        : config_(config)
+    {
+    }
+
+    ~AcceptanceMetricsWriter()
+    {
+        close();
+    }
+
+    void write(
+        uint64_t frameId,
+        double frameMs,
+        int candidateCount,
+        int anchorSupportedCount,
+        const std::vector<ObservationMaterial>& stableMaterials,
+        const cv::Mat& stableMask,
+        int anchorCount,
+        int anchorPointsOnCandidates)
+    {
+        if (!config_.enabled)
+        {
+            return;
+        }
+        if (!stream_.is_open())
+        {
+            open();
+        }
+
+        const int framePixels = std::max(1, stableMask.rows * stableMask.cols);
+        const int stablePixels = cv::countNonZero(stableMask);
+        const double stableAreaPercent = 100.0 * static_cast<double>(stablePixels) / static_cast<double>(framePixels);
+        const double blackAreaPercent = 100.0 - stableAreaPercent;
+
+        int matchedStableCount = 0;
+        double iouSum = 0.0;
+        double boundaryJitterSum = 0.0;
+        for (const ObservationMaterial& material : stableMaterials)
+        {
+            const auto previous = previousStableById_.find(material.observationId);
+            if (previous == previousStableById_.end())
+            {
+                continue;
+            }
+
+            ++matchedStableCount;
+            iouSum += contourMaskIou(material, previous->second, stableMask.size());
+            boundaryJitterSum += contourBoundaryDistancePx(material, previous->second, stableMask.size());
+        }
+
+        const double averageIou = matchedStableCount == 0
+            ? 0.0
+            : iouSum / static_cast<double>(matchedStableCount);
+        const double boundaryJitterPx = matchedStableCount == 0
+            ? 0.0
+            : boundaryJitterSum / static_cast<double>(matchedStableCount);
+
+        stream_
+            << frameId << ','
+            << std::fixed << std::setprecision(3) << frameMs << ','
+            << candidateCount << ','
+            << anchorSupportedCount << ','
+            << stableMaterials.size() << ','
+            << matchedStableCount << ','
+            << std::setprecision(3) << stableAreaPercent << ','
+            << std::setprecision(3) << blackAreaPercent << ','
+            << std::setprecision(5) << averageIou << ','
+            << std::setprecision(3) << boundaryJitterPx << ','
+            << anchorCount << ','
+            << anchorPointsOnCandidates << '\n';
+
+        previousStableById_.clear();
+        for (const ObservationMaterial& material : stableMaterials)
+        {
+            previousStableById_[material.observationId] = material;
+        }
+    }
+
+    void close()
+    {
+        if (stream_.is_open())
+        {
+            stream_.close();
+            std::cout << "Acceptance metrics saved: " << outputPath_ << '\n';
+        }
+    }
+
+private:
+    void open()
+    {
+        const std::filesystem::path output = resolveProjectOutputPath(
+            config_.csvPath.empty()
+                ? std::filesystem::path(defaultAcceptanceMetricsPath(config_.label))
+                : std::filesystem::path(config_.csvPath),
+            ".csv");
+        if (output.has_parent_path())
+        {
+            std::filesystem::create_directories(output.parent_path());
+        }
+
+        outputPath_ = output.string();
+        stream_.open(outputPath_, std::ios::out | std::ios::trunc);
+        if (!stream_.is_open())
+        {
+            throw std::runtime_error("Failed to open acceptance metrics file: " + outputPath_);
+        }
+
+        stream_
+            << "frame_index,frame_ms,candidate_count,anchor_supported_count,stable_count,"
+            << "matched_stable_count,stable_area_percent,black_area_percent,avg_contour_iou,"
+            << "boundary_jitter_px,anchor_count,anchor_points_on_candidates\n";
+        std::cout << "Acceptance metrics: " << outputPath_ << '\n';
+    }
+
+    AcceptanceMetricsConfig config_;
+    std::ofstream stream_;
+    std::string outputPath_;
+    std::map<uint64_t, ObservationMaterial> previousStableById_;
 };
 
 cv::Mat normalizeFloat01(const cv::Mat& source)
@@ -4375,6 +4689,9 @@ void printUsage()
         << "  --record-video=recordings\\d455_record.avi\n"
         << "  --no-record-video\n"
         << "  --record-fps=30\n"
+        << "  --acceptance-baseline\n"
+        << "  --acceptance-label=acceptance_baseline\n"
+        << "  --acceptance-csv=recordings\\acceptance_baseline.csv\n"
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
         << "  --max-depth-mm=3500\n"
@@ -4536,7 +4853,25 @@ int main(int argc, char** argv)
         SegmentationTracker tracker;
         std::vector<ObservationMaterial> pclCandidateCache;
         std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
-        VideoRecorder videoRecorder(parseVideoRecordingConfig(argc, argv, true));
+        VideoRecordingConfig recordingConfig = parseVideoRecordingConfig(argc, argv, true);
+        AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
+        if (acceptanceConfig.enabled)
+        {
+            if (recordingConfig.outputPath.empty())
+            {
+                recordingConfig.outputPath = defaultAcceptanceRecordingPath(acceptanceConfig.label);
+            }
+            recordingConfig.enabled = true;
+            if (acceptanceConfig.csvPath.empty())
+            {
+                acceptanceConfig.csvPath = companionCsvPathForVideo(recordingConfig.outputPath);
+            }
+            std::cout << "Acceptance baseline enabled: video=" << recordingConfig.outputPath
+                << " csv=" << acceptanceConfig.csvPath << '\n';
+        }
+
+        VideoRecorder videoRecorder(recordingConfig);
+        AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig);
         uint64_t frameId = 0;
         while (true)
         {
@@ -4550,6 +4885,7 @@ int main(int argc, char** argv)
                 continue;
             }
 
+            const auto frameStart = std::chrono::steady_clock::now();
             const rs2::depth_frame filteredDepth = depthPostProcessor.process(depthFrame);
             cv::Mat colorBgr = colorFrameToBgr(colorFrame);
             cv::Mat rawDepth16 = depthFrameToMat(depthFrame);
@@ -4659,6 +4995,23 @@ int main(int argc, char** argv)
             cv::imshow(kOutsideMosaicWindow, outsideColorView);
             videoRecorder.write(buildRecordingFrame({colorBgr, segmentedView, mosaicView, outsideColorView}));
 
+            const auto frameEnd = std::chrono::steady_clock::now();
+            const double frameMs =
+                std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+            if (acceptanceConfig.enabled)
+            {
+                const cv::Mat stableMask = buildStableContourMask(colorBgr.size(), stableMaterials);
+                acceptanceMetrics.write(
+                    frameId,
+                    frameMs,
+                    static_cast<int>(candidateMaterials.size()),
+                    static_cast<int>(anchorSupportedCandidates.size()),
+                    stableMaterials,
+                    stableMask,
+                    cv::countNonZero(anchorMask),
+                    anchorPointsOnCandidates);
+            }
+
             const int key = cv::waitKey(1);
             if (key == 27 || key == 'q' || key == 'Q')
             {
@@ -4672,6 +5025,7 @@ int main(int argc, char** argv)
             }
         }
 
+        acceptanceMetrics.close();
         videoRecorder.close();
         pipeline.stop();
         cv::destroyAllWindows();

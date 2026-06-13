@@ -74,6 +74,14 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 .\x64\Release\D455.exe --no-record-video
 ```
 
+P0 基线验收模式会强制打开录制，并为视频生成同名 CSV 指标文件。默认记录每帧处理耗时、候选数、稳定轮廓数、稳定区/黑区比例、跨帧 IoU 和边界抖动近似值：
+
+```powershell
+.\x64\Release\D455.exe --acceptance-baseline --max-frames=600
+.\x64\Release\D455.exe --acceptance-baseline --acceptance-label=acceptance_p0 --max-frames=600
+.\x64\Release\D455.exe --acceptance-baseline --record-video=recordings\acceptance_p0.avi --acceptance-csv=recordings\acceptance_p0.csv --max-frames=600
+```
+
 稳定点筛选主要由采样步长、邻域大小、局部深度稳定阈值、原始/滤波深度一致性阈值控制：
 
 ```powershell
