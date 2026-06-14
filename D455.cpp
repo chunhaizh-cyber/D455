@@ -39,7 +39,7 @@ constexpr const char* kRawWindow = "D455 raw frame";
 constexpr const char* kSegmentedWindow = "D455 stable contour information";
 constexpr const char* kMosaicWindow = "D455 stable contour color mosaic";
 constexpr const char* kOutsideMosaicWindow = "D455 black-area color view";
-constexpr const char* kBoundaryDiagnosticsWindow = "D455 RGB-D boundary diagnostics";
+constexpr const char* kBoundaryDiagnosticsWindow = "D455 IR-D boundary diagnostics";
 constexpr const char* kIndoorPlaneWindow = "D455 indoor plane diagnostics";
 constexpr const char* kStableContourWindow = "D455 stable contour stability";
 
@@ -67,6 +67,8 @@ struct SegmentationConfig
     int contourLinePixels = 1;
     int colorCannyLow = 70;
     int colorCannyHigh = 160;
+    int infraredCannyLow = 45;
+    int infraredCannyHigh = 130;
     int colorDepthSupportPixels = 5;
     int contourDepthConfirmRadiusPixels = 4;
     int contourDepthConfirmMinRangeMm = 25;
@@ -107,6 +109,7 @@ struct SegmentationConfig
     bool depthHoleSplit = false;
     bool cueSelection = true;
     bool colorEdges = false;
+    bool infraredSegmentation = true;
     bool boundaryDiagnostics = false;
     bool indoorPlaneDiagnostics = false;
     bool spatialClusterCheck = true;
@@ -156,6 +159,7 @@ struct BoundaryAnalysis
     cv::Mat depthConfirmedColorEdges;
     cv::Mat rawBoundaryMask;
     cv::Mat splitBoundaryMask;
+    bool edgeSourceIsInfrared = false;
 };
 
 struct CandidateCueEvidence
@@ -324,6 +328,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--contour-line-px=", config.contourLinePixels) ||
             parseIntOption(arg, "--color-canny-low=", config.colorCannyLow) ||
             parseIntOption(arg, "--color-canny-high=", config.colorCannyHigh) ||
+            parseIntOption(arg, "--infrared-canny-low=", config.infraredCannyLow) ||
+            parseIntOption(arg, "--infrared-canny-high=", config.infraredCannyHigh) ||
             parseIntOption(arg, "--color-depth-support-px=", config.colorDepthSupportPixels) ||
             parseIntOption(arg, "--contour-depth-confirm-radius-px=", config.contourDepthConfirmRadiusPixels) ||
             parseIntOption(arg, "--contour-depth-confirm-min-range-mm=", config.contourDepthConfirmMinRangeMm) ||
@@ -331,6 +337,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--depth-hole-edge-px=", config.depthHoleEdgePixels) ||
             parseIntOption(arg, "--cue-min-reliable-edge-px=", config.cueMinReliableEdgePixels) ||
             parseIntOption(arg, "--cue-min-confirmed-rgb-edge-px=", config.cueMinConfirmedRgbEdgePixels) ||
+            parseIntOption(arg, "--cue-min-confirmed-gray-edge-px=", config.cueMinConfirmedRgbEdgePixels) ||
             parseIntOption(arg, "--cue-max-texture-only-percent=", config.cueMaxTextureOnlyPercent) ||
             parseIntOption(arg, "--cue-strong-anchor-multiplier-percent=", config.cueStrongAnchorMultiplierPercent) ||
             parseIntOption(arg, "--indoor-plane-frame-interval=", config.indoorPlaneFrameInterval) ||
@@ -361,6 +368,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-color-split")
         {
             config.colorSplit = false;
+            continue;
+        }
+        if (arg == "--no-gray-split")
+        {
+            config.colorSplit = false;
+            continue;
+        }
+        if (arg == "--no-infrared-segmentation")
+        {
+            config.infraredSegmentation = false;
             continue;
         }
         if (arg == "--no-contour-depth-confirm-split")
@@ -394,6 +411,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
             continue;
         }
         if (arg == "--color-edges")
+        {
+            config.colorEdges = true;
+            continue;
+        }
+        if (arg == "--gray-edges")
         {
             config.colorEdges = true;
             continue;
@@ -520,6 +542,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.contourLinePixels = std::clamp(config.contourLinePixels, 1, 4);
     config.colorCannyLow = std::clamp(config.colorCannyLow, 1, 255);
     config.colorCannyHigh = std::clamp(config.colorCannyHigh, config.colorCannyLow + 1, 255);
+    config.infraredCannyLow = std::clamp(config.infraredCannyLow, 1, 255);
+    config.infraredCannyHigh = std::clamp(config.infraredCannyHigh, config.infraredCannyLow + 1, 255);
     config.colorDepthSupportPixels = std::clamp(config.colorDepthSupportPixels, 0, 32);
     config.contourDepthConfirmRadiusPixels = std::clamp(config.contourDepthConfirmRadiusPixels, 1, 16);
     config.contourDepthConfirmMinRangeMm = std::clamp(config.contourDepthConfirmMinRangeMm, 1, 500);
@@ -727,6 +751,17 @@ cv::Mat colorFrameToBgr(const rs2::video_frame& frame)
     cv::Mat view(
         cv::Size(frame.get_width(), frame.get_height()),
         CV_8UC3,
+        const_cast<void*>(frame.get_data()),
+        cv::Mat::AUTO_STEP);
+
+    return view.clone();
+}
+
+cv::Mat videoFrameToGray8(const rs2::video_frame& frame)
+{
+    cv::Mat view(
+        cv::Size(frame.get_width(), frame.get_height()),
+        CV_8UC1,
         const_cast<void*>(frame.get_data()),
         cv::Mat::AUTO_STEP);
 
@@ -1999,19 +2034,40 @@ cv::Mat makeDepthHoleEdgeMask(
     return validSideBoundary;
 }
 
+cv::Mat makeGrayEdgeMask(
+    const cv::Mat& grayOrBgr,
+    const cv::Mat& validMask,
+    int cannyLow,
+    int cannyHigh)
+{
+    cv::Mat gray;
+    if (grayOrBgr.channels() == 1)
+    {
+        gray = grayOrBgr.clone();
+    }
+    else
+    {
+        cv::cvtColor(grayOrBgr, gray, cv::COLOR_BGR2GRAY);
+    }
+
+    if (gray.size() != validMask.size())
+    {
+        cv::resize(gray, gray, validMask.size(), 0.0, 0.0, cv::INTER_LINEAR);
+    }
+    cv::GaussianBlur(gray, gray, cv::Size(3, 3), 0.0);
+
+    cv::Mat edges;
+    cv::Canny(gray, edges, cannyLow, cannyHigh, 3, true);
+    cv::bitwise_and(edges, validMask, edges);
+    return edges;
+}
+
 cv::Mat makeColorEdgeMask(
     const cv::Mat& colorBgr,
     const cv::Mat& validMask,
     const SegmentationConfig& config)
 {
-    cv::Mat gray;
-    cv::cvtColor(colorBgr, gray, cv::COLOR_BGR2GRAY);
-    cv::GaussianBlur(gray, gray, cv::Size(3, 3), 0.0);
-
-    cv::Mat edges;
-    cv::Canny(gray, edges, config.colorCannyLow, config.colorCannyHigh, 3, true);
-    cv::bitwise_and(edges, validMask, edges);
-    return edges;
+    return makeGrayEdgeMask(colorBgr, validMask, config.colorCannyLow, config.colorCannyHigh);
 }
 
 cv::Mat dilateMask(const cv::Mat& inputMask, int sizePixels)
@@ -2095,12 +2151,14 @@ cv::Mat makeDepthConfirmedColorEdgeMask(
 }
 
 BoundaryAnalysis makeBoundaryAnalysis(
-    const cv::Mat& colorBgr,
+    const cv::Mat& edgeGrayOrBgr,
     const cv::Mat& depth16,
     const SegmentationConfig& config,
-    float depthScale)
+    float depthScale,
+    bool edgeSourceIsInfrared)
 {
     BoundaryAnalysis analysis;
+    analysis.edgeSourceIsInfrared = edgeSourceIsInfrared;
     if (!config.boundarySplit)
     {
         return analysis;
@@ -2121,7 +2179,9 @@ BoundaryAnalysis makeBoundaryAnalysis(
 
     if (config.colorSplit)
     {
-        analysis.colorEdges = makeColorEdgeMask(colorBgr, analysis.validMask, config);
+        const int edgeCannyLow = edgeSourceIsInfrared ? config.infraredCannyLow : config.colorCannyLow;
+        const int edgeCannyHigh = edgeSourceIsInfrared ? config.infraredCannyHigh : config.colorCannyHigh;
+        analysis.colorEdges = makeGrayEdgeMask(edgeGrayOrBgr, analysis.validMask, edgeCannyLow, edgeCannyHigh);
         cv::Mat depthSupportSource = analysis.depthStepEdges.clone();
         if (config.depthHoleSplit && !analysis.depthHoleEdges.empty())
         {
@@ -2145,12 +2205,13 @@ BoundaryAnalysis makeBoundaryAnalysis(
 }
 
 cv::Mat makeSplitBoundaryMask(
-    const cv::Mat& colorBgr,
+    const cv::Mat& edgeGrayOrBgr,
     const cv::Mat& depth16,
     const SegmentationConfig& config,
-    float depthScale)
+    float depthScale,
+    bool edgeSourceIsInfrared = false)
 {
-    return makeBoundaryAnalysis(colorBgr, depth16, config, depthScale).splitBoundaryMask;
+    return makeBoundaryAnalysis(edgeGrayOrBgr, depth16, config, depthScale, edgeSourceIsInfrared).splitBoundaryMask;
 }
 
 int maskPixelCount(const cv::Mat& mask)
@@ -2182,8 +2243,10 @@ cv::Mat buildBoundaryDiagnosticsView(
     paintMask(view, analysis.depthConfirmedColorEdges, cv::Scalar(0, 255, 0));
     paintMask(view, analysis.splitBoundaryMask, cv::Scalar(0, 255, 255));
 
+    const std::string edgeSource = analysis.edgeSourceIsInfrared ? "ir" : "gray";
     const std::string title =
-        "P1 boundary: red=depth magenta=hole blue=rgb cyan=supported green=confirmed yellow=final";
+        "P1 boundary: red=depth magenta=hole blue=" + edgeSource +
+        " cyan=supported green=confirmed yellow=final";
     cv::putText(
         view,
         title,
@@ -2206,7 +2269,7 @@ cv::Mat buildBoundaryDiagnosticsView(
     const std::string counts =
         "D" + std::to_string(maskPixelCount(analysis.depthStepEdges)) +
         " H" + std::to_string(maskPixelCount(analysis.depthHoleEdges)) +
-        " R" + std::to_string(maskPixelCount(analysis.colorEdges)) +
+        " G" + std::to_string(maskPixelCount(analysis.colorEdges)) +
         " S" + std::to_string(maskPixelCount(analysis.depthSupportedColorEdges)) +
         " C" + std::to_string(maskPixelCount(analysis.depthConfirmedColorEdges)) +
         " F" + std::to_string(maskPixelCount(analysis.splitBoundaryMask));
@@ -2416,7 +2479,7 @@ void drawCueSelectionOverlay(cv::Mat& view, const CueSelectionSummary& summary)
         << " keep=" << summary.acceptedCandidates
         << " reject_texture=" << summary.rejectedTextureCandidates
         << " D=" << summary.acceptedByDepth
-        << " RGB=" << summary.acceptedByRgb
+        << " IR=" << summary.acceptedByRgb
         << " A=" << summary.acceptedByAnchor
         << " tex%=" << std::fixed << std::setprecision(1) << meanTexturePercent;
 
@@ -2835,7 +2898,7 @@ cv::Mat buildSegmentationView(
         " depth=" + std::to_string(config.minDepthMm) +
         "-" + std::to_string(config.maxDepthMm) + "mm" +
         " slice=" + std::to_string(config.depthSliceMm) + "mm" +
-        " split=" + (config.boundarySplit ? (config.colorSplit ? "color+depth" : "depth") : "off") +
+        " split=" + (config.boundarySplit ? (config.colorSplit ? "gray+depth" : "depth") : "off") +
         " pcl=" + (config.pclClustering
             ? std::to_string(config.pclClusterToleranceMm) + "mm/" +
                 std::to_string(config.pclSampleStepPixels) + "px/" +
@@ -3575,10 +3638,10 @@ private:
         stream_
             << "frame_index,frame_ms,candidate_count,anchor_supported_count,stable_count,"
             << "matched_stable_count,stable_area_percent,black_area_percent,avg_contour_iou,"
-            << "boundary_jitter_px,depth_step_edge_px,depth_hole_edge_px,rgb_edge_px,"
-            << "rgb_depth_supported_edge_px,rgb_depth_confirmed_edge_px,split_boundary_px,"
+            << "boundary_jitter_px,depth_step_edge_px,depth_hole_edge_px,gray_edge_px,"
+            << "gray_depth_supported_edge_px,gray_depth_confirmed_edge_px,split_boundary_px,"
             << "cue_input_count,cue_accepted_count,cue_rejected_texture_count,"
-            << "cue_accepted_by_depth,cue_accepted_by_rgb,cue_accepted_by_anchor,"
+            << "cue_accepted_by_depth,cue_accepted_by_gray,cue_accepted_by_anchor,"
             << "cue_accepted_by_fallback,cue_mean_texture_only_percent,"
             << "indoor_plane_px,indoor_wall_px,indoor_ceiling_px,indoor_support_px,"
             << "indoor_plane_components,indoor_plane_cached,"
@@ -4824,6 +4887,28 @@ int runStableContourTest(
             cv::resize(depth16, depth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
         }
 
+        cv::Mat segmentationGray;
+        bool edgeSourceIsInfrared = false;
+        if (config.infraredSegmentation)
+        {
+            const rs2::video_frame infraredFrame = frames.get_infrared_frame(1);
+            if (infraredFrame)
+            {
+                segmentationGray = videoFrameToGray8(infraredFrame);
+                edgeSourceIsInfrared = true;
+            }
+        }
+        if (segmentationGray.empty())
+        {
+            cv::cvtColor(colorBgr, segmentationGray, cv::COLOR_BGR2GRAY);
+        }
+        if (segmentationGray.size() != colorBgr.size())
+        {
+            cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+        }
+        cv::Mat segmentationBgr;
+        cv::cvtColor(segmentationGray, segmentationBgr, cv::COLOR_GRAY2BGR);
+
         RgbDepthAnchorStats frameAnchorStats;
         const cv::Mat anchorMask = makeReliableDepthAnchorMask(
             rawDepth16,
@@ -4835,7 +4920,8 @@ int runStableContourTest(
         aggregateAnchorStats.merge(frameAnchorStats);
 
         cv::Mat candidateAcceptedMask;
-        const cv::Mat splitBoundaryMask = makeSplitBoundaryMask(colorBgr, depth16, config, depthScale);
+        const cv::Mat splitBoundaryMask =
+            makeSplitBoundaryMask(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
         std::vector<ObservationMaterial> candidateMaterials =
             extractObservationMaterials(
                 depth16,
@@ -4901,7 +4987,7 @@ int runStableContourTest(
         }
 
         const cv::Mat stableContourView = buildStableContourVisualization(
-            colorBgr,
+            segmentationBgr,
             anchorMask,
             depth16,
             depthScale,
@@ -5492,6 +5578,8 @@ void printUsage()
         << "  --depth-canny-high=35\n"
         << "  --color-canny-low=70\n"
         << "  --color-canny-high=160\n"
+        << "  --infrared-canny-low=45\n"
+        << "  --infrared-canny-high=130\n"
         << "  --color-depth-support-px=5\n"
         << "  --contour-depth-confirm-radius-px=4\n"
         << "  --contour-depth-confirm-min-range-mm=25\n"
@@ -5499,6 +5587,7 @@ void printUsage()
         << "  --depth-hole-edge-px=3\n"
         << "  --cue-min-reliable-edge-px=8\n"
         << "  --cue-min-confirmed-rgb-edge-px=6\n"
+        << "  --cue-min-confirmed-gray-edge-px=6\n"
         << "  --cue-max-texture-only-percent=75\n"
         << "  --cue-strong-anchor-multiplier-percent=180\n"
         << "  --indoor-plane-frame-interval=10\n"
@@ -5529,6 +5618,8 @@ void printUsage()
         << "  --max-materials=24\n"
         << "  --no-boundary-split\n"
         << "  --no-color-split\n"
+        << "  --no-gray-split\n"
+        << "  --no-infrared-segmentation\n"
         << "  --no-contour-depth-confirm-split\n"
         << "  --depth-hole-split\n"
         << "  --no-depth-hole-split\n"
@@ -5540,6 +5631,7 @@ void printUsage()
         << "  --indoor-plane-diagnostics\n"
         << "  --show-regions\n"
         << "  --color-edges\n"
+        << "  --gray-edges\n"
         << "  --show-part-numbers\n"
         << "  --show-labels\n"
         << "  --show-centers\n";
@@ -5588,6 +5680,7 @@ int main(int argc, char** argv)
         rs2::config rsConfig;
         rsConfig.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
         rsConfig.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
+        rsConfig.enable_stream(RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 30);
 
         const rs2::pipeline_profile profile = pipeline.start(rsConfig);
         const float depthScale = findDepthScale(profile);
@@ -5710,6 +5803,28 @@ int main(int argc, char** argv)
                 cv::resize(depth16, depth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
             }
 
+            cv::Mat segmentationGray;
+            bool edgeSourceIsInfrared = false;
+            if (config.infraredSegmentation)
+            {
+                const rs2::video_frame infraredFrame = frames.get_infrared_frame(1);
+                if (infraredFrame)
+                {
+                    segmentationGray = videoFrameToGray8(infraredFrame);
+                    edgeSourceIsInfrared = true;
+                }
+            }
+            if (segmentationGray.empty())
+            {
+                cv::cvtColor(colorBgr, segmentationGray, cv::COLOR_BGR2GRAY);
+            }
+            if (segmentationGray.size() != colorBgr.size())
+            {
+                cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+            }
+            cv::Mat segmentationBgr;
+            cv::cvtColor(segmentationGray, segmentationBgr, cv::COLOR_GRAY2BGR);
+
             RgbDepthAnchorStats frameAnchorStats;
             const cv::Mat anchorMask = makeReliableDepthAnchorMask(
                 rawDepth16,
@@ -5720,7 +5835,8 @@ int main(int argc, char** argv)
                 frameAnchorStats);
 
             cv::Mat candidateAcceptedMask;
-            BoundaryAnalysis boundaryAnalysis = makeBoundaryAnalysis(colorBgr, depth16, config, depthScale);
+            BoundaryAnalysis boundaryAnalysis =
+                makeBoundaryAnalysis(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
             cv::Mat splitBoundaryMask = boundaryAnalysis.splitBoundaryMask;
             std::vector<ObservationMaterial> candidateMaterials =
                 extractObservationMaterials(
@@ -5796,7 +5912,7 @@ int main(int argc, char** argv)
             }
 
             cv::Mat segmentedView = buildStableContourVisualization(
-                colorBgr,
+                segmentationBgr,
                 anchorMask,
                 depth16,
                 depthScale,
@@ -5839,7 +5955,7 @@ int main(int argc, char** argv)
             cv::Mat boundaryDiagnosticsView;
             if (config.boundaryDiagnostics)
             {
-                boundaryDiagnosticsView = buildBoundaryDiagnosticsView(colorBgr, boundaryAnalysis);
+                boundaryDiagnosticsView = buildBoundaryDiagnosticsView(segmentationBgr, boundaryAnalysis);
             }
             cv::Mat indoorPlaneDiagnosticsView;
             if (config.indoorPlaneDiagnostics)
