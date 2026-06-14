@@ -100,6 +100,13 @@ struct SegmentationConfig
     int pclSampleStepPixels = 3;
     int pclMaxInputPoints = 7000;
     int pclFrameInterval = 2;
+    int colorContourCompletionPaddingPixels = 12;
+    int colorContourCompletionMinIouPercent = 72;
+    int colorContourCompletionMaxAreaDeltaPercent = 24;
+    int colorContourCompletionMaxCenterShiftPixels = 16;
+    int colorContourCompletionClosePixels = 3;
+    int colorContourCompletionOtherGuardPixels = 7;
+    int colorContourCompletionMaxOtherOverlapPixels = 4;
     bool showLabels = false;
     bool showCenters = false;
     bool showRegionContours = false;
@@ -115,6 +122,7 @@ struct SegmentationConfig
     bool spatialClusterCheck = true;
     bool historyTracking = true;
     bool pclClustering = true;
+    bool colorContourCompletion = true;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
 };
@@ -198,6 +206,13 @@ struct IndoorPlaneAnalysis
     int supportPixels = 0;
     int components = 0;
     bool reusedFromCache = false;
+};
+
+struct ColorContourCompletionStats
+{
+    int inputContours = 0;
+    int adoptedContours = 0;
+    int rejectedContours = 0;
 };
 
 struct RgbDepthAccuracyConfig
@@ -361,7 +376,14 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--pcl-max-cluster-points=", config.pclMaxClusterPoints) ||
             parseIntOption(arg, "--pcl-sample-step-px=", config.pclSampleStepPixels) ||
             parseIntOption(arg, "--pcl-max-input-points=", config.pclMaxInputPoints) ||
-            parseIntOption(arg, "--pcl-frame-interval=", config.pclFrameInterval))
+            parseIntOption(arg, "--pcl-frame-interval=", config.pclFrameInterval) ||
+            parseIntOption(arg, "--color-contour-completion-padding-px=", config.colorContourCompletionPaddingPixels) ||
+            parseIntOption(arg, "--color-contour-completion-min-iou-percent=", config.colorContourCompletionMinIouPercent) ||
+            parseIntOption(arg, "--color-contour-completion-max-area-delta-percent=", config.colorContourCompletionMaxAreaDeltaPercent) ||
+            parseIntOption(arg, "--color-contour-completion-max-center-shift-px=", config.colorContourCompletionMaxCenterShiftPixels) ||
+            parseIntOption(arg, "--color-contour-completion-close-px=", config.colorContourCompletionClosePixels) ||
+            parseIntOption(arg, "--color-contour-completion-other-guard-px=", config.colorContourCompletionOtherGuardPixels) ||
+            parseIntOption(arg, "--color-contour-completion-max-other-overlap-px=", config.colorContourCompletionMaxOtherOverlapPixels))
         {
             continue;
         }
@@ -458,6 +480,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-pcl-clustering")
         {
             config.pclClustering = false;
+            continue;
+        }
+        if (arg == "--color-contour-completion")
+        {
+            config.colorContourCompletion = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-completion")
+        {
+            config.colorContourCompletion = false;
             continue;
         }
         if (arg == "--probe-only" || arg == "--help" || arg == "-h")
@@ -575,6 +607,17 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.pclSampleStepPixels = std::clamp(config.pclSampleStepPixels, 1, 8);
     config.pclMaxInputPoints = std::clamp(config.pclMaxInputPoints, config.pclMinClusterPoints, 500000);
     config.pclFrameInterval = std::clamp(config.pclFrameInterval, 1, 30);
+    config.colorContourCompletionPaddingPixels = std::clamp(config.colorContourCompletionPaddingPixels, 2, 64);
+    config.colorContourCompletionMinIouPercent = std::clamp(config.colorContourCompletionMinIouPercent, 0, 100);
+    config.colorContourCompletionMaxAreaDeltaPercent =
+        std::clamp(config.colorContourCompletionMaxAreaDeltaPercent, 0, 200);
+    config.colorContourCompletionMaxCenterShiftPixels =
+        std::clamp(config.colorContourCompletionMaxCenterShiftPixels, 0, 160);
+    config.colorContourCompletionClosePixels = std::clamp(config.colorContourCompletionClosePixels, 1, 31);
+    config.colorContourCompletionOtherGuardPixels =
+        std::clamp(config.colorContourCompletionOtherGuardPixels, 0, 64);
+    config.colorContourCompletionMaxOtherOverlapPixels =
+        std::clamp(config.colorContourCompletionMaxOtherOverlapPixels, 0, 1000);
 
     return config;
 }
@@ -3068,6 +3111,329 @@ cv::Mat buildStableContourMask(
     return stableMask;
 }
 
+bool buildColorCompletedMaterial(
+    const cv::Mat& colorBgr,
+    const cv::Mat& colorEdges,
+    const cv::Mat& stableUnionMask,
+    const ObservationMaterial& material,
+    const SegmentationConfig& config,
+    ObservationMaterial& completedMaterial)
+{
+    if (colorBgr.empty() || colorEdges.empty() || stableUnionMask.empty() || material.contour.size() < 3)
+    {
+        return false;
+    }
+
+    const cv::Rect frameRect(0, 0, colorBgr.cols, colorBgr.rows);
+    const cv::Rect sourceBounds = cv::boundingRect(material.contour) & frameRect;
+    if (sourceBounds.empty())
+    {
+        return false;
+    }
+
+    const cv::Rect roi = expandedRect(
+        sourceBounds,
+        config.colorContourCompletionPaddingPixels,
+        colorBgr.size());
+    if (roi.empty())
+    {
+        return false;
+    }
+
+    const cv::Mat originalMask = contourMaskInRoi(material, roi);
+    const int originalArea = cv::countNonZero(originalMask);
+    if (originalArea < config.minAreaPixels)
+    {
+        return false;
+    }
+
+    cv::Mat searchMask = dilateMask(
+        originalMask,
+        config.colorContourCompletionPaddingPixels * 2 + 1);
+    cv::Mat otherStableMask = stableUnionMask(roi).clone();
+    otherStableMask.setTo(0, originalMask);
+    cv::Mat otherGuardMask = dilateMask(
+        otherStableMask,
+        config.colorContourCompletionOtherGuardPixels * 2 + 1);
+    otherGuardMask.setTo(0, originalMask);
+    searchMask.setTo(0, otherGuardMask);
+    cv::bitwise_or(searchMask, originalMask, searchMask);
+    if (cv::countNonZero(searchMask) == 0)
+    {
+        return false;
+    }
+
+    cv::Mat sureForeground;
+    const int erodeSize = std::max(3, std::min(9, (config.colorContourCompletionClosePixels | 1)));
+    const cv::Mat erodeKernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(erodeSize, erodeSize));
+    cv::erode(originalMask, sureForeground, erodeKernel);
+    if (cv::countNonZero(sureForeground) == 0)
+    {
+        sureForeground = originalMask.clone();
+    }
+
+    cv::Mat edgeBarrier = colorEdges(roi).clone();
+    if (cv::countNonZero(edgeBarrier) == 0)
+    {
+        return false;
+    }
+    edgeBarrier = dilateMask(edgeBarrier, 3);
+
+    cv::Mat allowedMask = searchMask.clone();
+    allowedMask.setTo(0, edgeBarrier);
+    allowedMask.setTo(0, otherGuardMask);
+    cv::bitwise_or(allowedMask, sureForeground, allowedMask);
+
+    cv::Mat labels;
+    cv::Mat stats;
+    cv::Mat centroids;
+    const int labelCount =
+        cv::connectedComponentsWithStats(allowedMask, labels, stats, centroids, 8, CV_32S);
+    cv::Mat foregroundMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+    const int minOverlap = std::max(6, std::min(80, originalArea / 250));
+    for (int label = 1; label < labelCount; ++label)
+    {
+        cv::Mat componentMask;
+        cv::compare(labels, label, componentMask, cv::CMP_EQ);
+        cv::Mat overlapMask;
+        cv::bitwise_and(componentMask, originalMask, overlapMask);
+        if (cv::countNonZero(overlapMask) >= minOverlap)
+        {
+            foregroundMask.setTo(255, componentMask);
+        }
+    }
+    cv::bitwise_or(foregroundMask, sureForeground, foregroundMask);
+
+    if (config.colorContourCompletionClosePixels > 1)
+    {
+        const int closeSize = config.colorContourCompletionClosePixels | 1;
+        const cv::Mat closeKernel = cv::getStructuringElement(
+            cv::MORPH_ELLIPSE,
+            cv::Size(closeSize, closeSize));
+        cv::morphologyEx(foregroundMask, foregroundMask, cv::MORPH_CLOSE, closeKernel);
+        cv::bitwise_and(foregroundMask, searchMask, foregroundMask);
+        foregroundMask.setTo(0, otherGuardMask);
+        cv::bitwise_or(foregroundMask, originalMask, foregroundMask);
+    }
+
+    cv::Mat componentLabels;
+    cv::Mat componentStats;
+    cv::Mat componentCentroids;
+    const int componentLabelCount =
+        cv::connectedComponentsWithStats(
+            foregroundMask,
+            componentLabels,
+            componentStats,
+            componentCentroids,
+            8,
+            CV_32S);
+    int bestLabel = -1;
+    int bestOverlap = 0;
+    int bestArea = 0;
+    for (int label = 1; label < componentLabelCount; ++label)
+    {
+        cv::Mat componentMask;
+        cv::compare(componentLabels, label, componentMask, cv::CMP_EQ);
+        cv::Mat overlapMask;
+        cv::bitwise_and(componentMask, originalMask, overlapMask);
+        const int overlap = cv::countNonZero(overlapMask);
+        const int area = componentStats.at<int>(label, cv::CC_STAT_AREA);
+        if (overlap > bestOverlap || (overlap == bestOverlap && area > bestArea))
+        {
+            bestLabel = label;
+            bestOverlap = overlap;
+            bestArea = area;
+        }
+    }
+    if (bestLabel < 0 || bestOverlap == 0)
+    {
+        return false;
+    }
+
+    cv::Mat candidateMask;
+    cv::compare(componentLabels, bestLabel, candidateMask, cv::CMP_EQ);
+    cv::Mat otherOverlapMask;
+    cv::bitwise_and(candidateMask, otherStableMask, otherOverlapMask);
+    if (cv::countNonZero(otherOverlapMask) > config.colorContourCompletionMaxOtherOverlapPixels)
+    {
+        return false;
+    }
+    const int candidateArea = cv::countNonZero(candidateMask);
+    if (candidateArea < config.minAreaPixels)
+    {
+        return false;
+    }
+
+    cv::Mat intersectionMask;
+    cv::Mat unionMask;
+    cv::bitwise_and(originalMask, candidateMask, intersectionMask);
+    cv::bitwise_or(originalMask, candidateMask, unionMask);
+    const int unionArea = cv::countNonZero(unionMask);
+    const int intersectionArea = cv::countNonZero(intersectionMask);
+    const double iouPercent = unionArea > 0
+        ? 100.0 * static_cast<double>(intersectionArea) / static_cast<double>(unionArea)
+        : 0.0;
+    const double areaDeltaPercent =
+        100.0 * std::abs(candidateArea - originalArea) / static_cast<double>(originalArea);
+
+    const cv::Moments originalMoments = cv::moments(originalMask, true);
+    const cv::Moments candidateMoments = cv::moments(candidateMask, true);
+    if (std::abs(originalMoments.m00) <= 1e-6 || std::abs(candidateMoments.m00) <= 1e-6)
+    {
+        return false;
+    }
+
+    const cv::Point2d originalCenter(
+        originalMoments.m10 / originalMoments.m00,
+        originalMoments.m01 / originalMoments.m00);
+    const cv::Point2d candidateCenter(
+        candidateMoments.m10 / candidateMoments.m00,
+        candidateMoments.m01 / candidateMoments.m00);
+    const double centerShift = std::hypot(
+        candidateCenter.x - originalCenter.x,
+        candidateCenter.y - originalCenter.y);
+
+    if (iouPercent < static_cast<double>(config.colorContourCompletionMinIouPercent) ||
+        areaDeltaPercent > static_cast<double>(config.colorContourCompletionMaxAreaDeltaPercent) ||
+        centerShift > static_cast<double>(config.colorContourCompletionMaxCenterShiftPixels))
+    {
+        return false;
+    }
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(candidateMask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    if (contours.empty())
+    {
+        return false;
+    }
+
+    const auto largestContourIt = std::max_element(
+        contours.begin(),
+        contours.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return cv::contourArea(lhs) < cv::contourArea(rhs);
+        });
+    if (cv::contourArea(*largestContourIt) < static_cast<double>(config.minAreaPixels))
+    {
+        return false;
+    }
+
+    std::vector<cv::Point> preciseContour;
+    const double epsilon = cv::arcLength(*largestContourIt, true) * config.contourApproxRatio;
+    if (epsilon >= 0.5)
+    {
+        cv::approxPolyDP(*largestContourIt, preciseContour, epsilon, true);
+    }
+    if (preciseContour.size() < 3)
+    {
+        preciseContour = *largestContourIt;
+    }
+    if (preciseContour.size() < 3)
+    {
+        return false;
+    }
+    for (cv::Point& point : preciseContour)
+    {
+        point.x += roi.x;
+        point.y += roi.y;
+    }
+
+    completedMaterial = material;
+    completedMaterial.roi = cv::boundingRect(preciseContour) & frameRect;
+    completedMaterial.center = cv::Point(
+        static_cast<int>(std::lround(candidateCenter.x + roi.x)),
+        static_cast<int>(std::lround(candidateCenter.y + roi.y)));
+    completedMaterial.pixelCount = candidateArea;
+    completedMaterial.contourArea = cv::contourArea(preciseContour);
+    completedMaterial.contour = std::move(preciseContour);
+    return true;
+}
+
+std::vector<ObservationMaterial> buildDisplayStableMaterials(
+    const cv::Mat& colorBgr,
+    const std::vector<ObservationMaterial>& stableMaterials,
+    const SegmentationConfig& config,
+    ColorContourCompletionStats& completionStats)
+{
+    completionStats = {};
+    std::vector<ObservationMaterial> displayMaterials = stableMaterials;
+    if (!config.colorContourCompletion)
+    {
+        return displayMaterials;
+    }
+
+    cv::Mat allPixelsMask(colorBgr.size(), CV_8UC1, cv::Scalar(255));
+    const cv::Mat colorEdges =
+        makeGrayEdgeMask(colorBgr, allPixelsMask, config.colorCannyLow, config.colorCannyHigh);
+    const cv::Mat stableUnionMask = buildStableContourMask(colorBgr.size(), stableMaterials);
+
+    for (size_t index = 0; index < displayMaterials.size(); ++index)
+    {
+        if (displayMaterials[index].contour.size() < 3)
+        {
+            continue;
+        }
+
+        ++completionStats.inputContours;
+        ObservationMaterial completedMaterial;
+        if (buildColorCompletedMaterial(
+                colorBgr,
+                colorEdges,
+                stableUnionMask,
+                displayMaterials[index],
+                config,
+                completedMaterial))
+        {
+            displayMaterials[index] = std::move(completedMaterial);
+            ++completionStats.adoptedContours;
+        }
+        else
+        {
+            ++completionStats.rejectedContours;
+        }
+    }
+
+    return displayMaterials;
+}
+
+void drawColorContourCompletionOverlay(
+    cv::Mat& mosaic,
+    const ColorContourCompletionStats& completionStats,
+    bool enabled)
+{
+    if (!enabled || mosaic.empty())
+    {
+        return;
+    }
+
+    const std::string text =
+        "P5 RGB contour completion adopted=" +
+        std::to_string(completionStats.adoptedContours) +
+        " rejected=" + std::to_string(completionStats.rejectedContours) +
+        " unknown=black";
+    cv::putText(
+        mosaic,
+        text,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.46,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        mosaic,
+        text,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.46,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+}
+
 cv::Mat buildStableContourColorMosaic(
     const cv::Mat& colorBgr,
     const std::vector<ObservationMaterial>& stableMaterials)
@@ -3524,7 +3890,8 @@ public:
         const CueSelectionSummary& cueSummary,
         const IndoorPlaneAnalysis& indoorPlaneAnalysis,
         int anchorCount,
-        int anchorPointsOnCandidates)
+        int anchorPointsOnCandidates,
+        const ColorContourCompletionStats& completionStats)
     {
         if (!config_.enabled)
         {
@@ -3597,7 +3964,10 @@ public:
             << indoorPlaneAnalysis.components << ','
             << (indoorPlaneAnalysis.reusedFromCache ? 1 : 0) << ','
             << anchorCount << ','
-            << anchorPointsOnCandidates << '\n';
+            << anchorPointsOnCandidates << ','
+            << completionStats.inputContours << ','
+            << completionStats.adoptedContours << ','
+            << completionStats.rejectedContours << '\n';
 
         previousStableById_.clear();
         for (const ObservationMaterial& material : stableMaterials)
@@ -3645,7 +4015,8 @@ private:
             << "cue_accepted_by_fallback,cue_mean_texture_only_percent,"
             << "indoor_plane_px,indoor_wall_px,indoor_ceiling_px,indoor_support_px,"
             << "indoor_plane_components,indoor_plane_cached,"
-            << "anchor_count,anchor_points_on_candidates\n";
+            << "anchor_count,anchor_points_on_candidates,"
+            << "color_completion_input,color_completion_adopted,color_completion_rejected\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
 
@@ -5614,6 +5985,15 @@ void printUsage()
         << "  --pcl-sample-step-px=3\n"
         << "  --pcl-max-input-points=7000\n"
         << "  --pcl-frame-interval=2\n"
+        << "  --color-contour-completion\n"
+        << "  --no-color-contour-completion\n"
+        << "  --color-contour-completion-padding-px=12\n"
+        << "  --color-contour-completion-min-iou-percent=72\n"
+        << "  --color-contour-completion-max-area-delta-percent=24\n"
+        << "  --color-contour-completion-max-center-shift-px=16\n"
+        << "  --color-contour-completion-close-px=3\n"
+        << "  --color-contour-completion-other-guard-px=7\n"
+        << "  --color-contour-completion-max-other-overlap-px=4\n"
         << "  --contour-line-px=1\n"
         << "  --max-materials=24\n"
         << "  --no-boundary-split\n"
@@ -5950,8 +6330,12 @@ int main(int argc, char** argv)
                 indoorPlaneAnalysis = cachedIndoorPlaneAnalysis;
                 indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
             }
-            cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, stableMaterials);
-            cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, stableMaterials);
+            ColorContourCompletionStats completionStats;
+            const std::vector<ObservationMaterial> displayStableMaterials =
+                buildDisplayStableMaterials(colorBgr, stableMaterials, config, completionStats);
+            cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials);
+            drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
+            cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMaterials);
             cv::Mat boundaryDiagnosticsView;
             if (config.boundaryDiagnostics)
             {
@@ -6009,7 +6393,8 @@ int main(int argc, char** argv)
                     cueSummary,
                     indoorPlaneAnalysis,
                     cv::countNonZero(anchorMask),
-                    anchorPointsOnCandidates);
+                    anchorPointsOnCandidates,
+                    completionStats);
             }
 
             const int key = cv::waitKey(1);
