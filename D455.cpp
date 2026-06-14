@@ -39,6 +39,7 @@ constexpr const char* kRawWindow = "D455 raw frame";
 constexpr const char* kSegmentedWindow = "D455 stable contour information";
 constexpr const char* kMosaicWindow = "D455 stable contour color mosaic";
 constexpr const char* kOutsideMosaicWindow = "D455 black-area color view";
+constexpr const char* kBoundaryDiagnosticsWindow = "D455 RGB-D boundary diagnostics";
 constexpr const char* kStableContourWindow = "D455 stable contour stability";
 
 struct SegmentationConfig
@@ -69,6 +70,7 @@ struct SegmentationConfig
     int contourDepthConfirmRadiusPixels = 4;
     int contourDepthConfirmMinRangeMm = 25;
     int contourDepthConfirmMinValidPixels = 8;
+    int depthHoleEdgePixels = 3;
     int splitBoundaryPixels = 3;
     int spatialClusterGapMm = 120;
     int trackConfirmFrames = 3;
@@ -89,7 +91,9 @@ struct SegmentationConfig
     bool boundarySplit = true;
     bool colorSplit = true;
     bool contourDepthConfirmSplit = true;
+    bool depthHoleSplit = false;
     bool colorEdges = false;
+    bool boundaryDiagnostics = false;
     bool spatialClusterCheck = true;
     bool historyTracking = true;
     bool pclClustering = true;
@@ -125,6 +129,18 @@ struct ObservationGroup
     cv::Rect roi;
     int pixelCount = 0;
     std::vector<size_t> materialIndexes;
+};
+
+struct BoundaryAnalysis
+{
+    cv::Mat validMask;
+    cv::Mat depthStepEdges;
+    cv::Mat depthHoleEdges;
+    cv::Mat colorEdges;
+    cv::Mat depthSupportedColorEdges;
+    cv::Mat depthConfirmedColorEdges;
+    cv::Mat rawBoundaryMask;
+    cv::Mat splitBoundaryMask;
 };
 
 struct RgbDepthAccuracyConfig
@@ -259,6 +275,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--contour-depth-confirm-radius-px=", config.contourDepthConfirmRadiusPixels) ||
             parseIntOption(arg, "--contour-depth-confirm-min-range-mm=", config.contourDepthConfirmMinRangeMm) ||
             parseIntOption(arg, "--contour-depth-confirm-min-valid-px=", config.contourDepthConfirmMinValidPixels) ||
+            parseIntOption(arg, "--depth-hole-edge-px=", config.depthHoleEdgePixels) ||
             parseIntOption(arg, "--split-boundary-px=", config.splitBoundaryPixels) ||
             parseIntOption(arg, "--spatial-cluster-gap-mm=", config.spatialClusterGapMm) ||
             parseIntOption(arg, "--track-confirm-frames=", config.trackConfirmFrames) ||
@@ -286,6 +303,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.contourDepthConfirmSplit = false;
             continue;
         }
+        if (arg == "--depth-hole-split")
+        {
+            config.depthHoleSplit = true;
+            continue;
+        }
+        if (arg == "--no-depth-hole-split")
+        {
+            config.depthHoleSplit = false;
+            continue;
+        }
         if (arg == "--no-boundary-split")
         {
             config.boundarySplit = false;
@@ -299,6 +326,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--color-edges")
         {
             config.colorEdges = true;
+            continue;
+        }
+        if (arg == "--boundary-diagnostics")
+        {
+            config.boundaryDiagnostics = true;
             continue;
         }
         if (arg == "--show-part-numbers")
@@ -417,6 +449,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.contourDepthConfirmRadiusPixels = std::clamp(config.contourDepthConfirmRadiusPixels, 1, 16);
     config.contourDepthConfirmMinRangeMm = std::clamp(config.contourDepthConfirmMinRangeMm, 1, 500);
     config.contourDepthConfirmMinValidPixels = std::clamp(config.contourDepthConfirmMinValidPixels, 1, 256);
+    config.depthHoleEdgePixels = std::clamp(config.depthHoleEdgePixels, 1, 15);
     config.splitBoundaryPixels = std::clamp(config.splitBoundaryPixels, 1, 11);
     config.spatialClusterGapMm = std::clamp(config.spatialClusterGapMm, 0, 2000);
     config.trackConfirmFrames = std::clamp(config.trackConfirmFrames, 1, 30);
@@ -1848,6 +1881,37 @@ cv::Mat makeDepthEdgeMask(
     return edges;
 }
 
+cv::Mat makeDepthHoleEdgeMask(
+    const cv::Mat& validMask,
+    const SegmentationConfig& config)
+{
+    if (validMask.empty())
+    {
+        return {};
+    }
+
+    const int kernelSize = std::max(1, config.depthHoleEdgePixels | 1);
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(kernelSize, kernelSize));
+
+    cv::Mat erodedValid;
+    cv::erode(validMask, erodedValid, kernel);
+
+    cv::Mat validSideBoundary;
+    cv::bitwise_xor(validMask, erodedValid, validSideBoundary);
+
+    if (validSideBoundary.cols > 2 && validSideBoundary.rows > 2)
+    {
+        validSideBoundary.row(0).setTo(0);
+        validSideBoundary.row(validSideBoundary.rows - 1).setTo(0);
+        validSideBoundary.col(0).setTo(0);
+        validSideBoundary.col(validSideBoundary.cols - 1).setTo(0);
+    }
+
+    return validSideBoundary;
+}
+
 cv::Mat makeColorEdgeMask(
     const cv::Mat& colorBgr,
     const cv::Mat& validMask,
@@ -1943,40 +2007,142 @@ cv::Mat makeDepthConfirmedColorEdgeMask(
     return confirmed;
 }
 
+BoundaryAnalysis makeBoundaryAnalysis(
+    const cv::Mat& colorBgr,
+    const cv::Mat& depth16,
+    const SegmentationConfig& config,
+    float depthScale)
+{
+    BoundaryAnalysis analysis;
+    if (!config.boundarySplit)
+    {
+        return analysis;
+    }
+
+    analysis.validMask = makeRawDepthRangeMask(depth16, config, depthScale);
+    analysis.depthStepEdges = makeDepthEdgeMask(depth16, config, depthScale);
+    analysis.rawBoundaryMask = analysis.depthStepEdges.clone();
+
+    if (config.depthHoleSplit || config.boundaryDiagnostics)
+    {
+        analysis.depthHoleEdges = makeDepthHoleEdgeMask(analysis.validMask, config);
+        if (config.depthHoleSplit)
+        {
+            cv::bitwise_or(analysis.rawBoundaryMask, analysis.depthHoleEdges, analysis.rawBoundaryMask);
+        }
+    }
+
+    if (config.colorSplit)
+    {
+        analysis.colorEdges = makeColorEdgeMask(colorBgr, analysis.validMask, config);
+        cv::Mat depthSupportSource = analysis.depthStepEdges.clone();
+        if (config.depthHoleSplit && !analysis.depthHoleEdges.empty())
+        {
+            cv::bitwise_or(depthSupportSource, analysis.depthHoleEdges, depthSupportSource);
+        }
+        const cv::Mat depthSupport = dilateMask(depthSupportSource, config.colorDepthSupportPixels);
+
+        cv::bitwise_and(analysis.colorEdges, depthSupport, analysis.depthSupportedColorEdges);
+        cv::bitwise_or(analysis.rawBoundaryMask, analysis.depthSupportedColorEdges, analysis.rawBoundaryMask);
+        if (config.contourDepthConfirmSplit)
+        {
+            analysis.depthConfirmedColorEdges =
+                makeDepthConfirmedColorEdgeMask(analysis.colorEdges, depth16, config, depthScale);
+            cv::bitwise_or(analysis.rawBoundaryMask, analysis.depthConfirmedColorEdges, analysis.rawBoundaryMask);
+        }
+    }
+
+    analysis.splitBoundaryMask = dilateMask(analysis.rawBoundaryMask, config.splitBoundaryPixels);
+    cv::bitwise_and(analysis.splitBoundaryMask, analysis.validMask, analysis.splitBoundaryMask);
+    return analysis;
+}
+
 cv::Mat makeSplitBoundaryMask(
     const cv::Mat& colorBgr,
     const cv::Mat& depth16,
     const SegmentationConfig& config,
     float depthScale)
 {
-    if (!config.boundarySplit)
+    return makeBoundaryAnalysis(colorBgr, depth16, config, depthScale).splitBoundaryMask;
+}
+
+int maskPixelCount(const cv::Mat& mask)
+{
+    return mask.empty() ? 0 : cv::countNonZero(mask);
+}
+
+void paintMask(cv::Mat& view, const cv::Mat& mask, const cv::Scalar& color)
+{
+    if (mask.empty())
     {
-        return cv::Mat();
+        return;
     }
 
-    cv::Mat validMask = makeRawDepthRangeMask(depth16, config, depthScale);
-    cv::Mat depthEdges = makeDepthEdgeMask(depth16, config, depthScale);
-    cv::Mat splitMask = depthEdges.clone();
+    view.setTo(color, mask);
+}
 
-    if (config.colorSplit)
-    {
-        const cv::Mat colorEdges = makeColorEdgeMask(colorBgr, validMask, config);
-        const cv::Mat depthSupport = dilateMask(depthEdges, config.colorDepthSupportPixels);
+cv::Mat buildBoundaryDiagnosticsView(
+    const cv::Mat& colorBgr,
+    const BoundaryAnalysis& analysis)
+{
+    cv::Mat view;
+    colorBgr.convertTo(view, -1, 0.48, 0.0);
 
-        cv::Mat supportedColorEdges;
-        cv::bitwise_and(colorEdges, depthSupport, supportedColorEdges);
-        cv::bitwise_or(splitMask, supportedColorEdges, splitMask);
-        if (config.contourDepthConfirmSplit)
-        {
-            const cv::Mat depthConfirmedColorEdges =
-                makeDepthConfirmedColorEdgeMask(colorEdges, depth16, config, depthScale);
-            cv::bitwise_or(splitMask, depthConfirmedColorEdges, splitMask);
-        }
-    }
+    paintMask(view, analysis.colorEdges, cv::Scalar(255, 80, 0));
+    paintMask(view, analysis.depthStepEdges, cv::Scalar(0, 0, 255));
+    paintMask(view, analysis.depthHoleEdges, cv::Scalar(255, 0, 255));
+    paintMask(view, analysis.depthSupportedColorEdges, cv::Scalar(255, 255, 0));
+    paintMask(view, analysis.depthConfirmedColorEdges, cv::Scalar(0, 255, 0));
+    paintMask(view, analysis.splitBoundaryMask, cv::Scalar(0, 255, 255));
 
-    splitMask = dilateMask(splitMask, config.splitBoundaryPixels);
-    cv::bitwise_and(splitMask, validMask, splitMask);
-    return splitMask;
+    const std::string title =
+        "P1 boundary: red=depth magenta=hole blue=rgb cyan=supported green=confirmed yellow=final";
+    cv::putText(
+        view,
+        title,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        title,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+
+    const std::string counts =
+        "D" + std::to_string(maskPixelCount(analysis.depthStepEdges)) +
+        " H" + std::to_string(maskPixelCount(analysis.depthHoleEdges)) +
+        " R" + std::to_string(maskPixelCount(analysis.colorEdges)) +
+        " S" + std::to_string(maskPixelCount(analysis.depthSupportedColorEdges)) +
+        " C" + std::to_string(maskPixelCount(analysis.depthConfirmedColorEdges)) +
+        " F" + std::to_string(maskPixelCount(analysis.splitBoundaryMask));
+    cv::putText(
+        view,
+        counts,
+        cv::Point(10, 46),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        counts,
+        cv::Point(10, 46),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+
+    return view;
 }
 
 int drawEdgeComponents(
@@ -2707,6 +2873,7 @@ public:
         int anchorSupportedCount,
         const std::vector<ObservationMaterial>& stableMaterials,
         const cv::Mat& stableMask,
+        const BoundaryAnalysis& boundaryAnalysis,
         int anchorCount,
         int anchorPointsOnCandidates)
     {
@@ -2758,6 +2925,12 @@ public:
             << std::setprecision(3) << blackAreaPercent << ','
             << std::setprecision(5) << averageIou << ','
             << std::setprecision(3) << boundaryJitterPx << ','
+            << maskPixelCount(boundaryAnalysis.depthStepEdges) << ','
+            << maskPixelCount(boundaryAnalysis.depthHoleEdges) << ','
+            << maskPixelCount(boundaryAnalysis.colorEdges) << ','
+            << maskPixelCount(boundaryAnalysis.depthSupportedColorEdges) << ','
+            << maskPixelCount(boundaryAnalysis.depthConfirmedColorEdges) << ','
+            << maskPixelCount(boundaryAnalysis.splitBoundaryMask) << ','
             << anchorCount << ','
             << anchorPointsOnCandidates << '\n';
 
@@ -2800,7 +2973,9 @@ private:
         stream_
             << "frame_index,frame_ms,candidate_count,anchor_supported_count,stable_count,"
             << "matched_stable_count,stable_area_percent,black_area_percent,avg_contour_iou,"
-            << "boundary_jitter_px,anchor_count,anchor_points_on_candidates\n";
+            << "boundary_jitter_px,depth_step_edge_px,depth_hole_edge_px,rgb_edge_px,"
+            << "rgb_depth_supported_edge_px,rgb_depth_confirmed_edge_px,split_boundary_px,"
+            << "anchor_count,anchor_points_on_candidates\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
 
@@ -4714,6 +4889,7 @@ void printUsage()
         << "  --contour-depth-confirm-radius-px=4\n"
         << "  --contour-depth-confirm-min-range-mm=25\n"
         << "  --contour-depth-confirm-min-valid-px=8\n"
+        << "  --depth-hole-edge-px=3\n"
         << "  --split-boundary-px=3\n"
         << "  --group-gap-px=24\n"
         << "  --group-depth-gap-mm=450\n"
@@ -4735,9 +4911,12 @@ void printUsage()
         << "  --no-boundary-split\n"
         << "  --no-color-split\n"
         << "  --no-contour-depth-confirm-split\n"
+        << "  --depth-hole-split\n"
+        << "  --no-depth-hole-split\n"
         << "  --no-pcl-clustering\n"
         << "  --no-spatial-cluster-check\n"
         << "  --no-history-tracking\n"
+        << "  --boundary-diagnostics\n"
         << "  --show-regions\n"
         << "  --color-edges\n"
         << "  --show-part-numbers\n"
@@ -4849,6 +5028,10 @@ int main(int argc, char** argv)
         cv::namedWindow(kSegmentedWindow, cv::WINDOW_AUTOSIZE);
         cv::namedWindow(kMosaicWindow, cv::WINDOW_AUTOSIZE);
         cv::namedWindow(kOutsideMosaicWindow, cv::WINDOW_AUTOSIZE);
+        if (config.boundaryDiagnostics)
+        {
+            cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
+        }
 
         SegmentationTracker tracker;
         std::vector<ObservationMaterial> pclCandidateCache;
@@ -4910,7 +5093,8 @@ int main(int argc, char** argv)
                 frameAnchorStats);
 
             cv::Mat candidateAcceptedMask;
-            cv::Mat splitBoundaryMask = makeSplitBoundaryMask(colorBgr, depth16, config, depthScale);
+            BoundaryAnalysis boundaryAnalysis = makeBoundaryAnalysis(colorBgr, depth16, config, depthScale);
+            cv::Mat splitBoundaryMask = boundaryAnalysis.splitBoundaryMask;
             std::vector<ObservationMaterial> candidateMaterials =
                 extractObservationMaterials(
                     depth16,
@@ -4986,6 +5170,11 @@ int main(int argc, char** argv)
                 static_cast<int>(frameId + 1));
             cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, stableMaterials);
             cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, stableMaterials);
+            cv::Mat boundaryDiagnosticsView;
+            if (config.boundaryDiagnostics)
+            {
+                boundaryDiagnosticsView = buildBoundaryDiagnosticsView(colorBgr, boundaryAnalysis);
+            }
             (void)frameAnchorStats;
             (void)anchorPointsOnCandidates;
 
@@ -4993,7 +5182,17 @@ int main(int argc, char** argv)
             cv::imshow(kSegmentedWindow, segmentedView);
             cv::imshow(kMosaicWindow, mosaicView);
             cv::imshow(kOutsideMosaicWindow, outsideColorView);
-            videoRecorder.write(buildRecordingFrame({colorBgr, segmentedView, mosaicView, outsideColorView}));
+            if (config.boundaryDiagnostics)
+            {
+                cv::imshow(kBoundaryDiagnosticsWindow, boundaryDiagnosticsView);
+            }
+
+            std::vector<cv::Mat> recordingViews{colorBgr, segmentedView, mosaicView, outsideColorView};
+            if (config.boundaryDiagnostics)
+            {
+                recordingViews.push_back(boundaryDiagnosticsView);
+            }
+            videoRecorder.write(buildRecordingFrame(recordingViews));
 
             const auto frameEnd = std::chrono::steady_clock::now();
             const double frameMs =
@@ -5008,6 +5207,7 @@ int main(int argc, char** argv)
                     static_cast<int>(anchorSupportedCandidates.size()),
                     stableMaterials,
                     stableMask,
+                    boundaryAnalysis,
                     cv::countNonZero(anchorMask),
                     anchorPointsOnCandidates);
             }
