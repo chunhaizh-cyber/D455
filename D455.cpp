@@ -71,6 +71,10 @@ struct SegmentationConfig
     int contourDepthConfirmMinRangeMm = 25;
     int contourDepthConfirmMinValidPixels = 8;
     int depthHoleEdgePixels = 3;
+    int cueMinReliableEdgePixels = 8;
+    int cueMinConfirmedRgbEdgePixels = 6;
+    int cueMaxTextureOnlyPercent = 75;
+    int cueStrongAnchorMultiplierPercent = 180;
     int splitBoundaryPixels = 3;
     int spatialClusterGapMm = 120;
     int trackConfirmFrames = 3;
@@ -92,6 +96,7 @@ struct SegmentationConfig
     bool colorSplit = true;
     bool contourDepthConfirmSplit = true;
     bool depthHoleSplit = false;
+    bool cueSelection = true;
     bool colorEdges = false;
     bool boundaryDiagnostics = false;
     bool spatialClusterCheck = true;
@@ -141,6 +146,30 @@ struct BoundaryAnalysis
     cv::Mat depthConfirmedColorEdges;
     cv::Mat rawBoundaryMask;
     cv::Mat splitBoundaryMask;
+};
+
+struct CandidateCueEvidence
+{
+    int contourEdgePixels = 0;
+    int depthEdgePixels = 0;
+    int supportedRgbEdgePixels = 0;
+    int confirmedRgbEdgePixels = 0;
+    int rgbEdgePixels = 0;
+    int textureOnlyRgbEdgePixels = 0;
+    int anchorCount = 0;
+    double textureOnlyPercent = 0.0;
+};
+
+struct CueSelectionSummary
+{
+    int inputCandidates = 0;
+    int acceptedCandidates = 0;
+    int rejectedTextureCandidates = 0;
+    int acceptedByDepth = 0;
+    int acceptedByRgb = 0;
+    int acceptedByAnchor = 0;
+    int acceptedByFallback = 0;
+    double textureOnlyPercentSum = 0.0;
 };
 
 struct RgbDepthAccuracyConfig
@@ -276,6 +305,10 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--contour-depth-confirm-min-range-mm=", config.contourDepthConfirmMinRangeMm) ||
             parseIntOption(arg, "--contour-depth-confirm-min-valid-px=", config.contourDepthConfirmMinValidPixels) ||
             parseIntOption(arg, "--depth-hole-edge-px=", config.depthHoleEdgePixels) ||
+            parseIntOption(arg, "--cue-min-reliable-edge-px=", config.cueMinReliableEdgePixels) ||
+            parseIntOption(arg, "--cue-min-confirmed-rgb-edge-px=", config.cueMinConfirmedRgbEdgePixels) ||
+            parseIntOption(arg, "--cue-max-texture-only-percent=", config.cueMaxTextureOnlyPercent) ||
+            parseIntOption(arg, "--cue-strong-anchor-multiplier-percent=", config.cueStrongAnchorMultiplierPercent) ||
             parseIntOption(arg, "--split-boundary-px=", config.splitBoundaryPixels) ||
             parseIntOption(arg, "--spatial-cluster-gap-mm=", config.spatialClusterGapMm) ||
             parseIntOption(arg, "--track-confirm-frames=", config.trackConfirmFrames) ||
@@ -311,6 +344,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-depth-hole-split")
         {
             config.depthHoleSplit = false;
+            continue;
+        }
+        if (arg == "--no-cue-selection")
+        {
+            config.cueSelection = false;
             continue;
         }
         if (arg == "--no-boundary-split")
@@ -450,6 +488,10 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.contourDepthConfirmMinRangeMm = std::clamp(config.contourDepthConfirmMinRangeMm, 1, 500);
     config.contourDepthConfirmMinValidPixels = std::clamp(config.contourDepthConfirmMinValidPixels, 1, 256);
     config.depthHoleEdgePixels = std::clamp(config.depthHoleEdgePixels, 1, 15);
+    config.cueMinReliableEdgePixels = std::clamp(config.cueMinReliableEdgePixels, 0, 512);
+    config.cueMinConfirmedRgbEdgePixels = std::clamp(config.cueMinConfirmedRgbEdgePixels, 0, 512);
+    config.cueMaxTextureOnlyPercent = std::clamp(config.cueMaxTextureOnlyPercent, 1, 100);
+    config.cueStrongAnchorMultiplierPercent = std::clamp(config.cueStrongAnchorMultiplierPercent, 100, 500);
     config.splitBoundaryPixels = std::clamp(config.splitBoundaryPixels, 1, 11);
     config.spatialClusterGapMm = std::clamp(config.spatialClusterGapMm, 0, 2000);
     config.trackConfirmFrames = std::clamp(config.trackConfirmFrames, 1, 30);
@@ -2145,6 +2187,214 @@ cv::Mat buildBoundaryDiagnosticsView(
     return view;
 }
 
+cv::Mat contourLineMaskInRoi(
+    const ObservationMaterial& material,
+    const cv::Rect& roi,
+    int thickness)
+{
+    cv::Mat mask = cv::Mat::zeros(roi.size(), CV_8UC1);
+    if (material.contour.size() < 3)
+    {
+        return mask;
+    }
+
+    std::vector<cv::Point> localContour;
+    localContour.reserve(material.contour.size());
+    for (const cv::Point& point : material.contour)
+    {
+        localContour.emplace_back(point.x - roi.x, point.y - roi.y);
+    }
+
+    const std::vector<std::vector<cv::Point>> localContours{localContour};
+    cv::drawContours(mask, localContours, -1, cv::Scalar(255), std::max(1, thickness), cv::LINE_8);
+    return mask;
+}
+
+int countMaskOverlapInRoi(
+    const cv::Mat& globalMask,
+    const cv::Rect& roi,
+    const cv::Mat& localMask)
+{
+    if (globalMask.empty() || roi.empty() || localMask.empty())
+    {
+        return 0;
+    }
+
+    cv::Mat overlap;
+    cv::bitwise_and(globalMask(roi), localMask, overlap);
+    return cv::countNonZero(overlap);
+}
+
+CandidateCueEvidence measureCandidateCueEvidence(
+    const ObservationMaterial& material,
+    const BoundaryAnalysis& boundaryAnalysis,
+    const SegmentationConfig& config,
+    const cv::Size& frameSize)
+{
+    CandidateCueEvidence evidence;
+    evidence.anchorCount = material.groupId;
+    if (material.contour.size() < 3)
+    {
+        return evidence;
+    }
+
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    const cv::Rect roi = cv::boundingRect(material.contour) & frameRect;
+    if (roi.empty())
+    {
+        return evidence;
+    }
+
+    const int lineThickness = std::max(2, config.contourLinePixels + 2);
+    const cv::Mat contourLineMask = contourLineMaskInRoi(material, roi, lineThickness);
+    evidence.contourEdgePixels = cv::countNonZero(contourLineMask);
+    evidence.depthEdgePixels = countMaskOverlapInRoi(boundaryAnalysis.depthStepEdges, roi, contourLineMask);
+    evidence.supportedRgbEdgePixels = countMaskOverlapInRoi(
+        boundaryAnalysis.depthSupportedColorEdges,
+        roi,
+        contourLineMask);
+    evidence.confirmedRgbEdgePixels = countMaskOverlapInRoi(
+        boundaryAnalysis.depthConfirmedColorEdges,
+        roi,
+        contourLineMask);
+    evidence.rgbEdgePixels = countMaskOverlapInRoi(boundaryAnalysis.colorEdges, roi, contourLineMask);
+
+    if (!boundaryAnalysis.colorEdges.empty())
+    {
+        cv::Mat reliableRgb = cv::Mat::zeros(roi.size(), CV_8UC1);
+        if (!boundaryAnalysis.depthSupportedColorEdges.empty())
+        {
+            cv::bitwise_or(reliableRgb, boundaryAnalysis.depthSupportedColorEdges(roi), reliableRgb);
+        }
+        if (!boundaryAnalysis.depthConfirmedColorEdges.empty())
+        {
+            cv::bitwise_or(reliableRgb, boundaryAnalysis.depthConfirmedColorEdges(roi), reliableRgb);
+        }
+
+        cv::Mat unreliableRgb;
+        cv::bitwise_not(reliableRgb, unreliableRgb);
+        cv::Mat textureOnly;
+        cv::bitwise_and(boundaryAnalysis.colorEdges(roi), unreliableRgb, textureOnly);
+        cv::bitwise_and(textureOnly, contourLineMask, textureOnly);
+        evidence.textureOnlyRgbEdgePixels = cv::countNonZero(textureOnly);
+    }
+
+    evidence.textureOnlyPercent = evidence.contourEdgePixels == 0
+        ? 0.0
+        : 100.0 * static_cast<double>(evidence.textureOnlyRgbEdgePixels) /
+            static_cast<double>(evidence.contourEdgePixels);
+    return evidence;
+}
+
+std::vector<ObservationMaterial> selectCandidatesByCue(
+    const std::vector<ObservationMaterial>& candidates,
+    const BoundaryAnalysis& boundaryAnalysis,
+    const SegmentationConfig& config,
+    const cv::Size& frameSize,
+    int minAnchorCount,
+    CueSelectionSummary& summary)
+{
+    summary = CueSelectionSummary{};
+    summary.inputCandidates = static_cast<int>(candidates.size());
+    if (!config.cueSelection)
+    {
+        summary.acceptedCandidates = summary.inputCandidates;
+        return candidates;
+    }
+
+    std::vector<ObservationMaterial> selected;
+    selected.reserve(candidates.size());
+    const int strongAnchorCount = std::max(
+        minAnchorCount,
+        minAnchorCount * config.cueStrongAnchorMultiplierPercent / 100);
+
+    for (const ObservationMaterial& candidate : candidates)
+    {
+        const CandidateCueEvidence evidence =
+            measureCandidateCueEvidence(candidate, boundaryAnalysis, config, frameSize);
+        summary.textureOnlyPercentSum += evidence.textureOnlyPercent;
+
+        const bool depthCue = evidence.depthEdgePixels >= config.cueMinReliableEdgePixels;
+        const bool rgbCue =
+            evidence.confirmedRgbEdgePixels >= config.cueMinConfirmedRgbEdgePixels ||
+            evidence.supportedRgbEdgePixels >= config.cueMinReliableEdgePixels;
+        const bool anchorCue = evidence.anchorCount >= strongAnchorCount;
+        const int reliableEdgePixels =
+            evidence.depthEdgePixels +
+            evidence.supportedRgbEdgePixels +
+            evidence.confirmedRgbEdgePixels;
+        const bool textureDominant =
+            evidence.textureOnlyRgbEdgePixels >= config.cueMinReliableEdgePixels &&
+            evidence.textureOnlyPercent >= static_cast<double>(config.cueMaxTextureOnlyPercent);
+        const bool rejectAsTexture =
+            textureDominant &&
+            reliableEdgePixels < config.cueMinReliableEdgePixels &&
+            !anchorCue;
+
+        if (rejectAsTexture)
+        {
+            ++summary.rejectedTextureCandidates;
+            continue;
+        }
+
+        if (depthCue)
+        {
+            ++summary.acceptedByDepth;
+        }
+        if (rgbCue)
+        {
+            ++summary.acceptedByRgb;
+        }
+        if (anchorCue)
+        {
+            ++summary.acceptedByAnchor;
+        }
+        if (!depthCue && !rgbCue && !anchorCue)
+        {
+            ++summary.acceptedByFallback;
+        }
+
+        selected.push_back(candidate);
+    }
+
+    summary.acceptedCandidates = static_cast<int>(selected.size());
+    return selected;
+}
+
+void drawCueSelectionOverlay(cv::Mat& view, const CueSelectionSummary& summary)
+{
+    const double meanTexturePercent = summary.inputCandidates == 0
+        ? 0.0
+        : summary.textureOnlyPercentSum / static_cast<double>(summary.inputCandidates);
+    std::ostringstream line;
+    line << "cue in=" << summary.inputCandidates
+        << " keep=" << summary.acceptedCandidates
+        << " reject_texture=" << summary.rejectedTextureCandidates
+        << " D=" << summary.acceptedByDepth
+        << " RGB=" << summary.acceptedByRgb
+        << " A=" << summary.acceptedByAnchor
+        << " tex%=" << std::fixed << std::setprecision(1) << meanTexturePercent;
+
+    cv::putText(
+        view,
+        line.str(),
+        cv::Point(12, std::max(20, view.rows - 18)),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        line.str(),
+        cv::Point(12, std::max(20, view.rows - 18)),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+}
+
 int drawEdgeComponents(
     cv::Mat& view,
     const cv::Mat& edgeMask,
@@ -2874,6 +3124,7 @@ public:
         const std::vector<ObservationMaterial>& stableMaterials,
         const cv::Mat& stableMask,
         const BoundaryAnalysis& boundaryAnalysis,
+        const CueSelectionSummary& cueSummary,
         int anchorCount,
         int anchorPointsOnCandidates)
     {
@@ -2931,6 +3182,16 @@ public:
             << maskPixelCount(boundaryAnalysis.depthSupportedColorEdges) << ','
             << maskPixelCount(boundaryAnalysis.depthConfirmedColorEdges) << ','
             << maskPixelCount(boundaryAnalysis.splitBoundaryMask) << ','
+            << cueSummary.inputCandidates << ','
+            << cueSummary.acceptedCandidates << ','
+            << cueSummary.rejectedTextureCandidates << ','
+            << cueSummary.acceptedByDepth << ','
+            << cueSummary.acceptedByRgb << ','
+            << cueSummary.acceptedByAnchor << ','
+            << cueSummary.acceptedByFallback << ','
+            << std::setprecision(3) << (cueSummary.inputCandidates == 0
+                ? 0.0
+                : cueSummary.textureOnlyPercentSum / static_cast<double>(cueSummary.inputCandidates)) << ','
             << anchorCount << ','
             << anchorPointsOnCandidates << '\n';
 
@@ -2975,6 +3236,9 @@ private:
             << "matched_stable_count,stable_area_percent,black_area_percent,avg_contour_iou,"
             << "boundary_jitter_px,depth_step_edge_px,depth_hole_edge_px,rgb_edge_px,"
             << "rgb_depth_supported_edge_px,rgb_depth_confirmed_edge_px,split_boundary_px,"
+            << "cue_input_count,cue_accepted_count,cue_rejected_texture_count,"
+            << "cue_accepted_by_depth,cue_accepted_by_rgb,cue_accepted_by_anchor,"
+            << "cue_accepted_by_fallback,cue_mean_texture_only_percent,"
             << "anchor_count,anchor_points_on_candidates\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
@@ -4890,6 +5154,10 @@ void printUsage()
         << "  --contour-depth-confirm-min-range-mm=25\n"
         << "  --contour-depth-confirm-min-valid-px=8\n"
         << "  --depth-hole-edge-px=3\n"
+        << "  --cue-min-reliable-edge-px=8\n"
+        << "  --cue-min-confirmed-rgb-edge-px=6\n"
+        << "  --cue-max-texture-only-percent=75\n"
+        << "  --cue-strong-anchor-multiplier-percent=180\n"
         << "  --split-boundary-px=3\n"
         << "  --group-gap-px=24\n"
         << "  --group-depth-gap-mm=450\n"
@@ -4913,6 +5181,7 @@ void printUsage()
         << "  --no-contour-depth-confirm-split\n"
         << "  --depth-hole-split\n"
         << "  --no-depth-hole-split\n"
+        << "  --no-cue-selection\n"
         << "  --no-pcl-clustering\n"
         << "  --no-spatial-cluster-check\n"
         << "  --no-history-tracking\n"
@@ -5138,8 +5407,18 @@ int main(int argc, char** argv)
                     stableDisplayConfig.stableContourMinAnchors,
                     anchorPointsOnCandidates);
 
+            CueSelectionSummary cueSummary;
+            std::vector<ObservationMaterial> cueSelectedCandidates =
+                selectCandidatesByCue(
+                    anchorSupportedCandidates,
+                    boundaryAnalysis,
+                    config,
+                    colorBgr.size(),
+                    stableDisplayConfig.stableContourMinAnchors,
+                    cueSummary);
+
             std::vector<ObservationMaterial> stableMaterials =
-                tracker.update(anchorSupportedCandidates, config, frameId);
+                tracker.update(cueSelectedCandidates, config, frameId);
 
             for (const ObservationMaterial& stableMaterial : stableMaterials)
             {
@@ -5163,11 +5442,15 @@ int main(int argc, char** argv)
                 anchorMask,
                 depth16,
                 depthScale,
-                anchorSupportedCandidates,
+                cueSelectedCandidates,
                 stableMaterials,
                 stableTrackAggregates,
                 stableDisplayConfig,
                 static_cast<int>(frameId + 1));
+            if (config.cueSelection)
+            {
+                drawCueSelectionOverlay(segmentedView, cueSummary);
+            }
             cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, stableMaterials);
             cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, stableMaterials);
             cv::Mat boundaryDiagnosticsView;
@@ -5208,6 +5491,7 @@ int main(int argc, char** argv)
                     stableMaterials,
                     stableMask,
                     boundaryAnalysis,
+                    cueSummary,
                     cv::countNonZero(anchorMask),
                     anchorPointsOnCandidates);
             }
