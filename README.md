@@ -94,6 +94,12 @@ P2 cue selection 默认启用。它在稳定锚点候选进入历史 tracker 前
 .\x64\Release\D455.exe --acceptance-baseline --acceptance-label=acceptance_p2 --boundary-diagnostics --max-frames=600
 ```
 
+P3 室内大平面诊断默认不影响分割结果。打开 `D455 indoor plane diagnostics` 后，第六栏按低频降采样法线估计显示大平面背景结构：蓝色为墙面类，洋红为天面类，橙色为支撑面类，绿色边线为当前稳定轮廓遮罩。平面 mask 会扣掉稳定前景，不会覆盖第三窗口/第四窗口的稳定轮廓结果。触顶的大平面会按上方带保守拆出天面类，避免整块墙/天面粘成一个诊断类。CSV 会同步记录大平面像素数、墙面/天面/支撑面像素数、组件数和是否复用缓存：
+
+```powershell
+.\x64\Release\D455.exe --acceptance-baseline --acceptance-label=acceptance_p3 --boundary-diagnostics --indoor-plane-diagnostics --max-frames=600
+```
+
 稳定点筛选主要由采样步长、邻域大小、局部深度稳定阈值、原始/滤波深度一致性阈值控制：
 
 ```powershell

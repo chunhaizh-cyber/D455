@@ -40,6 +40,7 @@ constexpr const char* kSegmentedWindow = "D455 stable contour information";
 constexpr const char* kMosaicWindow = "D455 stable contour color mosaic";
 constexpr const char* kOutsideMosaicWindow = "D455 black-area color view";
 constexpr const char* kBoundaryDiagnosticsWindow = "D455 RGB-D boundary diagnostics";
+constexpr const char* kIndoorPlaneWindow = "D455 indoor plane diagnostics";
 constexpr const char* kStableContourWindow = "D455 stable contour stability";
 
 struct SegmentationConfig
@@ -75,6 +76,14 @@ struct SegmentationConfig
     int cueMinConfirmedRgbEdgePixels = 6;
     int cueMaxTextureOnlyPercent = 75;
     int cueStrongAnchorMultiplierPercent = 180;
+    int indoorPlaneFrameInterval = 10;
+    int indoorPlaneSampleStepPixels = 10;
+    int indoorPlaneNormalNeighborPixels = 10;
+    int indoorPlaneMinAreaPercent = 4;
+    int indoorPlaneForegroundDilatePixels = 9;
+    int indoorPlaneHorizontalNormalMinPercent = 65;
+    int indoorPlaneVerticalNormalMaxPercent = 65;
+    int indoorPlaneCeilingBandPercent = 30;
     int splitBoundaryPixels = 3;
     int spatialClusterGapMm = 120;
     int trackConfirmFrames = 3;
@@ -99,6 +108,7 @@ struct SegmentationConfig
     bool cueSelection = true;
     bool colorEdges = false;
     bool boundaryDiagnostics = false;
+    bool indoorPlaneDiagnostics = false;
     bool spatialClusterCheck = true;
     bool historyTracking = true;
     bool pclClustering = true;
@@ -170,6 +180,20 @@ struct CueSelectionSummary
     int acceptedByAnchor = 0;
     int acceptedByFallback = 0;
     double textureOnlyPercentSum = 0.0;
+};
+
+struct IndoorPlaneAnalysis
+{
+    cv::Mat structuralPlaneMask;
+    cv::Mat wallMask;
+    cv::Mat ceilingMask;
+    cv::Mat supportMask;
+    int structuralPlanePixels = 0;
+    int wallPixels = 0;
+    int ceilingPixels = 0;
+    int supportPixels = 0;
+    int components = 0;
+    bool reusedFromCache = false;
 };
 
 struct RgbDepthAccuracyConfig
@@ -309,6 +333,14 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--cue-min-confirmed-rgb-edge-px=", config.cueMinConfirmedRgbEdgePixels) ||
             parseIntOption(arg, "--cue-max-texture-only-percent=", config.cueMaxTextureOnlyPercent) ||
             parseIntOption(arg, "--cue-strong-anchor-multiplier-percent=", config.cueStrongAnchorMultiplierPercent) ||
+            parseIntOption(arg, "--indoor-plane-frame-interval=", config.indoorPlaneFrameInterval) ||
+            parseIntOption(arg, "--indoor-plane-sample-step-px=", config.indoorPlaneSampleStepPixels) ||
+            parseIntOption(arg, "--indoor-plane-normal-neighbor-px=", config.indoorPlaneNormalNeighborPixels) ||
+            parseIntOption(arg, "--indoor-plane-min-area-percent=", config.indoorPlaneMinAreaPercent) ||
+            parseIntOption(arg, "--indoor-plane-foreground-dilate-px=", config.indoorPlaneForegroundDilatePixels) ||
+            parseIntOption(arg, "--indoor-plane-horizontal-normal-min-percent=", config.indoorPlaneHorizontalNormalMinPercent) ||
+            parseIntOption(arg, "--indoor-plane-vertical-normal-max-percent=", config.indoorPlaneVerticalNormalMaxPercent) ||
+            parseIntOption(arg, "--indoor-plane-ceiling-band-percent=", config.indoorPlaneCeilingBandPercent) ||
             parseIntOption(arg, "--split-boundary-px=", config.splitBoundaryPixels) ||
             parseIntOption(arg, "--spatial-cluster-gap-mm=", config.spatialClusterGapMm) ||
             parseIntOption(arg, "--track-confirm-frames=", config.trackConfirmFrames) ||
@@ -369,6 +401,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--boundary-diagnostics")
         {
             config.boundaryDiagnostics = true;
+            continue;
+        }
+        if (arg == "--indoor-plane-diagnostics")
+        {
+            config.indoorPlaneDiagnostics = true;
             continue;
         }
         if (arg == "--show-part-numbers")
@@ -492,6 +529,14 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.cueMinConfirmedRgbEdgePixels = std::clamp(config.cueMinConfirmedRgbEdgePixels, 0, 512);
     config.cueMaxTextureOnlyPercent = std::clamp(config.cueMaxTextureOnlyPercent, 1, 100);
     config.cueStrongAnchorMultiplierPercent = std::clamp(config.cueStrongAnchorMultiplierPercent, 100, 500);
+    config.indoorPlaneFrameInterval = std::clamp(config.indoorPlaneFrameInterval, 1, 60);
+    config.indoorPlaneSampleStepPixels = std::clamp(config.indoorPlaneSampleStepPixels, 4, 32);
+    config.indoorPlaneNormalNeighborPixels = std::clamp(config.indoorPlaneNormalNeighborPixels, 2, 32);
+    config.indoorPlaneMinAreaPercent = std::clamp(config.indoorPlaneMinAreaPercent, 1, 60);
+    config.indoorPlaneForegroundDilatePixels = std::clamp(config.indoorPlaneForegroundDilatePixels, 0, 63);
+    config.indoorPlaneHorizontalNormalMinPercent = std::clamp(config.indoorPlaneHorizontalNormalMinPercent, 1, 100);
+    config.indoorPlaneVerticalNormalMaxPercent = std::clamp(config.indoorPlaneVerticalNormalMaxPercent, 0, 100);
+    config.indoorPlaneCeilingBandPercent = std::clamp(config.indoorPlaneCeilingBandPercent, 5, 60);
     config.splitBoundaryPixels = std::clamp(config.splitBoundaryPixels, 1, 11);
     config.spatialClusterGapMm = std::clamp(config.spatialClusterGapMm, 0, 2000);
     config.trackConfirmFrames = std::clamp(config.trackConfirmFrames, 1, 30);
@@ -2395,6 +2440,295 @@ void drawCueSelectionOverlay(cv::Mat& view, const CueSelectionSummary& summary)
         cv::LINE_AA);
 }
 
+cv::Point3f deprojectDepthPoint(
+    int x,
+    int y,
+    uint16_t depthUnits,
+    float depthScale,
+    const rs2_intrinsics& intrinsics)
+{
+    const float z = static_cast<float>(depthUnits) * depthScale;
+    return cv::Point3f(
+        (static_cast<float>(x) - intrinsics.ppx) / intrinsics.fx * z,
+        (static_cast<float>(y) - intrinsics.ppy) / intrinsics.fy * z,
+        z);
+}
+
+cv::Point3f crossProduct(const cv::Point3f& lhs, const cv::Point3f& rhs)
+{
+    return cv::Point3f(
+        lhs.y * rhs.z - lhs.z * rhs.y,
+        lhs.z * rhs.x - lhs.x * rhs.z,
+        lhs.x * rhs.y - lhs.y * rhs.x);
+}
+
+double vectorLength(const cv::Point3f& value)
+{
+    return std::sqrt(
+        static_cast<double>(value.x) * value.x +
+        static_cast<double>(value.y) * value.y +
+        static_cast<double>(value.z) * value.z);
+}
+
+IndoorPlaneAnalysis buildIndoorPlaneAnalysis(
+    const cv::Mat& depth16,
+    const cv::Mat& stableForegroundMask,
+    const SegmentationConfig& config,
+    float depthScale,
+    const rs2_intrinsics& intrinsics)
+{
+    IndoorPlaneAnalysis analysis;
+    if (depth16.empty())
+    {
+        return analysis;
+    }
+
+    cv::Mat validMask = makeRawDepthRangeMask(depth16, config, depthScale);
+    cv::Mat foregroundMask;
+    if (!stableForegroundMask.empty())
+    {
+        foregroundMask = stableForegroundMask.clone();
+        if (config.indoorPlaneForegroundDilatePixels > 0)
+        {
+            foregroundMask = dilateMask(foregroundMask, config.indoorPlaneForegroundDilatePixels);
+        }
+        validMask.setTo(0, foregroundMask);
+    }
+
+    cv::Mat horizontalNormalMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    cv::Mat verticalNormalMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    const int sampleStep = config.indoorPlaneSampleStepPixels;
+    const int neighborStep = config.indoorPlaneNormalNeighborPixels;
+    const int minDepthUnits = depthUnitsFromMm(config.minDepthMm, depthScale);
+    const int maxDepthUnits = depthUnitsFromMm(config.maxDepthMm, depthScale);
+    const double horizontalMin = config.indoorPlaneHorizontalNormalMinPercent / 100.0;
+    const double verticalMax = config.indoorPlaneVerticalNormalMaxPercent / 100.0;
+
+    for (int y = neighborStep; y + neighborStep < depth16.rows; y += sampleStep)
+    {
+        for (int x = neighborStep; x + neighborStep < depth16.cols; x += sampleStep)
+        {
+            if (validMask.at<uint8_t>(y, x) == 0)
+            {
+                continue;
+            }
+
+            const uint16_t centerDepth = depth16.at<uint16_t>(y, x);
+            const uint16_t rightDepth = depth16.at<uint16_t>(y, x + neighborStep);
+            const uint16_t downDepth = depth16.at<uint16_t>(y + neighborStep, x);
+            if (centerDepth < minDepthUnits || centerDepth > maxDepthUnits ||
+                rightDepth < minDepthUnits || rightDepth > maxDepthUnits ||
+                downDepth < minDepthUnits || downDepth > maxDepthUnits)
+            {
+                continue;
+            }
+
+            const cv::Point3f center = deprojectDepthPoint(x, y, centerDepth, depthScale, intrinsics);
+            const cv::Point3f right = deprojectDepthPoint(x + neighborStep, y, rightDepth, depthScale, intrinsics);
+            const cv::Point3f down = deprojectDepthPoint(x, y + neighborStep, downDepth, depthScale, intrinsics);
+            const cv::Point3f dx = right - center;
+            const cv::Point3f dy = down - center;
+            const cv::Point3f normal = crossProduct(dx, dy);
+            const double length = vectorLength(normal);
+            if (length < 1e-6)
+            {
+                continue;
+            }
+
+            const double ny = std::abs(static_cast<double>(normal.y) / length);
+            const cv::Rect block(
+                std::max(0, x - sampleStep / 2),
+                std::max(0, y - sampleStep / 2),
+                std::min(sampleStep, depth16.cols - std::max(0, x - sampleStep / 2)),
+                std::min(sampleStep, depth16.rows - std::max(0, y - sampleStep / 2)));
+            if (block.empty())
+            {
+                continue;
+            }
+
+            if (ny >= horizontalMin)
+            {
+                horizontalNormalMask(block).setTo(255);
+            }
+            else if (ny <= verticalMax)
+            {
+                verticalNormalMask(block).setTo(255);
+            }
+        }
+    }
+
+    const cv::Mat morphKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
+    cv::morphologyEx(horizontalNormalMask, horizontalNormalMask, cv::MORPH_CLOSE, morphKernel);
+    cv::morphologyEx(verticalNormalMask, verticalNormalMask, cv::MORPH_CLOSE, morphKernel);
+    horizontalNormalMask.setTo(0, ~validMask);
+    verticalNormalMask.setTo(0, ~validMask);
+
+    cv::Mat candidateMask;
+    cv::bitwise_or(horizontalNormalMask, verticalNormalMask, candidateMask);
+
+    cv::Mat labels;
+    cv::Mat stats;
+    cv::Mat centroids;
+    const int labelCount = cv::connectedComponentsWithStats(candidateMask, labels, stats, centroids, 8, CV_32S);
+    const int minAreaPixels =
+        std::max(1, depth16.rows * depth16.cols * config.indoorPlaneMinAreaPercent / 100);
+
+    analysis.structuralPlaneMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    analysis.wallMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    analysis.ceilingMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    analysis.supportMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+
+    for (int label = 1; label < labelCount; ++label)
+    {
+        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        if (area < minAreaPixels)
+        {
+            continue;
+        }
+
+        cv::Mat componentMask;
+        cv::compare(labels, label, componentMask, cv::CMP_EQ);
+        cv::bitwise_and(componentMask, validMask, componentMask);
+        const int componentPixels = cv::countNonZero(componentMask);
+        if (componentPixels < minAreaPixels)
+        {
+            continue;
+        }
+
+        cv::Mat componentHorizontal;
+        cv::Mat componentVertical;
+        cv::bitwise_and(componentMask, horizontalNormalMask, componentHorizontal);
+        cv::bitwise_and(componentMask, verticalNormalMask, componentVertical);
+        const int horizontalPixels = cv::countNonZero(componentHorizontal);
+        const int verticalPixels = cv::countNonZero(componentVertical);
+        const double centerY = centroids.at<double>(label, 1);
+
+        analysis.structuralPlaneMask.setTo(255, componentMask);
+        if (horizontalPixels >= verticalPixels)
+        {
+            if (centerY < depth16.rows * 0.45)
+            {
+                analysis.ceilingMask.setTo(255, componentMask);
+            }
+            else
+            {
+                analysis.supportMask.setTo(255, componentMask);
+            }
+        }
+        else
+        {
+            const int top = stats.at<int>(label, cv::CC_STAT_TOP);
+            const int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+            const bool touchesTop = top <= std::max(1, depth16.rows / 12);
+            const bool spansUpperRoom = height >= std::max(1, depth16.rows / 5);
+            if (touchesTop && spansUpperRoom)
+            {
+                const int ceilingRows = std::max(
+                    1,
+                    depth16.rows * config.indoorPlaneCeilingBandPercent / 100);
+                cv::Mat topBand = cv::Mat::zeros(depth16.size(), CV_8UC1);
+                topBand(cv::Rect(0, 0, depth16.cols, ceilingRows)).setTo(255);
+
+                cv::Mat ceilingPart;
+                cv::bitwise_and(componentMask, topBand, ceilingPart);
+                const int ceilingPartPixels = cv::countNonZero(ceilingPart);
+                if (ceilingPartPixels >= std::max(1, minAreaPixels / 3))
+                {
+                    analysis.ceilingMask.setTo(255, ceilingPart);
+                    cv::Mat wallPart = componentMask.clone();
+                    wallPart.setTo(0, ceilingPart);
+                    if (cv::countNonZero(wallPart) >= std::max(1, minAreaPixels / 3))
+                    {
+                        analysis.wallMask.setTo(255, wallPart);
+                    }
+                }
+                else
+                {
+                    analysis.wallMask.setTo(255, componentMask);
+                }
+            }
+            else
+            {
+                analysis.wallMask.setTo(255, componentMask);
+            }
+        }
+        ++analysis.components;
+    }
+
+    analysis.structuralPlanePixels = cv::countNonZero(analysis.structuralPlaneMask);
+    analysis.wallPixels = cv::countNonZero(analysis.wallMask);
+    analysis.ceilingPixels = cv::countNonZero(analysis.ceilingMask);
+    analysis.supportPixels = cv::countNonZero(analysis.supportMask);
+    return analysis;
+}
+
+cv::Mat buildIndoorPlaneDiagnosticsView(
+    const cv::Mat& colorBgr,
+    const IndoorPlaneAnalysis& analysis,
+    const cv::Mat& stableMask)
+{
+    cv::Mat view;
+    colorBgr.convertTo(view, -1, 0.54, 0.0);
+    paintMask(view, analysis.wallMask, cv::Scalar(255, 170, 40));
+    paintMask(view, analysis.ceilingMask, cv::Scalar(220, 80, 255));
+    paintMask(view, analysis.supportMask, cv::Scalar(0, 180, 255));
+
+    if (!stableMask.empty())
+    {
+        cv::Mat stableEdge;
+        cv::Canny(stableMask, stableEdge, 80, 160);
+        paintMask(view, stableEdge, cv::Scalar(80, 255, 80));
+    }
+
+    const std::string title =
+        "P3 indoor plane: blue=wall magenta=ceiling orange=support green=stable-mask edge";
+    cv::putText(
+        view,
+        title,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        title,
+        cv::Point(10, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+
+    const std::string counts =
+        "plane=" + std::to_string(analysis.structuralPlanePixels) +
+        " wall=" + std::to_string(analysis.wallPixels) +
+        " ceiling=" + std::to_string(analysis.ceilingPixels) +
+        " support=" + std::to_string(analysis.supportPixels) +
+        " comps=" + std::to_string(analysis.components) +
+        (analysis.reusedFromCache ? " cached" : " fresh");
+    cv::putText(
+        view,
+        counts,
+        cv::Point(10, 46),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        counts,
+        cv::Point(10, 46),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.42,
+        cv::Scalar(255, 255, 255),
+        1,
+        cv::LINE_AA);
+    return view;
+}
+
 int drawEdgeComponents(
     cv::Mat& view,
     const cv::Mat& edgeMask,
@@ -3125,6 +3459,7 @@ public:
         const cv::Mat& stableMask,
         const BoundaryAnalysis& boundaryAnalysis,
         const CueSelectionSummary& cueSummary,
+        const IndoorPlaneAnalysis& indoorPlaneAnalysis,
         int anchorCount,
         int anchorPointsOnCandidates)
     {
@@ -3192,6 +3527,12 @@ public:
             << std::setprecision(3) << (cueSummary.inputCandidates == 0
                 ? 0.0
                 : cueSummary.textureOnlyPercentSum / static_cast<double>(cueSummary.inputCandidates)) << ','
+            << indoorPlaneAnalysis.structuralPlanePixels << ','
+            << indoorPlaneAnalysis.wallPixels << ','
+            << indoorPlaneAnalysis.ceilingPixels << ','
+            << indoorPlaneAnalysis.supportPixels << ','
+            << indoorPlaneAnalysis.components << ','
+            << (indoorPlaneAnalysis.reusedFromCache ? 1 : 0) << ','
             << anchorCount << ','
             << anchorPointsOnCandidates << '\n';
 
@@ -3239,6 +3580,8 @@ private:
             << "cue_input_count,cue_accepted_count,cue_rejected_texture_count,"
             << "cue_accepted_by_depth,cue_accepted_by_rgb,cue_accepted_by_anchor,"
             << "cue_accepted_by_fallback,cue_mean_texture_only_percent,"
+            << "indoor_plane_px,indoor_wall_px,indoor_ceiling_px,indoor_support_px,"
+            << "indoor_plane_components,indoor_plane_cached,"
             << "anchor_count,anchor_points_on_candidates\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
@@ -5158,6 +5501,14 @@ void printUsage()
         << "  --cue-min-confirmed-rgb-edge-px=6\n"
         << "  --cue-max-texture-only-percent=75\n"
         << "  --cue-strong-anchor-multiplier-percent=180\n"
+        << "  --indoor-plane-frame-interval=10\n"
+        << "  --indoor-plane-sample-step-px=10\n"
+        << "  --indoor-plane-normal-neighbor-px=10\n"
+        << "  --indoor-plane-min-area-percent=4\n"
+        << "  --indoor-plane-foreground-dilate-px=9\n"
+        << "  --indoor-plane-horizontal-normal-min-percent=65\n"
+        << "  --indoor-plane-vertical-normal-max-percent=65\n"
+        << "  --indoor-plane-ceiling-band-percent=30\n"
         << "  --split-boundary-px=3\n"
         << "  --group-gap-px=24\n"
         << "  --group-depth-gap-mm=450\n"
@@ -5186,6 +5537,7 @@ void printUsage()
         << "  --no-spatial-cluster-check\n"
         << "  --no-history-tracking\n"
         << "  --boundary-diagnostics\n"
+        << "  --indoor-plane-diagnostics\n"
         << "  --show-regions\n"
         << "  --color-edges\n"
         << "  --show-part-numbers\n"
@@ -5301,10 +5653,16 @@ int main(int argc, char** argv)
         {
             cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
         }
+        if (config.indoorPlaneDiagnostics)
+        {
+            cv::namedWindow(kIndoorPlaneWindow, cv::WINDOW_AUTOSIZE);
+        }
 
         SegmentationTracker tracker;
         std::vector<ObservationMaterial> pclCandidateCache;
         std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
+        IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
+        bool hasIndoorPlaneCache = false;
         VideoRecordingConfig recordingConfig = parseVideoRecordingConfig(argc, argv, true);
         AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
         if (acceptanceConfig.enabled)
@@ -5451,12 +5809,43 @@ int main(int argc, char** argv)
             {
                 drawCueSelectionOverlay(segmentedView, cueSummary);
             }
+            cv::Mat stableMaskForFrame;
+            if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled)
+            {
+                stableMaskForFrame = buildStableContourMask(colorBgr.size(), stableMaterials);
+            }
+            IndoorPlaneAnalysis indoorPlaneAnalysis;
+            if (config.indoorPlaneDiagnostics)
+            {
+                const bool refreshIndoorPlanes =
+                    !hasIndoorPlaneCache ||
+                    frameId % static_cast<uint64_t>(config.indoorPlaneFrameInterval) == 0;
+                if (refreshIndoorPlanes)
+                {
+                    cachedIndoorPlaneAnalysis = buildIndoorPlaneAnalysis(
+                        depth16,
+                        stableMaskForFrame,
+                        config,
+                        depthScale,
+                        colorIntrinsics);
+                    cachedIndoorPlaneAnalysis.reusedFromCache = false;
+                    hasIndoorPlaneCache = true;
+                }
+                indoorPlaneAnalysis = cachedIndoorPlaneAnalysis;
+                indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
+            }
             cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, stableMaterials);
             cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, stableMaterials);
             cv::Mat boundaryDiagnosticsView;
             if (config.boundaryDiagnostics)
             {
                 boundaryDiagnosticsView = buildBoundaryDiagnosticsView(colorBgr, boundaryAnalysis);
+            }
+            cv::Mat indoorPlaneDiagnosticsView;
+            if (config.indoorPlaneDiagnostics)
+            {
+                indoorPlaneDiagnosticsView =
+                    buildIndoorPlaneDiagnosticsView(colorBgr, indoorPlaneAnalysis, stableMaskForFrame);
             }
             (void)frameAnchorStats;
             (void)anchorPointsOnCandidates;
@@ -5469,11 +5858,19 @@ int main(int argc, char** argv)
             {
                 cv::imshow(kBoundaryDiagnosticsWindow, boundaryDiagnosticsView);
             }
+            if (config.indoorPlaneDiagnostics)
+            {
+                cv::imshow(kIndoorPlaneWindow, indoorPlaneDiagnosticsView);
+            }
 
             std::vector<cv::Mat> recordingViews{colorBgr, segmentedView, mosaicView, outsideColorView};
             if (config.boundaryDiagnostics)
             {
                 recordingViews.push_back(boundaryDiagnosticsView);
+            }
+            if (config.indoorPlaneDiagnostics)
+            {
+                recordingViews.push_back(indoorPlaneDiagnosticsView);
             }
             videoRecorder.write(buildRecordingFrame(recordingViews));
 
@@ -5482,7 +5879,9 @@ int main(int argc, char** argv)
                 std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
             if (acceptanceConfig.enabled)
             {
-                const cv::Mat stableMask = buildStableContourMask(colorBgr.size(), stableMaterials);
+                const cv::Mat stableMask = stableMaskForFrame.empty()
+                    ? buildStableContourMask(colorBgr.size(), stableMaterials)
+                    : stableMaskForFrame;
                 acceptanceMetrics.write(
                     frameId,
                     frameMs,
@@ -5492,6 +5891,7 @@ int main(int argc, char** argv)
                     stableMask,
                     boundaryAnalysis,
                     cueSummary,
+                    indoorPlaneAnalysis,
                     cv::countNonZero(anchorMask),
                     anchorPointsOnCandidates);
             }
