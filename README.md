@@ -80,7 +80,19 @@ P5 测试分支默认启用严格 RGB 轮廓补齐显示：只在稳定轮廓的
 .\x64\Release\D455.exe --no-record-video
 ```
 
-P0 基线验收模式会强制打开录制，并为视频生成同名 CSV 指标文件。默认记录每帧处理耗时、候选数、稳定轮廓数、稳定区/黑区比例、跨帧 IoU 和边界抖动近似值：
+性能分析时可以关闭窗口显示和验收录制，只保留 CSV 指标；CSV 会追加各阶段耗时字段，方便区分算法、渲染、显示和录制开销：
+
+```powershell
+.\x64\Release\D455.exe --acceptance-baseline --acceptance-no-record --no-display --max-frames=600
+```
+
+需要保留视频但降低写盘压力时，可以抽帧和缩放录制：
+
+```powershell
+.\x64\Release\D455.exe --acceptance-baseline --record-every-n=2 --record-scale-percent=50 --max-frames=600
+```
+
+P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文件；传入 `--acceptance-no-record` 或 `--no-record-video` 时只生成 CSV。默认记录每帧处理耗时、候选数、稳定轮廓数、稳定区/黑区比例、跨帧 IoU、边界抖动近似值和分段耗时：
 
 ```powershell
 .\x64\Release\D455.exe --acceptance-baseline --max-frames=600

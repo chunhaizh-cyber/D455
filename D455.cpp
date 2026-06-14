@@ -215,6 +215,26 @@ struct ColorContourCompletionStats
     int rejectedContours = 0;
 };
 
+struct FrameTimingStats
+{
+    double depthPostMs = 0.0;
+    double frameConvertMs = 0.0;
+    double grayPrepareMs = 0.0;
+    double anchorMs = 0.0;
+    double boundaryMs = 0.0;
+    double extractMs = 0.0;
+    double pclMs = 0.0;
+    double calibrateMs = 0.0;
+    double cueMs = 0.0;
+    double trackerMs = 0.0;
+    double supportMs = 0.0;
+    double renderMs = 0.0;
+    double completionMs = 0.0;
+    double diagnosticsMs = 0.0;
+    double displayMs = 0.0;
+    double recordMs = 0.0;
+};
+
 struct RgbDepthAccuracyConfig
 {
     int sampleFrames = 20;
@@ -242,12 +262,15 @@ struct VideoRecordingConfig
 {
     bool enabled = false;
     int fps = 30;
+    int everyN = 1;
+    int scalePercent = 100;
     std::string outputPath;
 };
 
 struct AcceptanceMetricsConfig
 {
     bool enabled = false;
+    bool recordVideo = true;
     std::string label = "acceptance_baseline";
     std::string csvPath;
 };
@@ -503,11 +526,15 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--record-video" ||
             arg == "--no-record-video" ||
             arg.rfind("--record-video=", 0) == 0 ||
-            arg.rfind("--record-fps=", 0) == 0)
+            arg.rfind("--record-fps=", 0) == 0 ||
+            arg.rfind("--record-every-n=", 0) == 0 ||
+            arg.rfind("--record-scale-percent=", 0) == 0 ||
+            arg == "--no-display")
         {
             continue;
         }
         if (arg == "--acceptance-baseline" ||
+            arg == "--acceptance-no-record" ||
             arg.rfind("--acceptance-label=", 0) == 0 ||
             arg.rfind("--acceptance-csv=", 0) == 0)
         {
@@ -669,9 +696,13 @@ VideoRecordingConfig parseVideoRecordingConfig(int argc, char** argv, bool defau
             continue;
         }
         parseIntOption(arg, "--record-fps=", config.fps);
+        parseIntOption(arg, "--record-every-n=", config.everyN);
+        parseIntOption(arg, "--record-scale-percent=", config.scalePercent);
     }
 
     config.fps = std::clamp(config.fps, 1, 120);
+    config.everyN = std::clamp(config.everyN, 1, 300);
+    config.scalePercent = std::clamp(config.scalePercent, 10, 100);
     return config;
 }
 
@@ -684,6 +715,11 @@ AcceptanceMetricsConfig parseAcceptanceMetricsConfig(int argc, char** argv)
         if (arg == "--acceptance-baseline")
         {
             config.enabled = true;
+            continue;
+        }
+        if (arg == "--acceptance-no-record")
+        {
+            config.recordVideo = false;
             continue;
         }
         if (parseStringOption(arg, "--acceptance-label=", config.label))
@@ -3662,11 +3698,23 @@ public:
         {
             return;
         }
+        const int64_t submittedFrame = submittedFrames_++;
+        if (submittedFrame % static_cast<int64_t>(config_.everyN) != 0)
+        {
+            return;
+        }
 
         cv::Mat bgrFrame = ensureBgrFrame(frame);
         if (bgrFrame.empty())
         {
             return;
+        }
+        if (config_.scalePercent < 100)
+        {
+            cv::Mat scaledFrame;
+            const double scale = static_cast<double>(config_.scalePercent) / 100.0;
+            cv::resize(bgrFrame, scaledFrame, cv::Size(), scale, scale, cv::INTER_AREA);
+            bgrFrame = std::move(scaledFrame);
         }
 
         if (!writer_.isOpened())
@@ -3750,6 +3798,8 @@ private:
 
         std::cout << "Recording video: " << outputPath_
             << " fps=" << config_.fps
+            << " every=" << config_.everyN
+            << " scale=" << config_.scalePercent << "%"
             << " size=" << frameSize_.width << "x" << frameSize_.height << '\n';
     }
 
@@ -3757,6 +3807,7 @@ private:
     cv::VideoWriter writer_;
     cv::Size frameSize_;
     std::string outputPath_;
+    int64_t submittedFrames_ = 0;
     int64_t writtenFrames_ = 0;
 };
 
@@ -3891,7 +3942,8 @@ public:
         const IndoorPlaneAnalysis& indoorPlaneAnalysis,
         int anchorCount,
         int anchorPointsOnCandidates,
-        const ColorContourCompletionStats& completionStats)
+        const ColorContourCompletionStats& completionStats,
+        const FrameTimingStats& timingStats)
     {
         if (!config_.enabled)
         {
@@ -3967,7 +4019,24 @@ public:
             << anchorPointsOnCandidates << ','
             << completionStats.inputContours << ','
             << completionStats.adoptedContours << ','
-            << completionStats.rejectedContours << '\n';
+            << completionStats.rejectedContours << ','
+            << std::setprecision(3)
+            << timingStats.depthPostMs << ','
+            << timingStats.frameConvertMs << ','
+            << timingStats.grayPrepareMs << ','
+            << timingStats.anchorMs << ','
+            << timingStats.boundaryMs << ','
+            << timingStats.extractMs << ','
+            << timingStats.pclMs << ','
+            << timingStats.calibrateMs << ','
+            << timingStats.cueMs << ','
+            << timingStats.trackerMs << ','
+            << timingStats.supportMs << ','
+            << timingStats.renderMs << ','
+            << timingStats.completionMs << ','
+            << timingStats.diagnosticsMs << ','
+            << timingStats.displayMs << ','
+            << timingStats.recordMs << '\n';
 
         previousStableById_.clear();
         for (const ObservationMaterial& material : stableMaterials)
@@ -4016,7 +4085,10 @@ private:
             << "indoor_plane_px,indoor_wall_px,indoor_ceiling_px,indoor_support_px,"
             << "indoor_plane_components,indoor_plane_cached,"
             << "anchor_count,anchor_points_on_candidates,"
-            << "color_completion_input,color_completion_adopted,color_completion_rejected\n";
+            << "color_completion_input,color_completion_adopted,color_completion_rejected,"
+            << "depth_post_ms,frame_convert_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
+            << "extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
+            << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
 
@@ -5928,9 +6000,13 @@ void printUsage()
         << "  --record-video=recordings\\d455_record.avi\n"
         << "  --no-record-video\n"
         << "  --record-fps=30\n"
+        << "  --record-every-n=1\n"
+        << "  --record-scale-percent=100\n"
         << "  --acceptance-baseline\n"
+        << "  --acceptance-no-record\n"
         << "  --acceptance-label=acceptance_baseline\n"
         << "  --acceptance-csv=recordings\\acceptance_baseline.csv\n"
+        << "  --no-display\n"
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
         << "  --max-depth-mm=3500\n"
@@ -6022,6 +6098,7 @@ int main(int argc, char** argv)
 {
     const SegmentationConfig config = parseConfig(argc, argv);
     const int maxFrames = std::max(0, parseIntOptionOrDefault(argc, argv, "--max-frames=", 0));
+    const bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_WARNING);
     printUsage();
     if (hasFlag(argc, argv, "--help") || hasFlag(argc, argv, "-h"))
@@ -6117,18 +6194,49 @@ int main(int argc, char** argv)
         DepthPostProcessor depthPostProcessor;
         RgbDepthAccuracyConfig stableDisplayConfig = parseRgbDepthAccuracyConfig(argc, argv);
         stableDisplayConfig.stableContourVideo = true;
-
-        cv::namedWindow(kRawWindow, cv::WINDOW_AUTOSIZE);
-        cv::namedWindow(kSegmentedWindow, cv::WINDOW_AUTOSIZE);
-        cv::namedWindow(kMosaicWindow, cv::WINDOW_AUTOSIZE);
-        cv::namedWindow(kOutsideMosaicWindow, cv::WINDOW_AUTOSIZE);
-        if (config.boundaryDiagnostics)
+        VideoRecordingConfig recordingConfig = parseVideoRecordingConfig(argc, argv, true);
+        AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
+        if (acceptanceConfig.enabled)
         {
-            cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
+            if (acceptanceConfig.recordVideo && recordingConfig.enabled)
+            {
+                if (recordingConfig.outputPath.empty())
+                {
+                    recordingConfig.outputPath = defaultAcceptanceRecordingPath(acceptanceConfig.label);
+                }
+                if (acceptanceConfig.csvPath.empty())
+                {
+                    acceptanceConfig.csvPath = companionCsvPathForVideo(recordingConfig.outputPath);
+                }
+                std::cout << "Acceptance baseline enabled: video=" << recordingConfig.outputPath
+                    << " csv=" << acceptanceConfig.csvPath << '\n';
+            }
+            else
+            {
+                recordingConfig.enabled = false;
+                if (acceptanceConfig.csvPath.empty())
+                {
+                    acceptanceConfig.csvPath = defaultAcceptanceMetricsPath(acceptanceConfig.label);
+                }
+                std::cout << "Acceptance baseline enabled: video=disabled"
+                    << " csv=" << acceptanceConfig.csvPath << '\n';
+            }
         }
-        if (config.indoorPlaneDiagnostics)
+
+        if (displayEnabled)
         {
-            cv::namedWindow(kIndoorPlaneWindow, cv::WINDOW_AUTOSIZE);
+            cv::namedWindow(kRawWindow, cv::WINDOW_AUTOSIZE);
+            cv::namedWindow(kSegmentedWindow, cv::WINDOW_AUTOSIZE);
+            cv::namedWindow(kMosaicWindow, cv::WINDOW_AUTOSIZE);
+            cv::namedWindow(kOutsideMosaicWindow, cv::WINDOW_AUTOSIZE);
+            if (config.boundaryDiagnostics)
+            {
+                cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
+            }
+            if (config.indoorPlaneDiagnostics)
+            {
+                cv::namedWindow(kIndoorPlaneWindow, cv::WINDOW_AUTOSIZE);
+            }
         }
 
         SegmentationTracker tracker;
@@ -6136,22 +6244,7 @@ int main(int argc, char** argv)
         std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
         IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
         bool hasIndoorPlaneCache = false;
-        VideoRecordingConfig recordingConfig = parseVideoRecordingConfig(argc, argv, true);
-        AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
-        if (acceptanceConfig.enabled)
-        {
-            if (recordingConfig.outputPath.empty())
-            {
-                recordingConfig.outputPath = defaultAcceptanceRecordingPath(acceptanceConfig.label);
-            }
-            recordingConfig.enabled = true;
-            if (acceptanceConfig.csvPath.empty())
-            {
-                acceptanceConfig.csvPath = companionCsvPathForVideo(recordingConfig.outputPath);
-            }
-            std::cout << "Acceptance baseline enabled: video=" << recordingConfig.outputPath
-                << " csv=" << acceptanceConfig.csvPath << '\n';
-        }
+        const bool needsViews = displayEnabled || recordingConfig.enabled;
 
         VideoRecorder videoRecorder(recordingConfig);
         AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig);
@@ -6169,7 +6262,18 @@ int main(int argc, char** argv)
             }
 
             const auto frameStart = std::chrono::steady_clock::now();
+            FrameTimingStats timingStats;
+            auto sectionStart = frameStart;
+            auto takeSectionMs = [&sectionStart]()
+            {
+                const auto sectionEnd = std::chrono::steady_clock::now();
+                const double elapsedMs =
+                    std::chrono::duration<double, std::milli>(sectionEnd - sectionStart).count();
+                sectionStart = sectionEnd;
+                return elapsedMs;
+            };
             const rs2::depth_frame filteredDepth = depthPostProcessor.process(depthFrame);
+            timingStats.depthPostMs = takeSectionMs();
             cv::Mat colorBgr = colorFrameToBgr(colorFrame);
             cv::Mat rawDepth16 = depthFrameToMat(depthFrame);
             cv::Mat depth16 = depthFrameToMat(filteredDepth);
@@ -6182,6 +6286,7 @@ int main(int argc, char** argv)
             {
                 cv::resize(depth16, depth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
             }
+            timingStats.frameConvertMs = takeSectionMs();
 
             cv::Mat segmentationGray;
             bool edgeSourceIsInfrared = false;
@@ -6202,8 +6307,7 @@ int main(int argc, char** argv)
             {
                 cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
             }
-            cv::Mat segmentationBgr;
-            cv::cvtColor(segmentationGray, segmentationBgr, cv::COLOR_GRAY2BGR);
+            timingStats.grayPrepareMs = takeSectionMs();
 
             RgbDepthAnchorStats frameAnchorStats;
             const cv::Mat anchorMask = makeReliableDepthAnchorMask(
@@ -6213,11 +6317,13 @@ int main(int argc, char** argv)
                 config,
                 stableDisplayConfig,
                 frameAnchorStats);
+            timingStats.anchorMs = takeSectionMs();
 
             cv::Mat candidateAcceptedMask;
             BoundaryAnalysis boundaryAnalysis =
                 makeBoundaryAnalysis(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
             cv::Mat splitBoundaryMask = boundaryAnalysis.splitBoundaryMask;
+            timingStats.boundaryMs = takeSectionMs();
             std::vector<ObservationMaterial> candidateMaterials =
                 extractObservationMaterials(
                     depth16,
@@ -6227,6 +6333,7 @@ int main(int argc, char** argv)
                     colorIntrinsics,
                     frameId,
                     candidateAcceptedMask);
+            timingStats.extractMs = takeSectionMs();
             if (config.pclClustering)
             {
                 if (candidateMaterials.empty())
@@ -6250,6 +6357,7 @@ int main(int argc, char** argv)
                     material.sourceFrameId = frameId;
                 }
             }
+            timingStats.pclMs = takeSectionMs();
 
             int anchorPointsOnCandidates = 0;
             std::vector<ObservationMaterial> anchorSupportedCandidates =
@@ -6260,6 +6368,7 @@ int main(int argc, char** argv)
                     depthScale,
                     stableDisplayConfig.stableContourMinAnchors,
                     anchorPointsOnCandidates);
+            timingStats.calibrateMs = takeSectionMs();
 
             CueSelectionSummary cueSummary;
             std::vector<ObservationMaterial> cueSelectedCandidates =
@@ -6270,9 +6379,11 @@ int main(int argc, char** argv)
                     colorBgr.size(),
                     stableDisplayConfig.stableContourMinAnchors,
                     cueSummary);
+            timingStats.cueMs = takeSectionMs();
 
             std::vector<ObservationMaterial> stableMaterials =
                 tracker.update(cueSelectedCandidates, config, frameId);
+            timingStats.trackerMs = takeSectionMs();
 
             for (const ObservationMaterial& stableMaterial : stableMaterials)
             {
@@ -6290,21 +6401,8 @@ int main(int argc, char** argv)
                     support,
                     static_cast<int>(frameId + 1));
             }
+            timingStats.supportMs = takeSectionMs();
 
-            cv::Mat segmentedView = buildStableContourVisualization(
-                segmentationBgr,
-                anchorMask,
-                depth16,
-                depthScale,
-                cueSelectedCandidates,
-                stableMaterials,
-                stableTrackAggregates,
-                stableDisplayConfig,
-                static_cast<int>(frameId + 1));
-            if (config.cueSelection)
-            {
-                drawCueSelectionOverlay(segmentedView, cueSummary);
-            }
             cv::Mat stableMaskForFrame;
             if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled)
             {
@@ -6330,49 +6428,89 @@ int main(int argc, char** argv)
                 indoorPlaneAnalysis = cachedIndoorPlaneAnalysis;
                 indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
             }
+            timingStats.diagnosticsMs = takeSectionMs();
             ColorContourCompletionStats completionStats;
-            const std::vector<ObservationMaterial> displayStableMaterials =
-                buildDisplayStableMaterials(colorBgr, stableMaterials, config, completionStats);
-            cv::Mat mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials);
-            drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
-            cv::Mat outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMaterials);
+            cv::Mat segmentedView;
+            cv::Mat mosaicView;
+            cv::Mat outsideColorView;
             cv::Mat boundaryDiagnosticsView;
-            if (config.boundaryDiagnostics)
-            {
-                boundaryDiagnosticsView = buildBoundaryDiagnosticsView(segmentationBgr, boundaryAnalysis);
-            }
             cv::Mat indoorPlaneDiagnosticsView;
-            if (config.indoorPlaneDiagnostics)
+            if (needsViews)
             {
-                indoorPlaneDiagnosticsView =
-                    buildIndoorPlaneDiagnosticsView(colorBgr, indoorPlaneAnalysis, stableMaskForFrame);
+                cv::Mat segmentationBgr;
+                cv::cvtColor(segmentationGray, segmentationBgr, cv::COLOR_GRAY2BGR);
+                segmentedView = buildStableContourVisualization(
+                    segmentationBgr,
+                    anchorMask,
+                    depth16,
+                    depthScale,
+                    cueSelectedCandidates,
+                    stableMaterials,
+                    stableTrackAggregates,
+                    stableDisplayConfig,
+                    static_cast<int>(frameId + 1));
+                if (config.cueSelection)
+                {
+                    drawCueSelectionOverlay(segmentedView, cueSummary);
+                }
+                timingStats.renderMs = takeSectionMs();
+
+                const std::vector<ObservationMaterial> displayStableMaterials =
+                    buildDisplayStableMaterials(colorBgr, stableMaterials, config, completionStats);
+                timingStats.completionMs = takeSectionMs();
+
+                mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials);
+                drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
+                outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMaterials);
+                timingStats.renderMs += takeSectionMs();
+
+                if (config.boundaryDiagnostics)
+                {
+                    boundaryDiagnosticsView = buildBoundaryDiagnosticsView(segmentationBgr, boundaryAnalysis);
+                }
+                if (config.indoorPlaneDiagnostics)
+                {
+                    indoorPlaneDiagnosticsView =
+                        buildIndoorPlaneDiagnosticsView(colorBgr, indoorPlaneAnalysis, stableMaskForFrame);
+                }
+                timingStats.diagnosticsMs += takeSectionMs();
             }
             (void)frameAnchorStats;
             (void)anchorPointsOnCandidates;
 
-            cv::imshow(kRawWindow, colorBgr);
-            cv::imshow(kSegmentedWindow, segmentedView);
-            cv::imshow(kMosaicWindow, mosaicView);
-            cv::imshow(kOutsideMosaicWindow, outsideColorView);
-            if (config.boundaryDiagnostics)
+            int key = -1;
+            if (displayEnabled)
             {
-                cv::imshow(kBoundaryDiagnosticsWindow, boundaryDiagnosticsView);
+                cv::imshow(kRawWindow, colorBgr);
+                cv::imshow(kSegmentedWindow, segmentedView);
+                cv::imshow(kMosaicWindow, mosaicView);
+                cv::imshow(kOutsideMosaicWindow, outsideColorView);
+                if (config.boundaryDiagnostics)
+                {
+                    cv::imshow(kBoundaryDiagnosticsWindow, boundaryDiagnosticsView);
+                }
+                if (config.indoorPlaneDiagnostics)
+                {
+                    cv::imshow(kIndoorPlaneWindow, indoorPlaneDiagnosticsView);
+                }
+                key = cv::waitKey(1);
             }
-            if (config.indoorPlaneDiagnostics)
-            {
-                cv::imshow(kIndoorPlaneWindow, indoorPlaneDiagnosticsView);
-            }
+            timingStats.displayMs = takeSectionMs();
 
-            std::vector<cv::Mat> recordingViews{colorBgr, segmentedView, mosaicView, outsideColorView};
-            if (config.boundaryDiagnostics)
+            if (recordingConfig.enabled)
             {
-                recordingViews.push_back(boundaryDiagnosticsView);
+                std::vector<cv::Mat> recordingViews{colorBgr, segmentedView, mosaicView, outsideColorView};
+                if (config.boundaryDiagnostics)
+                {
+                    recordingViews.push_back(boundaryDiagnosticsView);
+                }
+                if (config.indoorPlaneDiagnostics)
+                {
+                    recordingViews.push_back(indoorPlaneDiagnosticsView);
+                }
+                videoRecorder.write(buildRecordingFrame(recordingViews));
             }
-            if (config.indoorPlaneDiagnostics)
-            {
-                recordingViews.push_back(indoorPlaneDiagnosticsView);
-            }
-            videoRecorder.write(buildRecordingFrame(recordingViews));
+            timingStats.recordMs = takeSectionMs();
 
             const auto frameEnd = std::chrono::steady_clock::now();
             const double frameMs =
@@ -6394,11 +6532,11 @@ int main(int argc, char** argv)
                     indoorPlaneAnalysis,
                     cv::countNonZero(anchorMask),
                     anchorPointsOnCandidates,
-                    completionStats);
+                    completionStats,
+                    timingStats);
             }
 
-            const int key = cv::waitKey(1);
-            if (key == 27 || key == 'q' || key == 'Q')
+            if (displayEnabled && (key == 27 || key == 'q' || key == 'Q'))
             {
                 break;
             }
