@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D455 稳定轮廓算法流程图与说明</title>
+  <style>
+    body { margin: 0; font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif; background: #f7f8fa; color: #1f2328; }
+    header { padding: 18px 24px 12px; border-bottom: 1px solid #d8dee4; background: #fff; }
+    h1 { margin: 0 0 8px; font-size: 22px; font-weight: 650; }
+    .hint { margin: 0; font-size: 13px; color: #57606a; line-height: 1.6; max-width: 1280px; }
+    main { padding: 20px; }
+    .canvas { min-width: 2100px; padding: 16px; border: 1px solid #d8dee4; background: #fff; overflow: auto; }
+    .mermaid { min-width: 2060px; }
+    .notes { margin-top: 18px; padding: 16px; border: 1px solid #d8dee4; background: #fff; max-width: 1180px; line-height: 1.65; font-size: 14px; }
+    .notes h2 { margin: 0 0 8px; font-size: 18px; }
+    .notes h3 { margin: 16px 0 6px; font-size: 15px; }
+    .notes ul { margin-top: 6px; padding-left: 22px; }
+    code { background: #f0f3f6; padding: 1px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>D455 稳定轮廓算法流程图与说明</h1>
+    <p class="hint">依据 D:\D455\README.md 与 D:\D455\D455.cpp 生成。当前算法目标是稳定轮廓材料，不是端到端语义分割或世界真值确认。</p>
+  </header>
+  <main>
+    <section class="canvas">
+      <pre class="mermaid">
+flowchart TD
+    A["启动 D455.exe"] --> B["解析参数 SegmentationConfig / 录制 / 验收 / 测试模式"]
+    B --> C["查询 RealSense 设备"]
+    C --> D{"是否只探测或无设备"}
+    D -- "probe-only" --> D1["返回设备探测结果"]
+    D -- "无设备" --> D2["报错退出"]
+    D -- "设备可用" --> E["启动 Color / Depth / Left Infrared 640x480@30"]
+
+    E --> F{"是否进入专项测试模式"}
+    F -- "depth-stability" --> F1["深度稳定性采样评估"]
+    F -- "anchor-only" --> F2["可靠深度锚点采样评估"]
+    F -- "stable-contour-test/video" --> F3["稳定轮廓测试或视频模式"]
+    F -- "rgb-depth-accuracy" --> F4["RGB 单目深度对照测试"]
+    F -- "主窗口模式" --> G["初始化 align-to-color / DepthPostProcessor / Tracker / Recorder / CSV"]
+
+    G --> H["等待 frameset 并对齐到 Color"]
+    H --> I["读取 Color / Depth / Left Infrared"]
+    I --> J["深度后处理: Depth to Disparity / Spatial / Temporal / Disparity to Depth / Hole Filling"]
+    J --> K["转换 Mat: colorBgr / rawDepth16 / filteredDepth16 / segmentationGray"]
+    K --> L["选择边缘灰度源: 优先左红外; 缺失时退回彩色灰度"]
+
+    L --> M["生成可靠稳定锚点 anchorMask"]
+    M --> M1["原始深度与滤波深度一致性"]
+    M --> M2["局部邻域深度范围稳定"]
+    M --> M3["排除边缘膨胀区"]
+    M1 --> N["稳定锚点结果"]
+    M2 --> N
+    M3 --> N
+
+    N --> O["边界分析 makeBoundaryAnalysis"]
+    O --> O1["有效深度 mask 与深度突变边"]
+    O --> O2["深度空洞边诊断"]
+    O --> O3["红外灰度 Canny 边"]
+    O --> O4["深度支持灰度边"]
+    O --> O5["局部深度跨度确认的灰度轮廓边"]
+    O1 --> P["生成 splitBoundaryMask"]
+    O2 --> P
+    O3 --> P
+    O4 --> P
+    O5 --> P
+
+    P --> Q["候选材料提取 extractObservationMaterials"]
+    Q --> Q1["按深度切片构造 mask"]
+    Q1 --> Q2["扣除 splitBoundaryMask"]
+    Q2 --> Q3["形态学清理与连通域"]
+    Q3 --> Q4["面积 / ROI / 边界大块过滤"]
+    Q4 --> Q5["ROI 内局部 mask 统计深度和点云边界"]
+    Q5 --> Q6["findContours 提取精细轮廓"]
+    Q6 --> Q7["按面积排序并限制 maxMaterials"]
+
+    Q7 --> R{"PCL 聚类是否启用"}
+    R -- "启用" --> R1["候选内有效深度点反投影为点云"]
+    R1 --> R2["PCL EuclideanClusterExtraction"]
+    R2 --> R3["按 frameInterval 缓存 cluster 结果"]
+    R3 --> S["带 3D cluster 的候选材料"]
+    R -- "关闭" --> S0["保留 OpenCV 候选材料"]
+    S0 --> S
+
+    S --> T["稳定锚点校准候选"]
+    T --> T1["统计轮廓内 anchor 数量"]
+    T1 --> T2{"anchor 数是否达到 stable-contour-min-anchors"}
+    T2 -- "不足" --> T3["丢弃或不进入稳定候选"]
+    T2 -- "足够" --> T4["用 anchor 校准中心和深度"]
+
+    T4 --> U["Cue Selection 择机"]
+    U --> U1["深度边可信"]
+    U --> U2["深度确认的灰度边可信"]
+    U --> U3["强稳定锚点可信"]
+    U --> U4["纹理单独主导且深度/锚点弱则拒绝"]
+    U1 --> V["进入历史 Tracker"]
+    U2 --> V
+    U3 --> V
+    U4 --> V
+
+    V --> W["SegmentationTracker::update"]
+    W --> W1["按 ROI 重叠 / 中心距离 / 深度差 / 面积比例匹配"]
+    W1 --> W2["连续 confirm 帧后显示为稳定材料"]
+    W2 --> W3["短时 miss 由历史保持"]
+    W3 --> W4["平滑中心 / ROI / 深度 / 面积"]
+    W4 --> X["stableMaterials"]
+
+    X --> Y["稳定支持统计与 track aggregate"]
+    X --> Z{"是否启用室内平面诊断"}
+    Z -- "启用" --> Z1["降采样法线与大平面 mask"]
+    Z1 --> Z2["扣除稳定前景"]
+    Z2 --> Z3["输出 wall / ceiling / support 诊断"]
+    Z -- "关闭" --> AA["跳过平面诊断"]
+
+    Y --> AB{"是否需要显示或录制"}
+    Z3 --> AB
+    AA --> AB
+    AB -- "否" --> AC["只写验收 CSV 或继续下一帧"]
+    AB -- "是" --> AD["构建第二窗口稳定轮廓信息图"]
+    AD --> AE["buildDisplayStableMaterials"]
+    AE --> AE1{"RGB 严格补边是否启用"}
+    AE1 -- "启用" --> AE2["仅在稳定轮廓邻域内找彩图补齐候选"]
+    AE2 --> AE3["检查 IoU / 面积变化 / 中心偏移 / 其他轮廓隔离"]
+    AE3 --> AE4{"补齐是否可信"}
+    AE4 -- "可信" --> AE5["采用彩图补齐轮廓用于显示裁剪"]
+    AE4 -- "不可信" --> AE6["保留原稳定轮廓"]
+    AE1 -- "关闭" --> AE6
+    AE5 --> AF["第三窗口: 稳定轮廓内彩图"]
+    AE6 --> AF
+    AF --> AG["第四窗口: 黑区对应原始彩图"]
+    AG --> AH["可选第五窗口边界诊断 / 第六窗口平面诊断"]
+    AH --> AI["imshow / VideoRecorder / AcceptanceMetricsWriter"]
+    AC --> AJ["frameId++ / 检查 maxFrames 或 q/Esc"]
+    AI --> AJ
+    AJ --> H
+
+    X -. "只表示外设观察材料或稳定候选轮廓" .-> BND1["边界: 不直接等于世界真值"]
+    AE -. "RGB 只做最后裁剪补边" .-> BND2["边界: 不参与主分割决策"]
+    Z3 -. "平面目前是诊断路径" .-> BND3["边界: 默认不覆盖前景稳定轮廓"]
+      </pre>
+    </section>
+    <section class="notes">
+      <h2>算法说明</h2>
+      <p>本项目当前算法目标是生成 D455 外设观察材料中的稳定轮廓。主链路以深度和左红外灰度图为分割基础，用稳定深度锚点和历史轨迹确认轮廓稳定性；RGB 彩色流只用于原图显示和最终稳定轮廓彩图裁剪。</p>
+      <h3>核心阶段</h3>
+      <ul>
+        <li>采集与对齐：打开 Color、Depth、Left Infrared 三路流，并将 depth 对齐到 color 坐标系。</li>
+        <li>深度后处理：执行 Depth to Disparity、Spatial、Temporal、Disparity to Depth、Hole Filling，同时保留 raw depth 与 filtered depth。</li>
+        <li>稳定锚点：通过 raw/filtered 一致性、局部深度稳定性和边缘排除筛出可靠稀疏点。</li>
+        <li>边界分析：融合深度突变边、深度空洞边、红外灰度边、深度支持灰度边和深度确认灰度轮廓边。</li>
+        <li>候选提取：按深度切片、扣除切分边界、形态学清理、连通域过滤，再在 ROI 内提取精细轮廓和深度统计。</li>
+        <li>PCL 辅助：把候选内有效深度点反投影为三维点云，用欧式聚类阻止二维近邻误合并。</li>
+        <li>稳定确认：锚点校准、cue selection、历史 tracker 连续确认和短时 miss 保持。</li>
+        <li>显示裁剪：RGB 严格补边只在稳定轮廓邻域内执行，通过 IoU、面积、中心偏移和隔离带检查后才用于第三/第四窗口。</li>
+      </ul>
+      <h3>关键边界</h3>
+      <ul>
+        <li>稳定轮廓输出是外设观察材料或稳定候选轮廓，不是世界真值。</li>
+        <li>RGB 彩色图不参与当前主分割，只用于最后裁剪和显示补边。</li>
+        <li>未知背景保持黑色，不强行归入任何前景轮廓。</li>
+        <li>室内平面分析当前是诊断路径，默认不覆盖前景稳定轮廓。</li>
+      </ul>
+      <h3>最近性能口径</h3>
+      <p>本地 CPU 纯算法 600 帧验收中，ROI 局部扫描优化后平均耗时约 29.810ms 到 34.479ms，对应约 29.00 FPS 到 33.55 FPS。开启彩图补边和录制后，主要耗时转移到 <code>completion_ms</code> 与 <code>record_ms</code>。</p>
+    </section>
+  </main>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      flowchart: { useMaxWidth: false, htmlLabels: true, curve: "basis" },
+      theme: "base",
+      themeVariables: {
+        fontFamily: "Microsoft YaHei, Segoe UI, Arial, sans-serif",
+        lineColor: "#6a737d",
+        primaryColor: "#f6f8fa",
+        primaryBorderColor: "#8c959f",
+        primaryTextColor: "#1f2328",
+        secondaryColor: "#ddf4ff",
+        tertiaryColor: "#fff8c5"
+      }
+    });
+  </script>
+</body>
+</html>
