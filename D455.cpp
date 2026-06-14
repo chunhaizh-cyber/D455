@@ -1032,6 +1032,93 @@ bool shouldRejectBorderComponent(
     return touchedBorders > 0 && area > maxBorderAreaPixels;
 }
 
+struct LocalComponentMeasurement
+{
+    bool validDepth = false;
+    int meanDepthMm = 0;
+    int observedDepthMinMm = 0;
+    int observedDepthMaxMm = 0;
+    bool hasPointCloudBounds = false;
+    cv::Point3f minPointMeters;
+    cv::Point3f maxPointMeters;
+};
+
+LocalComponentMeasurement measureLocalComponent(
+    const cv::Mat& localMask,
+    const cv::Rect& roi,
+    const cv::Mat& depth16,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    int pixelCount)
+{
+    LocalComponentMeasurement measurement;
+    if (pixelCount <= 0)
+    {
+        return measurement;
+    }
+
+    int64_t depthSumUnits = 0;
+    uint16_t minDepthUnits = std::numeric_limits<uint16_t>::max();
+    uint16_t maxDepthUnits = 0;
+    cv::Point3f minPoint(
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    cv::Point3f maxPoint(
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
+
+    int pointCount = 0;
+    const bool canDeproject = intrinsics.fx > 0.0f && intrinsics.fy > 0.0f;
+    for (int localY = 0; localY < localMask.rows; ++localY)
+    {
+        const uchar* maskRow = localMask.ptr<uchar>(localY);
+        const int y = roi.y + localY;
+        const uint16_t* depthRow = depth16.ptr<uint16_t>(y);
+        for (int localX = 0; localX < localMask.cols; ++localX)
+        {
+            if (maskRow[localX] == 0)
+            {
+                continue;
+            }
+
+            const int x = roi.x + localX;
+            const uint16_t depthUnits = depthRow[x];
+            depthSumUnits += depthUnits;
+            minDepthUnits = std::min(minDepthUnits, depthUnits);
+            maxDepthUnits = std::max(maxDepthUnits, depthUnits);
+
+            if (depthUnits == 0 || !canDeproject)
+            {
+                continue;
+            }
+
+            const cv::Point3f point = deprojectPixelMeters(x, y, depthUnits, depthScale, intrinsics);
+            minPoint.x = std::min(minPoint.x, point.x);
+            minPoint.y = std::min(minPoint.y, point.y);
+            minPoint.z = std::min(minPoint.z, point.z);
+            maxPoint.x = std::max(maxPoint.x, point.x);
+            maxPoint.y = std::max(maxPoint.y, point.y);
+            maxPoint.z = std::max(maxPoint.z, point.z);
+            ++pointCount;
+        }
+    }
+
+    measurement.validDepth = maxDepthUnits > 0;
+    measurement.meanDepthMm =
+        static_cast<int>((depthSumUnits / static_cast<double>(pixelCount)) * depthScale * 1000.0f + 0.5f);
+    measurement.observedDepthMinMm = static_cast<int>(minDepthUnits * depthScale * 1000.0f + 0.5f);
+    measurement.observedDepthMaxMm = static_cast<int>(maxDepthUnits * depthScale * 1000.0f + 0.5f);
+    if (pointCount > 0)
+    {
+        measurement.hasPointCloudBounds = true;
+        measurement.minPointMeters = minPoint;
+        measurement.maxPointMeters = maxPoint;
+    }
+    return measurement;
+}
+
 void appendObservationMaterialsFromMask(
     const cv::Mat& mask,
     const cv::Mat& depth16,
@@ -1072,9 +1159,15 @@ void appendObservationMaterialsFromMask(
             stats.at<int>(label, cv::CC_STAT_WIDTH),
             stats.at<int>(label, cv::CC_STAT_HEIGHT));
 
-        cv::Mat componentMask;
-        cv::compare(labels, label, componentMask, cv::CMP_EQ);
-        const ComponentDepthSummary depthSummary = summarizeComponentDepth(componentMask, depth16, depthScale);
+        cv::Mat localMask;
+        cv::compare(labels(roi), label, localMask, cv::CMP_EQ);
+        const LocalComponentMeasurement measurement =
+            measureLocalComponent(localMask, roi, depth16, depthScale, intrinsics, area);
+        const ComponentDepthSummary depthSummary{
+            measurement.validDepth,
+            measurement.observedDepthMinMm,
+            measurement.observedDepthMaxMm,
+            measurement.meanDepthMm};
         const bool isNearForeground = isNearForegroundComponent(depthSummary, config);
 
         if (area > maxAreaPixels && (!isNearForeground || area > foregroundMaxAreaPixels))
@@ -1091,7 +1184,7 @@ void appendObservationMaterialsFromMask(
         }
 
         std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(componentMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+        cv::findContours(localMask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
         if (contours.empty())
         {
             continue;
@@ -1125,6 +1218,11 @@ void appendObservationMaterialsFromMask(
         {
             preciseContour = *largestContourIt;
         }
+        for (cv::Point& point : preciseContour)
+        {
+            point.x += roi.x;
+            point.y += roi.y;
+        }
 
         ObservationMaterial material;
         material.sourceFrameId = sourceFrameId;
@@ -1140,7 +1238,9 @@ void appendObservationMaterialsFromMask(
         material.observedDepthMinMm = depthSummary.observedDepthMinMm;
         material.observedDepthMaxMm = depthSummary.observedDepthMaxMm;
         material.contourArea = contourArea;
-        fillPointCloudBounds(material, componentMask, depth16, depthScale, intrinsics);
+        material.hasPointCloudBounds = measurement.hasPointCloudBounds;
+        material.minPointMeters = measurement.minPointMeters;
+        material.maxPointMeters = measurement.maxPointMeters;
         material.contour = std::move(preciseContour);
 
         materials.push_back(std::move(material));
@@ -1154,7 +1254,7 @@ std::vector<ObservationMaterial> extractObservationMaterials(
     float depthScale,
     const rs2_intrinsics& intrinsics,
     uint64_t sourceFrameId,
-    cv::Mat& acceptedMask)
+    cv::Mat* acceptedMask)
 {
     std::vector<ObservationMaterial> materials;
     uint64_t nextObservationId = 1;
@@ -1202,11 +1302,14 @@ std::vector<ObservationMaterial> extractObservationMaterials(
         materials.resize(static_cast<size_t>(config.maxMaterials));
     }
 
-    acceptedMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
-    for (const ObservationMaterial& material : materials)
+    if (acceptedMask != nullptr)
     {
-        const std::vector<std::vector<cv::Point>> contours{material.contour};
-        cv::drawContours(acceptedMask, contours, -1, cv::Scalar(255), cv::FILLED);
+        *acceptedMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+        for (const ObservationMaterial& material : materials)
+        {
+            const std::vector<std::vector<cv::Point>> contours{material.contour};
+            cv::drawContours(*acceptedMask, contours, -1, cv::Scalar(255), cv::FILLED);
+        }
     }
 
     return materials;
@@ -5362,7 +5465,6 @@ int runStableContourTest(
             frameAnchorStats);
         aggregateAnchorStats.merge(frameAnchorStats);
 
-        cv::Mat candidateAcceptedMask;
         const cv::Mat splitBoundaryMask =
             makeSplitBoundaryMask(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
         std::vector<ObservationMaterial> candidateMaterials =
@@ -5373,7 +5475,7 @@ int runStableContourTest(
                 depthScale,
                 colorIntrinsics,
                 frameId,
-                candidateAcceptedMask);
+                nullptr);
 
         if (config.pclClustering)
         {
@@ -6319,7 +6421,6 @@ int main(int argc, char** argv)
                 frameAnchorStats);
             timingStats.anchorMs = takeSectionMs();
 
-            cv::Mat candidateAcceptedMask;
             BoundaryAnalysis boundaryAnalysis =
                 makeBoundaryAnalysis(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
             cv::Mat splitBoundaryMask = boundaryAnalysis.splitBoundaryMask;
@@ -6332,7 +6433,7 @@ int main(int argc, char** argv)
                     depthScale,
                     colorIntrinsics,
                     frameId,
-                    candidateAcceptedMask);
+                    nullptr);
             timingStats.extractMs = takeSectionMs();
             if (config.pclClustering)
             {
