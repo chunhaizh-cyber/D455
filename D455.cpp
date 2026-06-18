@@ -239,6 +239,7 @@ struct FrameTimingStats
 {
     double depthPostMs = 0.0;
     double frameConvertMs = 0.0;
+    double motionMs = 0.0;
     double grayPrepareMs = 0.0;
     double anchorMs = 0.0;
     double boundaryMs = 0.0;
@@ -272,6 +273,26 @@ struct PoseState
     double yawDeg = 0.0;
     cv::Vec3d accelMps2{0.0, 0.0, 0.0};
     cv::Vec3d gyroRadPerSec{0.0, 0.0, 0.0};
+};
+
+struct MotionState
+{
+    bool enabled = false;
+    bool visualValid = false;
+    bool imuAccelValid = false;
+    bool imuGyroValid = false;
+    uint64_t visualFrames = 0;
+    int level = 0;
+    double score = 0.0;
+    double visualShiftXPixels = 0.0;
+    double visualShiftYPixels = 0.0;
+    double visualShiftPixels = 0.0;
+    double visualResponse = 0.0;
+    double visualShiftSmoothPixels = 0.0;
+    double gyroRadPerSec = 0.0;
+    double gyroSmoothRadPerSec = 0.0;
+    double accelDeltaMps2 = 0.0;
+    double accelDeltaSmoothMps2 = 0.0;
 };
 
 struct RgbDepthAccuracyConfig
@@ -318,6 +339,7 @@ struct PoseReadConfig
 {
     bool enabled = false;
     bool overlay = true;
+    bool gravityLine = true;
     bool logConsole = false;
     int logEveryFrames = 30;
     int smoothPercent = 20;
@@ -334,6 +356,23 @@ struct ImuGravityCheckConfig
     int maxAccelStdMilliMps2 = 250;
     int maxGyroMilliRadps = 50;
     std::string csvPath;
+};
+
+struct MotionDiagnosticsConfig
+{
+    bool enabled = false;
+    bool overlay = true;
+    bool logConsole = false;
+    int logEveryFrames = 30;
+    int smoothPercent = 35;
+    int visualDownscaleWidthPixels = 160;
+    int visualMinResponsePercent = 12;
+    int visualMoveMilliPixels = 2000;
+    int visualShakeMilliPixels = 8000;
+    int gyroMoveMilliRadps = 80;
+    int gyroShakeMilliRadps = 250;
+    int accelDeltaMoveMilliMps2 = 450;
+    int accelDeltaShakeMilliMps2 = 1400;
 };
 
 struct InverseDepthCalibration
@@ -722,6 +761,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
             arg == "--no-pose-read" ||
             arg == "--pose-overlay" ||
             arg == "--no-pose-overlay" ||
+            arg == "--gravity-line" ||
+            arg == "--no-gravity-line" ||
             arg == "--pose-log" ||
             arg.rfind("--pose-log-every-n=", 0) == 0 ||
             arg.rfind("--pose-smooth-percent=", 0) == 0)
@@ -737,6 +778,24 @@ SegmentationConfig parseConfig(int argc, char** argv)
             arg.rfind("--imu-gravity-max-accel-std-milli-mps2=", 0) == 0 ||
             arg.rfind("--imu-gravity-max-gyro-milliradps=", 0) == 0 ||
             arg.rfind("--imu-gravity-csv=", 0) == 0)
+        {
+            continue;
+        }
+        if (arg == "--motion-diagnostics" ||
+            arg == "--no-motion-diagnostics" ||
+            arg == "--motion-overlay" ||
+            arg == "--no-motion-overlay" ||
+            arg == "--motion-log" ||
+            arg.rfind("--motion-log-every-n=", 0) == 0 ||
+            arg.rfind("--motion-smooth-percent=", 0) == 0 ||
+            arg.rfind("--motion-visual-downscale-width-px=", 0) == 0 ||
+            arg.rfind("--motion-visual-min-response-percent=", 0) == 0 ||
+            arg.rfind("--motion-visual-move-millipx=", 0) == 0 ||
+            arg.rfind("--motion-visual-shake-millipx=", 0) == 0 ||
+            arg.rfind("--motion-gyro-move-milliradps=", 0) == 0 ||
+            arg.rfind("--motion-gyro-shake-milliradps=", 0) == 0 ||
+            arg.rfind("--motion-accel-delta-move-milli-mps2=", 0) == 0 ||
+            arg.rfind("--motion-accel-delta-shake-milli-mps2=", 0) == 0)
         {
             continue;
         }
@@ -1022,6 +1081,16 @@ PoseReadConfig parsePoseReadConfig(int argc, char** argv)
             config.overlay = false;
             continue;
         }
+        if (arg == "--gravity-line")
+        {
+            config.gravityLine = true;
+            continue;
+        }
+        if (arg == "--no-gravity-line")
+        {
+            config.gravityLine = false;
+            continue;
+        }
         if (arg == "--pose-log")
         {
             config.logConsole = true;
@@ -1064,6 +1133,65 @@ ImuGravityCheckConfig parseImuGravityCheckConfig(int argc, char** argv)
     config.gravityNormTolerancePercent = std::clamp(config.gravityNormTolerancePercent, 1, 50);
     config.maxAccelStdMilliMps2 = std::clamp(config.maxAccelStdMilliMps2, 1, 5000);
     config.maxGyroMilliRadps = std::clamp(config.maxGyroMilliRadps, 1, 1000);
+    return config;
+}
+
+MotionDiagnosticsConfig parseMotionDiagnosticsConfig(int argc, char** argv)
+{
+    MotionDiagnosticsConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--motion-diagnostics")
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (arg == "--no-motion-diagnostics")
+        {
+            config.enabled = false;
+            continue;
+        }
+        if (arg == "--motion-overlay")
+        {
+            config.overlay = true;
+            continue;
+        }
+        if (arg == "--no-motion-overlay")
+        {
+            config.overlay = false;
+            continue;
+        }
+        if (arg == "--motion-log")
+        {
+            config.logConsole = true;
+            continue;
+        }
+        parseIntOption(arg, "--motion-log-every-n=", config.logEveryFrames);
+        parseIntOption(arg, "--motion-smooth-percent=", config.smoothPercent);
+        parseIntOption(arg, "--motion-visual-downscale-width-px=", config.visualDownscaleWidthPixels);
+        parseIntOption(arg, "--motion-visual-min-response-percent=", config.visualMinResponsePercent);
+        parseIntOption(arg, "--motion-visual-move-millipx=", config.visualMoveMilliPixels);
+        parseIntOption(arg, "--motion-visual-shake-millipx=", config.visualShakeMilliPixels);
+        parseIntOption(arg, "--motion-gyro-move-milliradps=", config.gyroMoveMilliRadps);
+        parseIntOption(arg, "--motion-gyro-shake-milliradps=", config.gyroShakeMilliRadps);
+        parseIntOption(arg, "--motion-accel-delta-move-milli-mps2=", config.accelDeltaMoveMilliMps2);
+        parseIntOption(arg, "--motion-accel-delta-shake-milli-mps2=", config.accelDeltaShakeMilliMps2);
+    }
+
+    config.logEveryFrames = std::clamp(config.logEveryFrames, 1, 100000);
+    config.smoothPercent = std::clamp(config.smoothPercent, 1, 100);
+    config.visualDownscaleWidthPixels = std::clamp(config.visualDownscaleWidthPixels, 64, 640);
+    config.visualMinResponsePercent = std::clamp(config.visualMinResponsePercent, 0, 100);
+    config.visualMoveMilliPixels = std::clamp(config.visualMoveMilliPixels, 0, 100000);
+    config.visualShakeMilliPixels =
+        std::max(config.visualMoveMilliPixels, std::clamp(config.visualShakeMilliPixels, 1, 200000));
+    config.gyroMoveMilliRadps = std::clamp(config.gyroMoveMilliRadps, 0, 5000);
+    config.gyroShakeMilliRadps =
+        std::max(config.gyroMoveMilliRadps, std::clamp(config.gyroShakeMilliRadps, 1, 10000));
+    config.accelDeltaMoveMilliMps2 = std::clamp(config.accelDeltaMoveMilliMps2, 0, 20000);
+    config.accelDeltaShakeMilliMps2 =
+        std::max(config.accelDeltaMoveMilliMps2, std::clamp(config.accelDeltaShakeMilliMps2, 1, 50000));
     return config;
 }
 
@@ -1399,6 +1527,315 @@ void drawPoseOverlay(cv::Mat& view, const PoseState& state)
 
     drawOutlinedText(view, poseLine, cv::Point(12, 24), 0.46, cv::Scalar(80, 255, 255));
     drawOutlinedText(view, streamLine, cv::Point(12, 46), 0.42, cv::Scalar(255, 255, 255));
+}
+
+std::string dominantSignedAxisLabel(const cv::Vec3d& vector)
+{
+    static constexpr std::array<char, 3> axisNames{'X', 'Y', 'Z'};
+    int bestAxis = 0;
+    for (int axis = 1; axis < 3; ++axis)
+    {
+        if (std::abs(vector[axis]) > std::abs(vector[bestAxis]))
+        {
+            bestAxis = axis;
+        }
+    }
+
+    std::string label;
+    label += vector[bestAxis] >= 0.0 ? '+' : '-';
+    label += axisNames[bestAxis];
+    return label;
+}
+
+void drawGravityDirectionOverlay(cv::Mat& view, const PoseState& state)
+{
+    if (!state.enabled || !state.accelValid || view.empty())
+    {
+        return;
+    }
+
+    const double x = state.accelMps2[0];
+    const double y = state.accelMps2[1];
+    const double z = state.accelMps2[2];
+    const double norm = std::sqrt(x * x + y * y + z * z);
+    if (norm < 1e-6)
+    {
+        return;
+    }
+
+    // Image Y grows downward. Negating IMU Y makes a -Y-dominant gravity estimate point down on screen.
+    const double screenX = x;
+    const double screenY = -y;
+    const double planarNorm = std::sqrt(screenX * screenX + screenY * screenY);
+    const cv::Point center(view.cols / 2, view.rows / 2);
+    const int baseThickness = std::max(5, std::min(view.cols, view.rows) / 85);
+    const int shadowThickness = baseThickness + 5;
+    const double maxLength = std::min(view.cols, view.rows) * 0.36;
+    const double visibleRatio = std::clamp(planarNorm / norm, 0.18, 1.0);
+    const double arrowLength = maxLength * visibleRatio;
+
+    cv::Point tip = center;
+    if (planarNorm > 1e-6)
+    {
+        tip.x += static_cast<int>(std::round(screenX / planarNorm * arrowLength));
+        tip.y += static_cast<int>(std::round(screenY / planarNorm * arrowLength));
+    }
+
+    cv::arrowedLine(view, center, tip, cv::Scalar(0, 0, 0), shadowThickness, cv::LINE_AA, 0, 0.22);
+    cv::arrowedLine(view, center, tip, cv::Scalar(0, 255, 255), baseThickness, cv::LINE_AA, 0, 0.22);
+    cv::circle(view, center, baseThickness + 3, cv::Scalar(0, 0, 0), cv::FILLED, cv::LINE_AA);
+    cv::circle(view, center, baseThickness, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+
+    const std::string label =
+        "gravity " + dominantSignedAxisLabel(state.accelMps2) +
+        " |g|=" + fixedNumber(norm, 2) +
+        " z=" + fixedNumber(z, 2);
+    cv::Point labelOrigin(tip.x + 10, tip.y - 10);
+    const int margin = 8;
+    const int maxX = std::max(margin, view.cols - 230);
+    const int maxY = std::max(42, view.rows - margin);
+    labelOrigin.x = std::clamp(labelOrigin.x, margin, maxX);
+    labelOrigin.y = std::clamp(labelOrigin.y, 42, maxY);
+    drawOutlinedText(view, label, labelOrigin, 0.54, cv::Scalar(0, 255, 255));
+}
+
+double vec3Magnitude(const cv::Vec3d& value)
+{
+    return std::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+}
+
+double smoothScalar(double previous, double sample, double alpha, bool hadPrevious)
+{
+    return hadPrevious
+        ? previous * (1.0 - alpha) + sample * alpha
+        : sample;
+}
+
+const char* motionLevelLabel(int level)
+{
+    if (level >= 2)
+    {
+        return "shaking";
+    }
+    if (level == 1)
+    {
+        return "moving";
+    }
+    return "stable";
+}
+
+class MotionDiagnostics
+{
+public:
+    explicit MotionDiagnostics(const MotionDiagnosticsConfig& config)
+        : config_(config),
+          alpha_(std::clamp(config.smoothPercent, 1, 100) / 100.0)
+    {
+        state_.enabled = config.enabled;
+    }
+
+    void update(const cv::Mat& colorBgr, const PoseState& poseState)
+    {
+        state_.enabled = config_.enabled;
+        if (!config_.enabled)
+        {
+            return;
+        }
+
+        updateVisual(colorBgr);
+        updateImu(poseState);
+        updateLevel();
+    }
+
+    const MotionState& state() const
+    {
+        return state_;
+    }
+
+private:
+    void updateVisual(const cv::Mat& colorBgr)
+    {
+        if (colorBgr.empty())
+        {
+            state_.visualValid = false;
+            return;
+        }
+
+        cv::Mat gray8;
+        if (colorBgr.channels() == 1)
+        {
+            gray8 = colorBgr;
+        }
+        else
+        {
+            cv::cvtColor(colorBgr, gray8, cv::COLOR_BGR2GRAY);
+        }
+
+        const int width = std::min(config_.visualDownscaleWidthPixels, gray8.cols);
+        const int height = std::max(1, gray8.rows * width / std::max(1, gray8.cols));
+        cv::Mat small8;
+        cv::resize(gray8, small8, cv::Size(width, height), 0.0, 0.0, cv::INTER_AREA);
+
+        cv::Mat current32;
+        small8.convertTo(current32, CV_32F, 1.0 / 255.0);
+        if (previousVisual32_.empty() || previousVisual32_.size() != current32.size())
+        {
+            previousVisual32_ = current32;
+            hanningWindow_.release();
+            state_.visualValid = false;
+            return;
+        }
+        if (hanningWindow_.empty() || hanningWindow_.size() != current32.size())
+        {
+            cv::createHanningWindow(hanningWindow_, current32.size(), CV_32F);
+        }
+
+        double response = 0.0;
+        const cv::Point2d shift = cv::phaseCorrelate(previousVisual32_, current32, hanningWindow_, &response);
+        previousVisual32_ = current32;
+
+        state_.visualResponse = std::isfinite(response) ? response : 0.0;
+        const bool responseOk =
+            state_.visualResponse * 100.0 >= static_cast<double>(config_.visualMinResponsePercent);
+        if (!responseOk || !std::isfinite(shift.x) || !std::isfinite(shift.y))
+        {
+            state_.visualValid = false;
+            return;
+        }
+
+        const double scaleX = static_cast<double>(gray8.cols) / static_cast<double>(current32.cols);
+        const double scaleY = static_cast<double>(gray8.rows) / static_cast<double>(current32.rows);
+        state_.visualShiftXPixels = shift.x * scaleX;
+        state_.visualShiftYPixels = shift.y * scaleY;
+        state_.visualShiftPixels = std::sqrt(
+            state_.visualShiftXPixels * state_.visualShiftXPixels +
+            state_.visualShiftYPixels * state_.visualShiftYPixels);
+        state_.visualShiftSmoothPixels = smoothScalar(
+            state_.visualShiftSmoothPixels,
+            state_.visualShiftPixels,
+            alpha_,
+            state_.visualValid);
+        state_.visualValid = true;
+        ++state_.visualFrames;
+    }
+
+    void updateImu(const PoseState& poseState)
+    {
+        state_.imuGyroValid = poseState.enabled && poseState.gyroValid;
+        if (state_.imuGyroValid)
+        {
+            state_.gyroRadPerSec = vec3Magnitude(poseState.gyroRadPerSec);
+            state_.gyroSmoothRadPerSec = smoothScalar(
+                state_.gyroSmoothRadPerSec,
+                state_.gyroRadPerSec,
+                alpha_,
+                hadGyro_);
+            hadGyro_ = true;
+        }
+
+        state_.imuAccelValid = false;
+        if (poseState.enabled && poseState.accelValid)
+        {
+            if (hadAccel_)
+            {
+                const cv::Vec3d delta = poseState.accelMps2 - previousAccel_;
+                state_.accelDeltaMps2 = vec3Magnitude(delta);
+                state_.accelDeltaSmoothMps2 = smoothScalar(
+                    state_.accelDeltaSmoothMps2,
+                    state_.accelDeltaMps2,
+                    alpha_,
+                    hadAccelDelta_);
+                hadAccelDelta_ = true;
+                state_.imuAccelValid = true;
+            }
+            previousAccel_ = poseState.accelMps2;
+            hadAccel_ = true;
+        }
+    }
+
+    void updateLevel()
+    {
+        const double visualMove = config_.visualMoveMilliPixels / 1000.0;
+        const double visualShake = config_.visualShakeMilliPixels / 1000.0;
+        const double gyroMove = config_.gyroMoveMilliRadps / 1000.0;
+        const double gyroShake = config_.gyroShakeMilliRadps / 1000.0;
+        const double accelMove = config_.accelDeltaMoveMilliMps2 / 1000.0;
+        const double accelShake = config_.accelDeltaShakeMilliMps2 / 1000.0;
+
+        bool moving = false;
+        bool shaking = false;
+        double score = 0.0;
+        auto addSignal = [&moving, &shaking, &score](bool valid, double value, double moveThreshold, double shakeThreshold)
+        {
+            if (!valid || shakeThreshold <= 0.0)
+            {
+                return;
+            }
+            score = std::max(score, value / shakeThreshold);
+            if (value >= shakeThreshold)
+            {
+                shaking = true;
+            }
+            if (value >= moveThreshold)
+            {
+                moving = true;
+            }
+        };
+
+        addSignal(state_.visualValid, state_.visualShiftSmoothPixels, visualMove, visualShake);
+        addSignal(state_.imuGyroValid, state_.gyroSmoothRadPerSec, gyroMove, gyroShake);
+        addSignal(state_.imuAccelValid, state_.accelDeltaSmoothMps2, accelMove, accelShake);
+
+        state_.score = score;
+        state_.level = shaking ? 2 : (moving ? 1 : 0);
+    }
+
+    MotionDiagnosticsConfig config_;
+    double alpha_ = 0.35;
+    MotionState state_;
+    cv::Mat previousVisual32_;
+    cv::Mat hanningWindow_;
+    cv::Vec3d previousAccel_{0.0, 0.0, 0.0};
+    bool hadAccel_ = false;
+    bool hadAccelDelta_ = false;
+    bool hadGyro_ = false;
+};
+
+std::string motionStateSummary(uint64_t frameId, const MotionState& state)
+{
+    std::ostringstream stream;
+    const std::string visualSummary = state.visualValid
+        ? fixedNumber(state.visualShiftSmoothPixels, 2) + "px"
+        : "missing";
+    stream << "motion frame=" << frameId
+        << " level=" << motionLevelLabel(state.level)
+        << " score=" << fixedNumber(state.score, 2)
+        << " visual=" << visualSummary
+        << " gyro=" << (state.imuGyroValid ? fixedNumber(state.gyroSmoothRadPerSec, 4) : "missing")
+        << " accel_delta=" << (state.imuAccelValid ? fixedNumber(state.accelDeltaSmoothMps2, 3) : "missing");
+    return stream.str();
+}
+
+void drawMotionOverlay(cv::Mat& view, const MotionState& state, int topY)
+{
+    if (!state.enabled || view.empty())
+    {
+        return;
+    }
+
+    const cv::Scalar color = state.level >= 2
+        ? cv::Scalar(40, 80, 255)
+        : (state.level == 1 ? cv::Scalar(60, 220, 255) : cv::Scalar(100, 255, 120));
+    const std::string motionLine =
+        "motion " + std::string(motionLevelLabel(state.level)) +
+        " score=" + fixedNumber(state.score, 2) +
+        " visual=" + (state.visualValid ? fixedNumber(state.visualShiftSmoothPixels, 1) + "px" : "wait");
+    const std::string imuLine =
+        "imu gyro=" + (state.imuGyroValid ? fixedNumber(state.gyroSmoothRadPerSec, 3) : "missing") +
+        " accel_delta=" + (state.imuAccelValid ? fixedNumber(state.accelDeltaSmoothMps2, 2) : "missing");
+
+    drawOutlinedText(view, motionLine, cv::Point(12, topY), 0.46, color);
+    drawOutlinedText(view, imuLine, cv::Point(12, topY + 22), 0.42, cv::Scalar(255, 255, 255));
 }
 
 cv::Mat depthFrameToMat(const rs2::depth_frame& frame)
@@ -5143,9 +5580,13 @@ double contourBoundaryDistancePx(
 class AcceptanceMetricsWriter
 {
 public:
-    AcceptanceMetricsWriter(const AcceptanceMetricsConfig& config, bool includePoseColumns)
+    AcceptanceMetricsWriter(
+        const AcceptanceMetricsConfig& config,
+        bool includePoseColumns,
+        bool includeMotionColumns)
         : config_(config),
-          includePoseColumns_(includePoseColumns)
+          includePoseColumns_(includePoseColumns),
+          includeMotionColumns_(includeMotionColumns)
     {
     }
 
@@ -5168,7 +5609,8 @@ public:
         int anchorPointsOnCandidates,
         const ColorContourCompletionStats& completionStats,
         const FrameTimingStats& timingStats,
-        const PoseState& poseState)
+        const PoseState& poseState,
+        const MotionState& motionState)
     {
         if (!config_.enabled)
         {
@@ -5248,6 +5690,7 @@ public:
             << std::setprecision(3)
             << timingStats.depthPostMs << ','
             << timingStats.frameConvertMs << ','
+            << timingStats.motionMs << ','
             << timingStats.grayPrepareMs << ','
             << timingStats.anchorMs << ','
             << timingStats.boundaryMs << ','
@@ -5285,6 +5728,27 @@ public:
                 << ',' << poseState.gyroRadPerSec[0]
                 << ',' << poseState.gyroRadPerSec[1]
                 << ',' << poseState.gyroRadPerSec[2];
+        }
+
+        if (includeMotionColumns_)
+        {
+            stream_
+                << ',' << (motionState.enabled ? 1 : 0)
+                << ',' << (motionState.visualValid ? 1 : 0)
+                << ',' << (motionState.imuAccelValid ? 1 : 0)
+                << ',' << (motionState.imuGyroValid ? 1 : 0)
+                << ',' << motionState.visualFrames
+                << ',' << motionState.level
+                << ',' << std::setprecision(3) << motionState.score
+                << ',' << motionState.visualShiftXPixels
+                << ',' << motionState.visualShiftYPixels
+                << ',' << motionState.visualShiftPixels
+                << ',' << motionState.visualResponse
+                << ',' << motionState.visualShiftSmoothPixels
+                << ',' << motionState.gyroRadPerSec
+                << ',' << motionState.gyroSmoothRadPerSec
+                << ',' << motionState.accelDeltaMps2
+                << ',' << motionState.accelDeltaSmoothMps2;
         }
 
         stream_ << '\n';
@@ -5337,7 +5801,7 @@ private:
             << "indoor_plane_components,indoor_plane_cached,"
             << "anchor_count,anchor_points_on_candidates,"
             << "color_completion_input,color_completion_adopted,color_completion_rejected,"
-            << "depth_post_ms,frame_convert_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
+            << "depth_post_ms,frame_convert_ms,motion_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
             << "extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
             << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms";
         if (includePoseColumns_)
@@ -5350,12 +5814,23 @@ private:
                 << "pose_accel_x_mps2,pose_accel_y_mps2,pose_accel_z_mps2,"
                 << "pose_gyro_x_radps,pose_gyro_y_radps,pose_gyro_z_radps";
         }
+        if (includeMotionColumns_)
+        {
+            stream_
+                << ",motion_enabled,motion_visual_valid,motion_imu_accel_valid,motion_imu_gyro_valid,"
+                << "motion_visual_frames,motion_level,motion_score,"
+                << "motion_visual_shift_x_px,motion_visual_shift_y_px,motion_visual_shift_px,"
+                << "motion_visual_response,motion_visual_shift_smooth_px,"
+                << "motion_gyro_radps,motion_gyro_smooth_radps,"
+                << "motion_accel_delta_mps2,motion_accel_delta_smooth_mps2";
+        }
         stream_ << "\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
 
     AcceptanceMetricsConfig config_;
     bool includePoseColumns_ = false;
+    bool includeMotionColumns_ = false;
     std::ofstream stream_;
     std::string outputPath_;
     std::map<uint64_t, ObservationMaterial> previousStableById_;
@@ -7748,9 +8223,26 @@ void printUsage()
         << "  --no-pose-read\n"
         << "  --pose-overlay\n"
         << "  --no-pose-overlay\n"
+        << "  --gravity-line\n"
+        << "  --no-gravity-line\n"
         << "  --pose-log\n"
         << "  --pose-log-every-n=30\n"
         << "  --pose-smooth-percent=20\n"
+        << "  --motion-diagnostics\n"
+        << "  --no-motion-diagnostics\n"
+        << "  --motion-overlay\n"
+        << "  --no-motion-overlay\n"
+        << "  --motion-log\n"
+        << "  --motion-log-every-n=30\n"
+        << "  --motion-smooth-percent=35\n"
+        << "  --motion-visual-downscale-width-px=160\n"
+        << "  --motion-visual-min-response-percent=12\n"
+        << "  --motion-visual-move-millipx=2000\n"
+        << "  --motion-visual-shake-millipx=8000\n"
+        << "  --motion-gyro-move-milliradps=80\n"
+        << "  --motion-gyro-shake-milliradps=250\n"
+        << "  --motion-accel-delta-move-milli-mps2=450\n"
+        << "  --motion-accel-delta-shake-milli-mps2=1400\n"
         << "  --imu-gravity-check\n"
         << "  --imu-gravity-frames=120\n"
         << "  --imu-gravity-warmup=30\n"
@@ -7886,6 +8378,17 @@ int main(int argc, char** argv)
     SegmentationConfig config = parseConfig(argc, argv);
     PoseReadConfig poseConfig = parsePoseReadConfig(argc, argv);
     ImuGravityCheckConfig imuGravityConfig = parseImuGravityCheckConfig(argc, argv);
+    MotionDiagnosticsConfig motionConfig = parseMotionDiagnosticsConfig(argc, argv);
+    const bool explicitPoseRead = hasFlag(argc, argv, "--pose-read");
+    const bool explicitNoPoseRead = hasFlag(argc, argv, "--no-pose-read");
+    if (motionConfig.enabled && !poseConfig.enabled && !explicitNoPoseRead)
+    {
+        poseConfig.enabled = true;
+        if (!explicitPoseRead && !hasFlag(argc, argv, "--pose-overlay"))
+        {
+            poseConfig.overlay = false;
+        }
+    }
     const int maxFrames = std::max(0, parseIntOptionOrDefault(argc, argv, "--max-frames=", 0));
     const bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_WARNING);
@@ -7958,7 +8461,18 @@ int main(int argc, char** argv)
             std::cout << "Pose read enabled: accel=" << (poseAccelStreamEnabled ? 1 : 0)
                 << " gyro=" << (poseGyroStreamEnabled ? 1 : 0)
                 << " smooth_percent=" << poseConfig.smoothPercent
-                << " overlay=" << (poseConfig.overlay ? 1 : 0) << '\n';
+                << " overlay=" << (poseConfig.overlay ? 1 : 0)
+                << " gravity_line=" << (poseConfig.gravityLine ? 1 : 0) << '\n';
+        }
+        if (motionConfig.enabled)
+        {
+            std::cout << "Motion diagnostics enabled: overlay=" << (motionConfig.overlay ? 1 : 0)
+                << " visual_downscale_width=" << motionConfig.visualDownscaleWidthPixels
+                << " visual_move_px=" << fixedNumber(motionConfig.visualMoveMilliPixels / 1000.0, 2)
+                << " visual_shake_px=" << fixedNumber(motionConfig.visualShakeMilliPixels / 1000.0, 2)
+                << " gyro_move_radps=" << fixedNumber(motionConfig.gyroMoveMilliRadps / 1000.0, 3)
+                << " gyro_shake_radps=" << fixedNumber(motionConfig.gyroShakeMilliRadps / 1000.0, 3)
+                << '\n';
         }
 
         const rs2::pipeline_profile profile = pipeline.start(rsConfig);
@@ -8119,8 +8633,9 @@ int main(int argc, char** argv)
         const bool needsViews = displayEnabled || recordingConfig.enabled;
 
         VideoRecorder videoRecorder(recordingConfig);
-        AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled);
+        AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled, motionConfig.enabled);
         PoseReader poseReader(poseConfig, poseAccelStreamEnabled, poseGyroStreamEnabled);
+        MotionDiagnostics motionDiagnostics(motionConfig);
         uint64_t frameId = 0;
         while (true)
         {
@@ -8168,6 +8683,9 @@ int main(int argc, char** argv)
                 cv::resize(depth16, depth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
             }
             timingStats.frameConvertMs = takeSectionMs();
+
+            motionDiagnostics.update(colorBgr, poseReader.state());
+            timingStats.motionMs = takeSectionMs();
 
             cv::Mat segmentationGray;
             bool edgeSourceIsInfrared = false;
@@ -8398,12 +8916,32 @@ int main(int argc, char** argv)
             {
                 std::cout << poseStateSummary(frameId, poseReader.state()) << '\n';
             }
+            if (motionConfig.enabled &&
+                motionConfig.logConsole &&
+                frameId % static_cast<uint64_t>(motionConfig.logEveryFrames) == 0)
+            {
+                std::cout << motionStateSummary(frameId, motionDiagnostics.state()) << '\n';
+            }
 
             cv::Mat rawView = colorBgr;
-            if (needsViews && poseConfig.enabled && poseConfig.overlay)
+            const bool drawPose = poseConfig.enabled && poseConfig.overlay;
+            const bool drawGravity = poseConfig.enabled && poseConfig.gravityLine;
+            const bool drawMotion = motionConfig.enabled && motionConfig.overlay;
+            if (needsViews && (drawPose || drawGravity || drawMotion))
             {
                 rawView = colorBgr.clone();
-                drawPoseOverlay(rawView, poseReader.state());
+                if (drawGravity)
+                {
+                    drawGravityDirectionOverlay(rawView, poseReader.state());
+                }
+                if (drawPose)
+                {
+                    drawPoseOverlay(rawView, poseReader.state());
+                }
+                if (drawMotion)
+                {
+                    drawMotionOverlay(rawView, motionDiagnostics.state(), drawPose ? 70 : 24);
+                }
             }
 
             int key = -1;
@@ -8462,7 +9000,8 @@ int main(int argc, char** argv)
                     anchorPointsOnCandidates,
                     completionStats,
                     timingStats,
-                    poseReader.state());
+                    poseReader.state(),
+                    motionDiagnostics.state());
             }
 
             if (displayEnabled && (key == 27 || key == 'q' || key == 'Q'))

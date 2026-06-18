@@ -119,6 +119,14 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 .\x64\Release\D455.exe --pose-read --no-pose-overlay --pose-smooth-percent=10
 ```
 
+启用姿态读取时，左上原始彩图格默认用粗黄色箭头从画面中心标出 IMU 加速度估计的重力方向投影，并标注主导轴和加速度模长。`--no-gravity-line` 可以只保留文字姿态，不画重力箭头：
+
+```powershell
+.\x64\Release\D455.exe --pose-read --pose-overlay --gravity-line
+.\x64\Release\D455.exe --motion-diagnostics --pose-read --pose-overlay --gravity-line --record-video
+.\x64\Release\D455.exe --pose-read --no-gravity-line
+```
+
 ### IMU Z 轴是否可当作重力轴的确认方案
 
 不要直接假设 D455 IMU 的 Z 轴就是重力方向轴。静止时 accelerometer 给出的是当前相机姿态下的重力/支撑加速度方向在 IMU 坐标系中的投影；如果相机发生俯仰或横滚，重力方向会在 X/Y/Z 三轴之间重新分配。因此确认口径分两层：
@@ -142,6 +150,31 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 - 如果 gyro 可用，`gyro_rms_radps <= --imu-gravity-max-gyro-milliradps=50`。
 
 程序会输出 `best_gravity_axis` 和 `z_axis_can_be_gravity`，并默认保存到 `recordings\imu_gravity_check_时间戳.csv`。只有 `z_axis_can_be_gravity=1` 时，才可以在当前固定安装姿态下临时把 IMU Z 轴当作重力方向轴；如果相机运行中会移动或倾斜，应使用 `pose_accel_x/y/z` 的完整重力向量实时估计 roll/pitch，而不是把 Z 轴硬编码为重力方向。
+
+### 实时晃动检测与显示
+
+打开 `--motion-diagnostics` 后，主循环会增加一个旁路运动诊断，不改变稳定轮廓筛选和输出归属。诊断同时使用两类信号：
+
+- 视觉信号：对相邻彩图灰度帧做全局相位相关，估计整幅画面的位移，输出 `motion_visual_shift_*`。
+- IMU 信号：如果设备支持 accel/gyro，自动读取 motion stream，输出角速度模长和加速度变化量；如果显式传入 `--no-pose-read`，则只使用视觉信号。
+
+左上原始彩图格会显示 `motion stable / moving / shaking`、综合分数、视觉位移和 IMU 摘要。验收 CSV 会追加 `motion_*` 列，方便复查相机移动时的晃动强度：
+
+```powershell
+.\x64\Release\D455.exe --motion-diagnostics
+.\x64\Release\D455.exe --motion-diagnostics --motion-log --motion-log-every-n=30
+.\x64\Release\D455.exe --motion-diagnostics --acceptance-baseline --acceptance-no-record --max-frames=300
+.\x64\Release\D455.exe --motion-diagnostics --no-pose-read
+```
+
+默认阈值以原始彩图像素为单位：`--motion-visual-move-millipx=2000` 表示相邻帧全局位移平滑值约 2px 进入 `moving`，`--motion-visual-shake-millipx=8000` 表示约 8px 进入 `shaking`。现场如果手持相机较敏感，可以提高阈值；如果要更早提示轻微晃动，可以降低阈值：
+
+```powershell
+.\x64\Release\D455.exe --motion-diagnostics --motion-visual-move-millipx=1000 --motion-visual-shake-millipx=5000
+.\x64\Release\D455.exe --motion-diagnostics --motion-gyro-move-milliradps=60 --motion-gyro-shake-milliradps=180
+```
+
+视觉位移表示“画面整体变化”，强运动物体经过镜头时也可能触发；IMU 信号表示相机本体运动。两者同时升高时，基本可以判定为相机移动或晃动造成的画面不稳定。
 
 P1 IR-D 边界类型验收会额外打开 `D455 IR-D boundary diagnostics`，第五栏显示边界来源：红色为深度突变，洋红为深度空洞/无效深度交界，蓝色为红外/灰度边，青色为深度边附近的灰度边，绿色为局部深度跨度确认的灰度边，黄色为最终切分边界。CSV 会同步记录各类边界像素数。深度空洞边默认只诊断和计数，不参与最终切分：
 
