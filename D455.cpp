@@ -35,10 +35,7 @@
 
 namespace
 {
-constexpr const char* kRawWindow = "D455 raw frame";
-constexpr const char* kSegmentedWindow = "D455 stable contour information";
-constexpr const char* kMosaicWindow = "D455 stable contour color mosaic";
-constexpr const char* kOutsideMosaicWindow = "D455 black-area color view";
+constexpr const char* kObservationDashboardWindow = "D455 observation dashboard 2x2";
 constexpr const char* kBoundaryDiagnosticsWindow = "D455 IR-D boundary diagnostics";
 constexpr const char* kIndoorPlaneWindow = "D455 indoor plane diagnostics";
 constexpr const char* kStableContourWindow = "D455 stable contour stability";
@@ -86,6 +83,11 @@ struct SegmentationConfig
     int indoorPlaneHorizontalNormalMinPercent = 65;
     int indoorPlaneVerticalNormalMaxPercent = 65;
     int indoorPlaneCeilingBandPercent = 30;
+    int stablePlaneMergeAnchorGapPixels = 14;
+    int stablePlaneMergeMaskGapPixels = 21;
+    int stablePlaneMergeMinAnchors = 24;
+    int stablePlaneMergeMaxAreaPercent = 85;
+    int stablePlaneMergeMaxRoiAreaPercent = 98;
     int splitBoundaryPixels = 3;
     int spatialClusterGapMm = 120;
     int trackConfirmFrames = 3;
@@ -100,6 +102,10 @@ struct SegmentationConfig
     int pclSampleStepPixels = 3;
     int pclMaxInputPoints = 7000;
     int pclFrameInterval = 2;
+    int realtimePclFrameInterval = 6;
+    int realtimeAnchorStepPixels = 6;
+    int realtimeStableContourMinAnchors = 10;
+    int realtimeDepthSliceMm = 450;
     int colorContourCompletionPaddingPixels = 12;
     int colorContourCompletionMinIouPercent = 72;
     int colorContourCompletionMaxAreaDeltaPercent = 24;
@@ -107,6 +113,11 @@ struct SegmentationConfig
     int colorContourCompletionClosePixels = 3;
     int colorContourCompletionOtherGuardPixels = 7;
     int colorContourCompletionMaxOtherOverlapPixels = 4;
+    int colorContourPrimaryMinAnchors = 24;
+    int colorContourPrimaryMinOverlapPercent = 45;
+    int colorContourPrimaryMaxAreaDeltaPercent = 220;
+    int colorContourPrimaryMaxCenterShiftPixels = 96;
+    int colorContourPrimaryMaxAreaPercent = 85;
     bool showLabels = false;
     bool showCenters = false;
     bool showRegionContours = false;
@@ -120,9 +131,18 @@ struct SegmentationConfig
     bool boundaryDiagnostics = false;
     bool indoorPlaneDiagnostics = false;
     bool spatialClusterCheck = true;
+    bool stablePlaneMerge = false;
     bool historyTracking = true;
     bool pclClustering = true;
-    bool colorContourCompletion = true;
+    bool realtime30 = true;
+    bool realtimeSkipDepthPost = true;
+    bool realtimeFastDepthPost = true;
+    bool realtimeLiteVisualization = true;
+    bool realtimeDisablePcl = true;
+    bool realtimeDisableDepthConfirmSplit = true;
+    bool realtimeDepthOnlyBoundary = true;
+    bool colorContourCompletion = false;
+    bool colorContourPrimary = false;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
 };
@@ -235,6 +255,25 @@ struct FrameTimingStats
     double recordMs = 0.0;
 };
 
+struct PoseState
+{
+    bool enabled = false;
+    bool accelStreamEnabled = false;
+    bool gyroStreamEnabled = false;
+    bool accelValid = false;
+    bool gyroValid = false;
+    bool orientationValid = false;
+    uint64_t accelFrames = 0;
+    uint64_t gyroFrames = 0;
+    double accelTimestampMs = 0.0;
+    double gyroTimestampMs = 0.0;
+    double rollDeg = 0.0;
+    double pitchDeg = 0.0;
+    double yawDeg = 0.0;
+    cv::Vec3d accelMps2{0.0, 0.0, 0.0};
+    cv::Vec3d gyroRadPerSec{0.0, 0.0, 0.0};
+};
+
 struct RgbDepthAccuracyConfig
 {
     int sampleFrames = 20;
@@ -275,6 +314,15 @@ struct AcceptanceMetricsConfig
     std::string csvPath;
 };
 
+struct PoseReadConfig
+{
+    bool enabled = false;
+    bool overlay = true;
+    bool logConsole = false;
+    int logEveryFrames = 30;
+    int smoothPercent = 20;
+};
+
 struct InverseDepthCalibration
 {
     double intercept = 0.0;
@@ -286,8 +334,9 @@ struct InverseDepthCalibration
 class DepthPostProcessor
 {
 public:
-    DepthPostProcessor()
-        : depthToDisparity_(true),
+    explicit DepthPostProcessor(bool fastMode = false)
+        : fastMode_(fastMode),
+          depthToDisparity_(true),
           disparityToDepth_(false)
     {
         spatial_.set_option(RS2_OPTION_FILTER_SMOOTH_ALPHA, 0.50f);
@@ -300,6 +349,12 @@ public:
     rs2::depth_frame process(const rs2::depth_frame& depthFrame)
     {
         rs2::frame filtered = depthFrame;
+        if (fastMode_)
+        {
+            filtered = spatial_.process(filtered);
+            return filtered.as<rs2::depth_frame>();
+        }
+
         filtered = depthToDisparity_.process(filtered);
         filtered = spatial_.process(filtered);
         filtered = temporal_.process(filtered);
@@ -309,6 +364,7 @@ public:
     }
 
 private:
+    bool fastMode_ = false;
     rs2::disparity_transform depthToDisparity_;
     rs2::spatial_filter spatial_;
     rs2::temporal_filter temporal_;
@@ -386,6 +442,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--indoor-plane-horizontal-normal-min-percent=", config.indoorPlaneHorizontalNormalMinPercent) ||
             parseIntOption(arg, "--indoor-plane-vertical-normal-max-percent=", config.indoorPlaneVerticalNormalMaxPercent) ||
             parseIntOption(arg, "--indoor-plane-ceiling-band-percent=", config.indoorPlaneCeilingBandPercent) ||
+            parseIntOption(arg, "--stable-plane-merge-anchor-gap-px=", config.stablePlaneMergeAnchorGapPixels) ||
+            parseIntOption(arg, "--stable-plane-merge-mask-gap-px=", config.stablePlaneMergeMaskGapPixels) ||
+            parseIntOption(arg, "--stable-plane-merge-min-anchors=", config.stablePlaneMergeMinAnchors) ||
+            parseIntOption(arg, "--stable-plane-merge-max-area-percent=", config.stablePlaneMergeMaxAreaPercent) ||
+            parseIntOption(arg, "--stable-plane-merge-max-roi-area-percent=", config.stablePlaneMergeMaxRoiAreaPercent) ||
             parseIntOption(arg, "--split-boundary-px=", config.splitBoundaryPixels) ||
             parseIntOption(arg, "--spatial-cluster-gap-mm=", config.spatialClusterGapMm) ||
             parseIntOption(arg, "--track-confirm-frames=", config.trackConfirmFrames) ||
@@ -400,13 +461,22 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--pcl-sample-step-px=", config.pclSampleStepPixels) ||
             parseIntOption(arg, "--pcl-max-input-points=", config.pclMaxInputPoints) ||
             parseIntOption(arg, "--pcl-frame-interval=", config.pclFrameInterval) ||
+            parseIntOption(arg, "--realtime-pcl-frame-interval=", config.realtimePclFrameInterval) ||
+            parseIntOption(arg, "--realtime-anchor-step-px=", config.realtimeAnchorStepPixels) ||
+            parseIntOption(arg, "--realtime-stable-contour-min-anchors=", config.realtimeStableContourMinAnchors) ||
+            parseIntOption(arg, "--realtime-depth-slice-mm=", config.realtimeDepthSliceMm) ||
             parseIntOption(arg, "--color-contour-completion-padding-px=", config.colorContourCompletionPaddingPixels) ||
             parseIntOption(arg, "--color-contour-completion-min-iou-percent=", config.colorContourCompletionMinIouPercent) ||
             parseIntOption(arg, "--color-contour-completion-max-area-delta-percent=", config.colorContourCompletionMaxAreaDeltaPercent) ||
             parseIntOption(arg, "--color-contour-completion-max-center-shift-px=", config.colorContourCompletionMaxCenterShiftPixels) ||
             parseIntOption(arg, "--color-contour-completion-close-px=", config.colorContourCompletionClosePixels) ||
             parseIntOption(arg, "--color-contour-completion-other-guard-px=", config.colorContourCompletionOtherGuardPixels) ||
-            parseIntOption(arg, "--color-contour-completion-max-other-overlap-px=", config.colorContourCompletionMaxOtherOverlapPixels))
+            parseIntOption(arg, "--color-contour-completion-max-other-overlap-px=", config.colorContourCompletionMaxOtherOverlapPixels) ||
+            parseIntOption(arg, "--color-contour-primary-min-anchors=", config.colorContourPrimaryMinAnchors) ||
+            parseIntOption(arg, "--color-contour-primary-min-overlap-percent=", config.colorContourPrimaryMinOverlapPercent) ||
+            parseIntOption(arg, "--color-contour-primary-max-area-delta-percent=", config.colorContourPrimaryMaxAreaDeltaPercent) ||
+            parseIntOption(arg, "--color-contour-primary-max-center-shift-px=", config.colorContourPrimaryMaxCenterShiftPixels) ||
+            parseIntOption(arg, "--color-contour-primary-max-area-percent=", config.colorContourPrimaryMaxAreaPercent))
         {
             continue;
         }
@@ -495,6 +565,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.spatialClusterCheck = false;
             continue;
         }
+        if (arg == "--stable-plane-merge")
+        {
+            config.stablePlaneMerge = true;
+            continue;
+        }
+        if (arg == "--no-stable-plane-merge")
+        {
+            config.stablePlaneMerge = false;
+            continue;
+        }
         if (arg == "--no-history-tracking")
         {
             config.historyTracking = false;
@@ -505,6 +585,81 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.pclClustering = false;
             continue;
         }
+        if (arg == "--pcl-clustering")
+        {
+            config.pclClustering = true;
+            continue;
+        }
+        if (arg == "--realtime-30")
+        {
+            config.realtime30 = true;
+            continue;
+        }
+        if (arg == "--no-realtime-30")
+        {
+            config.realtime30 = false;
+            continue;
+        }
+        if (arg == "--realtime-skip-depth-post")
+        {
+            config.realtimeSkipDepthPost = true;
+            continue;
+        }
+        if (arg == "--no-realtime-skip-depth-post")
+        {
+            config.realtimeSkipDepthPost = false;
+            continue;
+        }
+        if (arg == "--realtime-fast-depth-post")
+        {
+            config.realtimeFastDepthPost = true;
+            continue;
+        }
+        if (arg == "--no-realtime-fast-depth-post")
+        {
+            config.realtimeFastDepthPost = false;
+            continue;
+        }
+        if (arg == "--realtime-lite-visualization")
+        {
+            config.realtimeLiteVisualization = true;
+            continue;
+        }
+        if (arg == "--no-realtime-lite-visualization")
+        {
+            config.realtimeLiteVisualization = false;
+            continue;
+        }
+        if (arg == "--realtime-disable-pcl")
+        {
+            config.realtimeDisablePcl = true;
+            continue;
+        }
+        if (arg == "--no-realtime-disable-pcl")
+        {
+            config.realtimeDisablePcl = false;
+            continue;
+        }
+        if (arg == "--realtime-disable-depth-confirm-split")
+        {
+            config.realtimeDisableDepthConfirmSplit = true;
+            continue;
+        }
+        if (arg == "--no-realtime-disable-depth-confirm-split")
+        {
+            config.realtimeDisableDepthConfirmSplit = false;
+            continue;
+        }
+        if (arg == "--realtime-depth-only-boundary")
+        {
+            config.realtimeDepthOnlyBoundary = true;
+            continue;
+        }
+        if (arg == "--no-realtime-depth-only-boundary")
+        {
+            config.realtimeDepthOnlyBoundary = false;
+            continue;
+        }
         if (arg == "--color-contour-completion")
         {
             config.colorContourCompletion = true;
@@ -513,6 +668,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-color-contour-completion")
         {
             config.colorContourCompletion = false;
+            continue;
+        }
+        if (arg == "--color-contour-primary")
+        {
+            config.colorContourPrimary = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-primary")
+        {
+            config.colorContourPrimary = false;
             continue;
         }
         if (arg == "--probe-only" || arg == "--help" || arg == "-h")
@@ -537,6 +702,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
             arg == "--acceptance-no-record" ||
             arg.rfind("--acceptance-label=", 0) == 0 ||
             arg.rfind("--acceptance-csv=", 0) == 0)
+        {
+            continue;
+        }
+        if (arg == "--pose-read" ||
+            arg == "--no-pose-read" ||
+            arg == "--pose-overlay" ||
+            arg == "--no-pose-overlay" ||
+            arg == "--pose-log" ||
+            arg.rfind("--pose-log-every-n=", 0) == 0 ||
+            arg.rfind("--pose-smooth-percent=", 0) == 0)
         {
             continue;
         }
@@ -620,6 +795,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.indoorPlaneHorizontalNormalMinPercent = std::clamp(config.indoorPlaneHorizontalNormalMinPercent, 1, 100);
     config.indoorPlaneVerticalNormalMaxPercent = std::clamp(config.indoorPlaneVerticalNormalMaxPercent, 0, 100);
     config.indoorPlaneCeilingBandPercent = std::clamp(config.indoorPlaneCeilingBandPercent, 5, 60);
+    config.stablePlaneMergeAnchorGapPixels = std::clamp(config.stablePlaneMergeAnchorGapPixels, 1, 64);
+    config.stablePlaneMergeMaskGapPixels = std::clamp(config.stablePlaneMergeMaskGapPixels, 1, 127);
+    config.stablePlaneMergeMinAnchors = std::clamp(config.stablePlaneMergeMinAnchors, 1, 1000000);
+    config.stablePlaneMergeMaxAreaPercent = std::clamp(config.stablePlaneMergeMaxAreaPercent, 1, 100);
+    config.stablePlaneMergeMaxRoiAreaPercent = std::clamp(config.stablePlaneMergeMaxRoiAreaPercent, 1, 100);
     config.splitBoundaryPixels = std::clamp(config.splitBoundaryPixels, 1, 11);
     config.spatialClusterGapMm = std::clamp(config.spatialClusterGapMm, 0, 2000);
     config.trackConfirmFrames = std::clamp(config.trackConfirmFrames, 1, 30);
@@ -634,6 +814,10 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.pclSampleStepPixels = std::clamp(config.pclSampleStepPixels, 1, 8);
     config.pclMaxInputPoints = std::clamp(config.pclMaxInputPoints, config.pclMinClusterPoints, 500000);
     config.pclFrameInterval = std::clamp(config.pclFrameInterval, 1, 30);
+    config.realtimePclFrameInterval = std::clamp(config.realtimePclFrameInterval, 1, 60);
+    config.realtimeAnchorStepPixels = std::clamp(config.realtimeAnchorStepPixels, 1, 32);
+    config.realtimeStableContourMinAnchors = std::clamp(config.realtimeStableContourMinAnchors, 1, 10000);
+    config.realtimeDepthSliceMm = std::clamp(config.realtimeDepthSliceMm, 50, 2000);
     config.colorContourCompletionPaddingPixels = std::clamp(config.colorContourCompletionPaddingPixels, 2, 64);
     config.colorContourCompletionMinIouPercent = std::clamp(config.colorContourCompletionMinIouPercent, 0, 100);
     config.colorContourCompletionMaxAreaDeltaPercent =
@@ -645,6 +829,13 @@ SegmentationConfig parseConfig(int argc, char** argv)
         std::clamp(config.colorContourCompletionOtherGuardPixels, 0, 64);
     config.colorContourCompletionMaxOtherOverlapPixels =
         std::clamp(config.colorContourCompletionMaxOtherOverlapPixels, 0, 1000);
+    config.colorContourPrimaryMinAnchors = std::clamp(config.colorContourPrimaryMinAnchors, 1, 1000000);
+    config.colorContourPrimaryMinOverlapPercent = std::clamp(config.colorContourPrimaryMinOverlapPercent, 1, 100);
+    config.colorContourPrimaryMaxAreaDeltaPercent =
+        std::clamp(config.colorContourPrimaryMaxAreaDeltaPercent, 0, 1000);
+    config.colorContourPrimaryMaxCenterShiftPixels =
+        std::clamp(config.colorContourPrimaryMaxCenterShiftPixels, 1, 640);
+    config.colorContourPrimaryMaxAreaPercent = std::clamp(config.colorContourPrimaryMaxAreaPercent, 1, 100);
 
     return config;
 }
@@ -654,6 +845,19 @@ bool hasFlag(int argc, char** argv, const std::string& flag)
     for (int i = 1; i < argc; ++i)
     {
         if (argv[i] == flag)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool hasOptionPrefix(int argc, char** argv, const std::string& prefix)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]).rfind(prefix, 0) == 0)
         {
             return true;
         }
@@ -706,6 +910,23 @@ VideoRecordingConfig parseVideoRecordingConfig(int argc, char** argv, bool defau
     return config;
 }
 
+rs2::frameset waitForLatestRgbdFrames(rs2::pipeline& pipeline)
+{
+    rs2::frameset latest = pipeline.wait_for_frames();
+    rs2::frameset polled;
+    int drained = 0;
+    while (drained < 8 && pipeline.poll_for_frames(&polled))
+    {
+        if (polled.get_color_frame() && polled.get_depth_frame())
+        {
+            latest = polled;
+        }
+        ++drained;
+    }
+
+    return latest;
+}
+
 AcceptanceMetricsConfig parseAcceptanceMetricsConfig(int argc, char** argv)
 {
     AcceptanceMetricsConfig config;
@@ -747,6 +968,46 @@ AcceptanceMetricsConfig parseAcceptanceMetricsConfig(int argc, char** argv)
         }
     }
 
+    return config;
+}
+
+PoseReadConfig parsePoseReadConfig(int argc, char** argv)
+{
+    PoseReadConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--pose-read")
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (arg == "--no-pose-read")
+        {
+            config.enabled = false;
+            continue;
+        }
+        if (arg == "--pose-overlay")
+        {
+            config.overlay = true;
+            continue;
+        }
+        if (arg == "--no-pose-overlay")
+        {
+            config.overlay = false;
+            continue;
+        }
+        if (arg == "--pose-log")
+        {
+            config.logConsole = true;
+            continue;
+        }
+        parseIntOption(arg, "--pose-log-every-n=", config.logEveryFrames);
+        parseIntOption(arg, "--pose-smooth-percent=", config.smoothPercent);
+    }
+
+    config.logEveryFrames = std::clamp(config.logEveryFrames, 1, 100000);
+    config.smoothPercent = std::clamp(config.smoothPercent, 1, 100);
     return config;
 }
 
@@ -825,6 +1086,42 @@ float findDepthScale(const rs2::pipeline_profile& profile)
     return 0.001f;
 }
 
+bool deviceSupportsStream(const rs2::device& device, rs2_stream streamType)
+{
+    try
+    {
+        for (const rs2::sensor& sensor : device.query_sensors())
+        {
+            for (const rs2::stream_profile& profile : sensor.get_stream_profiles())
+            {
+                if (profile.stream_type() == streamType)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    catch (const rs2::error&)
+    {
+        return false;
+    }
+
+    return false;
+}
+
+bool deviceListSupportsStream(const rs2::device_list& devices, rs2_stream streamType)
+{
+    for (const rs2::device& device : devices)
+    {
+        if (deviceSupportsStream(device, streamType))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 cv::Mat colorFrameToBgr(const rs2::video_frame& frame)
 {
     cv::Mat view(
@@ -845,6 +1142,207 @@ cv::Mat videoFrameToGray8(const rs2::video_frame& frame)
         cv::Mat::AUTO_STEP);
 
     return view.clone();
+}
+
+constexpr double kPi = 3.14159265358979323846;
+
+double radiansToDegrees(double radians)
+{
+    return radians * 180.0 / kPi;
+}
+
+double normalizeDegrees180(double degrees)
+{
+    while (degrees > 180.0)
+    {
+        degrees -= 360.0;
+    }
+    while (degrees < -180.0)
+    {
+        degrees += 360.0;
+    }
+    return degrees;
+}
+
+cv::Vec3d smoothVec3d(const cv::Vec3d& previous, const cv::Vec3d& sample, double alpha)
+{
+    return cv::Vec3d(
+        previous[0] * (1.0 - alpha) + sample[0] * alpha,
+        previous[1] * (1.0 - alpha) + sample[1] * alpha,
+        previous[2] * (1.0 - alpha) + sample[2] * alpha);
+}
+
+std::string fixedNumber(double value, int precision)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(precision) << value;
+    return stream.str();
+}
+
+class PoseReader
+{
+public:
+    PoseReader(const PoseReadConfig& config, bool accelStreamEnabled, bool gyroStreamEnabled)
+        : alpha_(std::clamp(config.smoothPercent, 1, 100) / 100.0)
+    {
+        state_.enabled = config.enabled && (accelStreamEnabled || gyroStreamEnabled);
+        state_.accelStreamEnabled = accelStreamEnabled;
+        state_.gyroStreamEnabled = gyroStreamEnabled;
+    }
+
+    void update(const rs2::frameset& frames)
+    {
+        if (!state_.enabled)
+        {
+            return;
+        }
+
+        if (state_.accelStreamEnabled)
+        {
+            updateAccel(frames.first_or_default(RS2_STREAM_ACCEL));
+        }
+        if (state_.gyroStreamEnabled)
+        {
+            updateGyro(frames.first_or_default(RS2_STREAM_GYRO));
+        }
+    }
+
+    const PoseState& state() const
+    {
+        return state_;
+    }
+
+private:
+    void updateAccel(const rs2::frame& frame)
+    {
+        const rs2::motion_frame motion(frame);
+        if (!motion)
+        {
+            return;
+        }
+
+        const rs2_vector data = motion.get_motion_data();
+        const cv::Vec3d sample(data.x, data.y, data.z);
+        state_.accelMps2 = state_.accelValid
+            ? smoothVec3d(state_.accelMps2, sample, alpha_)
+            : sample;
+        state_.accelTimestampMs = motion.get_timestamp();
+        state_.accelValid = true;
+        ++state_.accelFrames;
+
+        const double x = state_.accelMps2[0];
+        const double y = state_.accelMps2[1];
+        const double z = state_.accelMps2[2];
+        const double yzNorm = std::sqrt(y * y + z * z);
+        const double norm = std::sqrt(x * x + y * y + z * z);
+        if (norm > 1e-6)
+        {
+            state_.rollDeg = radiansToDegrees(std::atan2(y, z));
+            state_.pitchDeg = radiansToDegrees(std::atan2(-x, yzNorm));
+            state_.orientationValid =
+                std::isfinite(state_.rollDeg) &&
+                std::isfinite(state_.pitchDeg);
+        }
+    }
+
+    void updateGyro(const rs2::frame& frame)
+    {
+        const rs2::motion_frame motion(frame);
+        if (!motion)
+        {
+            return;
+        }
+
+        const rs2_vector data = motion.get_motion_data();
+        const cv::Vec3d sample(data.x, data.y, data.z);
+        const double timestampMs = motion.get_timestamp();
+        const bool hadGyro = state_.gyroValid;
+        state_.gyroRadPerSec = hadGyro
+            ? smoothVec3d(state_.gyroRadPerSec, sample, alpha_)
+            : sample;
+
+        if (hadGyro && timestampMs > lastGyroTimestampMs_)
+        {
+            const double dtSec = (timestampMs - lastGyroTimestampMs_) / 1000.0;
+            if (dtSec > 0.0 && dtSec < 0.5)
+            {
+                state_.yawDeg = normalizeDegrees180(
+                    state_.yawDeg + radiansToDegrees(state_.gyroRadPerSec[2] * dtSec));
+            }
+        }
+
+        state_.gyroTimestampMs = timestampMs;
+        state_.gyroValid = true;
+        lastGyroTimestampMs_ = timestampMs;
+        ++state_.gyroFrames;
+    }
+
+    double alpha_ = 0.20;
+    double lastGyroTimestampMs_ = 0.0;
+    PoseState state_;
+};
+
+std::string poseStateSummary(uint64_t frameId, const PoseState& state)
+{
+    std::ostringstream stream;
+    stream << "pose frame=" << frameId
+        << " accel=" << (state.accelValid ? "ok" : "missing")
+        << " gyro=" << (state.gyroValid ? "ok" : "missing");
+    if (state.orientationValid)
+    {
+        stream << " roll=" << fixedNumber(state.rollDeg, 2)
+            << " pitch=" << fixedNumber(state.pitchDeg, 2)
+            << " yaw_rel=" << fixedNumber(state.yawDeg, 2);
+    }
+    return stream.str();
+}
+
+void drawOutlinedText(
+    cv::Mat& view,
+    const std::string& text,
+    const cv::Point& origin,
+    double scale = 0.46,
+    const cv::Scalar& foreground = cv::Scalar(255, 255, 255))
+{
+    cv::putText(
+        view,
+        text,
+        origin,
+        cv::FONT_HERSHEY_SIMPLEX,
+        scale,
+        cv::Scalar(0, 0, 0),
+        3,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        text,
+        origin,
+        cv::FONT_HERSHEY_SIMPLEX,
+        scale,
+        foreground,
+        1,
+        cv::LINE_AA);
+}
+
+void drawPoseOverlay(cv::Mat& view, const PoseState& state)
+{
+    if (!state.enabled || view.empty())
+    {
+        return;
+    }
+
+    const std::string poseLine = state.orientationValid
+        ? "pose roll=" + fixedNumber(state.rollDeg, 1) +
+            " pitch=" + fixedNumber(state.pitchDeg, 1) +
+            " yaw_rel=" + fixedNumber(state.yawDeg, 1)
+        : "pose waiting for accel/gyro";
+    const std::string streamLine =
+        "imu accel=" + std::string(state.accelValid ? "ok" : "missing") +
+        " gyro=" + std::string(state.gyroValid ? "ok" : "missing") +
+        " frames=" + std::to_string(state.accelFrames) + "/" + std::to_string(state.gyroFrames);
+
+    drawOutlinedText(view, poseLine, cv::Point(12, 24), 0.46, cv::Scalar(80, 255, 255));
+    drawOutlinedText(view, streamLine, cv::Point(12, 46), 0.42, cv::Scalar(255, 255, 255));
 }
 
 cv::Mat depthFrameToMat(const rs2::depth_frame& frame)
@@ -1069,6 +1567,7 @@ LocalComponentMeasurement measureLocalComponent(
         std::numeric_limits<float>::lowest(),
         std::numeric_limits<float>::lowest());
 
+    int validDepthCount = 0;
     int pointCount = 0;
     const bool canDeproject = intrinsics.fx > 0.0f && intrinsics.fy > 0.0f;
     for (int localY = 0; localY < localMask.rows; ++localY)
@@ -1085,11 +1584,17 @@ LocalComponentMeasurement measureLocalComponent(
 
             const int x = roi.x + localX;
             const uint16_t depthUnits = depthRow[x];
+            if (depthUnits == 0)
+            {
+                continue;
+            }
+
             depthSumUnits += depthUnits;
             minDepthUnits = std::min(minDepthUnits, depthUnits);
             maxDepthUnits = std::max(maxDepthUnits, depthUnits);
+            ++validDepthCount;
 
-            if (depthUnits == 0 || !canDeproject)
+            if (!canDeproject)
             {
                 continue;
             }
@@ -1105,9 +1610,14 @@ LocalComponentMeasurement measureLocalComponent(
         }
     }
 
-    measurement.validDepth = maxDepthUnits > 0;
+    measurement.validDepth = validDepthCount > 0;
+    if (!measurement.validDepth)
+    {
+        return measurement;
+    }
+
     measurement.meanDepthMm =
-        static_cast<int>((depthSumUnits / static_cast<double>(pixelCount)) * depthScale * 1000.0f + 0.5f);
+        static_cast<int>((depthSumUnits / static_cast<double>(validDepthCount)) * depthScale * 1000.0f + 0.5f);
     measurement.observedDepthMinMm = static_cast<int>(minDepthUnits * depthScale * 1000.0f + 0.5f);
     measurement.observedDepthMaxMm = static_cast<int>(maxDepthUnits * depthScale * 1000.0f + 0.5f);
     if (pointCount > 0)
@@ -1131,10 +1641,9 @@ void appendObservationMaterialsFromMask(
     uint64_t& nextObservationId,
     std::vector<ObservationMaterial>& materials)
 {
-    cv::Mat labels;
-    cv::Mat stats;
-    cv::Mat centroids;
-    const int labelCount = cv::connectedComponentsWithStats(mask, labels, stats, centroids, 8, CV_32S);
+    cv::Mat contourSource = mask.clone();
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(contourSource, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
 
     const int frameArea = mask.rows * mask.cols;
     const int maxAreaPixels = frameArea * config.maxAreaPercent / 100;
@@ -1145,22 +1654,36 @@ void appendObservationMaterialsFromMask(
     const int maxMaterialAreaPixels = frameArea * config.maxMaterialAreaPercent / 100;
     const int maxMaterialRoiAreaPixels = frameArea * config.maxMaterialRoiAreaPercent / 100;
 
-    for (int label = 1; label < labelCount; ++label)
+    for (const std::vector<cv::Point>& contour : contours)
     {
-        const int area = stats.at<int>(label, cv::CC_STAT_AREA);
+        if (contour.size() < 3)
+        {
+            continue;
+        }
+
+        const double contourArea = cv::contourArea(contour);
+        if (contourArea < static_cast<double>(config.minAreaPixels))
+        {
+            continue;
+        }
+
+        const cv::Rect roi = cv::boundingRect(contour);
+        if (roi.empty())
+        {
+            continue;
+        }
+        if (roi.area() > maxMaterialRoiAreaPixels)
+        {
+            continue;
+        }
+
+        cv::Mat localMask = mask(roi).clone();
+        const int area = cv::countNonZero(localMask);
         if (area < config.minAreaPixels)
         {
             continue;
         }
 
-        const cv::Rect roi(
-            stats.at<int>(label, cv::CC_STAT_LEFT),
-            stats.at<int>(label, cv::CC_STAT_TOP),
-            stats.at<int>(label, cv::CC_STAT_WIDTH),
-            stats.at<int>(label, cv::CC_STAT_HEIGHT));
-
-        cv::Mat localMask;
-        cv::compare(labels(roi), label, localMask, cv::CMP_EQ);
         const LocalComponentMeasurement measurement =
             measureLocalComponent(localMask, roi, depth16, depthScale, intrinsics, area);
         const ComponentDepthSummary depthSummary{
@@ -1183,54 +1706,37 @@ void appendObservationMaterialsFromMask(
             continue;
         }
 
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(localMask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
-        if (contours.empty())
-        {
-            continue;
-        }
-
-        const auto largestContourIt = std::max_element(
-            contours.begin(),
-            contours.end(),
-            [](const auto& lhs, const auto& rhs)
-            {
-                return cv::contourArea(lhs) < cv::contourArea(rhs);
-            });
-
-        const double contourArea = cv::contourArea(*largestContourIt);
-        if (contourArea < static_cast<double>(config.minAreaPixels))
-        {
-            continue;
-        }
         if (contourArea > static_cast<double>(maxMaterialAreaPixels) || roi.area() > maxMaterialRoiAreaPixels)
         {
             continue;
         }
 
         std::vector<cv::Point> preciseContour;
-        const double epsilon = cv::arcLength(*largestContourIt, true) * config.contourApproxRatio;
+        const double epsilon = cv::arcLength(contour, true) * config.contourApproxRatio;
         if (epsilon >= 0.5)
         {
-            cv::approxPolyDP(*largestContourIt, preciseContour, epsilon, true);
+            cv::approxPolyDP(contour, preciseContour, epsilon, true);
         }
         if (preciseContour.size() < 3)
         {
-            preciseContour = *largestContourIt;
-        }
-        for (cv::Point& point : preciseContour)
-        {
-            point.x += roi.x;
-            point.y += roi.y;
+            preciseContour = contour;
         }
 
         ObservationMaterial material;
         material.sourceFrameId = sourceFrameId;
         material.observationId = sourceFrameId * 1000ULL + nextObservationId++;
         material.roi = roi;
-        material.center = cv::Point(
-            static_cast<int>(centroids.at<double>(label, 0) + 0.5),
-            static_cast<int>(centroids.at<double>(label, 1) + 0.5));
+        const cv::Moments moments = cv::moments(contour);
+        if (std::abs(moments.m00) > 1e-6)
+        {
+            material.center = cv::Point(
+                static_cast<int>(moments.m10 / moments.m00 + 0.5),
+                static_cast<int>(moments.m01 / moments.m00 + 0.5));
+        }
+        else
+        {
+            material.center = cv::Point(roi.x + roi.width / 2, roi.y + roi.height / 2);
+        }
         material.pixelCount = area;
         material.depthMinMm = depthMinMm;
         material.depthMaxMm = depthMaxMm;
@@ -1910,6 +2416,68 @@ double materialTrackMatchScore(
     const double centerScore = std::max(0.0, 1.0 - centerDistance / std::max(1, config.trackCenterGapPixels));
     const double depthScore = std::max(0.0, 1.0 - static_cast<double>(depthGap) / std::max(1, config.trackDepthGapMm));
     return iou * 4.0 + centerScore * 2.0 + depthScore + area;
+}
+
+std::vector<ObservationMaterial> buildCurrentFrameDisplayBaseMaterials(
+    const std::vector<ObservationMaterial>& stableMaterials,
+    const std::vector<ObservationMaterial>& currentCandidates,
+    const SegmentationConfig& config)
+{
+    if (stableMaterials.empty() || currentCandidates.empty() || !config.historyTracking)
+    {
+        return stableMaterials;
+    }
+
+    SegmentationConfig displayMatchConfig = config;
+    displayMatchConfig.trackIouPercent = 0;
+    displayMatchConfig.trackCenterGapPixels =
+        std::max(config.trackCenterGapPixels * 4, config.trackCenterGapPixels + 96);
+    displayMatchConfig.trackDepthGapMm = std::max(config.trackDepthGapMm * 2, config.trackDepthGapMm + 300);
+
+    std::vector<CandidateTrackMatch> matches;
+    matches.reserve(stableMaterials.size() * currentCandidates.size());
+    for (size_t stableIndex = 0; stableIndex < stableMaterials.size(); ++stableIndex)
+    {
+        for (size_t candidateIndex = 0; candidateIndex < currentCandidates.size(); ++candidateIndex)
+        {
+            const double score = materialTrackMatchScore(
+                stableMaterials[stableIndex],
+                currentCandidates[candidateIndex],
+                displayMatchConfig);
+            if (score >= 0.0)
+            {
+                matches.push_back(CandidateTrackMatch{stableIndex, candidateIndex, score});
+            }
+        }
+    }
+
+    std::sort(
+        matches.begin(),
+        matches.end(),
+        [](const CandidateTrackMatch& lhs, const CandidateTrackMatch& rhs)
+        {
+            return lhs.score > rhs.score;
+        });
+
+    std::vector<ObservationMaterial> displayMaterials = stableMaterials;
+    std::vector<bool> stableUsed(stableMaterials.size(), false);
+    std::vector<bool> candidateUsed(currentCandidates.size(), false);
+    for (const CandidateTrackMatch& match : matches)
+    {
+        if (stableUsed[match.trackIndex] || candidateUsed[match.candidateIndex])
+        {
+            continue;
+        }
+
+        ObservationMaterial currentGeometry = currentCandidates[match.candidateIndex];
+        currentGeometry.observationId = stableMaterials[match.trackIndex].observationId;
+        currentGeometry.groupId = stableMaterials[match.trackIndex].groupId;
+        displayMaterials[match.trackIndex] = std::move(currentGeometry);
+        stableUsed[match.trackIndex] = true;
+        candidateUsed[match.candidateIndex] = true;
+    }
+
+    return displayMaterials;
 }
 
 class SegmentationTracker
@@ -3230,6 +3798,64 @@ cv::Mat buildContourColorMosaic(
     return mosaic;
 }
 
+struct StableContourSupport
+{
+    int anchorCount = 0;
+    int meanAnchorDepthMm = 0;
+    cv::Point anchorCenter;
+};
+
+StableContourSupport measureStableContourSupport(
+    const ObservationMaterial& material,
+    const cv::Mat& anchorMask,
+    const cv::Mat& depth16,
+    float depthScale)
+{
+    StableContourSupport support;
+    const cv::Rect imageBounds(0, 0, anchorMask.cols, anchorMask.rows);
+    const cv::Rect roi = material.roi & imageBounds;
+    if (roi.empty() || material.contour.size() < 3)
+    {
+        return support;
+    }
+
+    const cv::Mat localContourMask = contourMaskInRoi(material, roi);
+    int64_t sumX = 0;
+    int64_t sumY = 0;
+    int64_t sumDepthUnits = 0;
+    for (int localY = 0; localY < roi.height; ++localY)
+    {
+        const uint8_t* contourRow = localContourMask.ptr<uint8_t>(localY);
+        const uint8_t* anchorRow = anchorMask.ptr<uint8_t>(roi.y + localY);
+        const uint16_t* depthRow = depth16.ptr<uint16_t>(roi.y + localY);
+        for (int localX = 0; localX < roi.width; ++localX)
+        {
+            if (contourRow[localX] == 0 || anchorRow[roi.x + localX] == 0)
+            {
+                continue;
+            }
+
+            const int x = roi.x + localX;
+            const int y = roi.y + localY;
+            ++support.anchorCount;
+            sumX += x;
+            sumY += y;
+            sumDepthUnits += depthRow[x];
+        }
+    }
+
+    if (support.anchorCount > 0)
+    {
+        support.anchorCenter = cv::Point(
+            static_cast<int>(sumX / support.anchorCount),
+            static_cast<int>(sumY / support.anchorCount));
+        support.meanAnchorDepthMm = static_cast<int>(
+            (sumDepthUnits / static_cast<double>(support.anchorCount)) * depthScale * 1000.0f + 0.5f);
+    }
+
+    return support;
+}
+
 cv::Mat buildStableContourMask(
     const cv::Size& frameSize,
     const std::vector<ObservationMaterial>& stableMaterials)
@@ -3256,6 +3882,7 @@ bool buildColorCompletedMaterial(
     const cv::Mat& stableUnionMask,
     const ObservationMaterial& material,
     const SegmentationConfig& config,
+    bool allowColorPrimary,
     ObservationMaterial& completedMaterial)
 {
     if (colorBgr.empty() || colorEdges.empty() || stableUnionMask.empty() || material.contour.size() < 3)
@@ -3404,6 +4031,15 @@ bool buildColorCompletedMaterial(
     {
         return false;
     }
+    if (allowColorPrimary)
+    {
+        const int maxPrimaryArea =
+            colorBgr.rows * colorBgr.cols * config.colorContourPrimaryMaxAreaPercent / 100;
+        if (candidateArea > maxPrimaryArea)
+        {
+            return false;
+        }
+    }
 
     cv::Mat intersectionMask;
     cv::Mat unionMask;
@@ -3414,6 +4050,8 @@ bool buildColorCompletedMaterial(
     const double iouPercent = unionArea > 0
         ? 100.0 * static_cast<double>(intersectionArea) / static_cast<double>(unionArea)
         : 0.0;
+    const double originalOverlapPercent =
+        100.0 * static_cast<double>(intersectionArea) / static_cast<double>(originalArea);
     const double areaDeltaPercent =
         100.0 * std::abs(candidateArea - originalArea) / static_cast<double>(originalArea);
 
@@ -3434,9 +4072,16 @@ bool buildColorCompletedMaterial(
         candidateCenter.x - originalCenter.x,
         candidateCenter.y - originalCenter.y);
 
-    if (iouPercent < static_cast<double>(config.colorContourCompletionMinIouPercent) ||
-        areaDeltaPercent > static_cast<double>(config.colorContourCompletionMaxAreaDeltaPercent) ||
-        centerShift > static_cast<double>(config.colorContourCompletionMaxCenterShiftPixels))
+    const bool strictAccepted =
+        iouPercent >= static_cast<double>(config.colorContourCompletionMinIouPercent) &&
+        areaDeltaPercent <= static_cast<double>(config.colorContourCompletionMaxAreaDeltaPercent) &&
+        centerShift <= static_cast<double>(config.colorContourCompletionMaxCenterShiftPixels);
+    const bool primaryAccepted =
+        allowColorPrimary &&
+        originalOverlapPercent >= static_cast<double>(config.colorContourPrimaryMinOverlapPercent) &&
+        areaDeltaPercent <= static_cast<double>(config.colorContourPrimaryMaxAreaDeltaPercent) &&
+        centerShift <= static_cast<double>(config.colorContourPrimaryMaxCenterShiftPixels);
+    if (!strictAccepted && !primaryAccepted)
     {
         return false;
     }
@@ -3493,6 +4138,9 @@ bool buildColorCompletedMaterial(
 
 std::vector<ObservationMaterial> buildDisplayStableMaterials(
     const cv::Mat& colorBgr,
+    const cv::Mat& anchorMask,
+    const cv::Mat& depth16,
+    float depthScale,
     const std::vector<ObservationMaterial>& stableMaterials,
     const SegmentationConfig& config,
     ColorContourCompletionStats& completionStats)
@@ -3517,6 +4165,11 @@ std::vector<ObservationMaterial> buildDisplayStableMaterials(
         }
 
         ++completionStats.inputContours;
+        const StableContourSupport support =
+            measureStableContourSupport(displayMaterials[index], anchorMask, depth16, depthScale);
+        const bool allowColorPrimary =
+            config.colorContourPrimary &&
+            support.anchorCount >= config.colorContourPrimaryMinAnchors;
         ObservationMaterial completedMaterial;
         if (buildColorCompletedMaterial(
                 colorBgr,
@@ -3524,6 +4177,7 @@ std::vector<ObservationMaterial> buildDisplayStableMaterials(
                 stableUnionMask,
                 displayMaterials[index],
                 config,
+                allowColorPrimary,
                 completedMaterial))
         {
             displayMaterials[index] = std::move(completedMaterial);
@@ -3575,12 +4229,17 @@ void drawColorContourCompletionOverlay(
 
 cv::Mat buildStableContourColorMosaic(
     const cv::Mat& colorBgr,
-    const std::vector<ObservationMaterial>& stableMaterials)
+    const std::vector<ObservationMaterial>& stableMaterials,
+    const cv::Mat& stableMask)
 {
     cv::Mat mosaic = cv::Mat::zeros(colorBgr.size(), colorBgr.type());
-    cv::Mat stableMask = buildStableContourMask(colorBgr.size(), stableMaterials);
-    colorBgr.copyTo(mosaic, stableMask);
+    if (!stableMask.empty() && stableMask.size() == colorBgr.size())
+    {
+        colorBgr.copyTo(mosaic, stableMask);
+    }
 
+    const cv::Rect frameRect(0, 0, colorBgr.cols, colorBgr.rows);
+    const cv::Mat edgeKernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     for (size_t index = 0; index < stableMaterials.size(); ++index)
     {
         const ObservationMaterial& material = stableMaterials[index];
@@ -3589,22 +4248,41 @@ cv::Mat buildStableContourColorMosaic(
             continue;
         }
 
-        const std::vector<std::vector<cv::Point>> contours{material.contour};
-        cv::drawContours(mosaic, contours, -1, palette(index), 1, cv::LINE_AA);
-    }
+        const cv::Rect roi = cv::boundingRect(material.contour) & frameRect;
+        if (roi.empty())
+        {
+            continue;
+        }
 
-    cv::Mat outsideMask;
-    cv::compare(stableMask, 0, outsideMask, cv::CMP_EQ);
-    mosaic.setTo(cv::Scalar(0, 0, 0), outsideMask);
+        std::vector<std::vector<cv::Point>> localContours(1);
+        localContours[0].reserve(material.contour.size());
+        for (const cv::Point& point : material.contour)
+        {
+            localContours[0].emplace_back(point.x - roi.x, point.y - roi.y);
+        }
+
+        cv::Mat materialMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+        cv::drawContours(materialMask, localContours, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+
+        cv::Mat erodedMask;
+        cv::erode(materialMask, erodedMask, edgeKernel, cv::Point(-1, -1), 1, cv::BORDER_CONSTANT, 0);
+
+        cv::Mat materialEdgeMask;
+        cv::subtract(materialMask, erodedMask, materialEdgeMask);
+        mosaic(roi).setTo(palette(index), materialEdgeMask);
+    }
     return mosaic;
 }
 
 cv::Mat buildOutsideStableContourColorImage(
     const cv::Mat& colorBgr,
-    const std::vector<ObservationMaterial>& stableMaterials)
+    const cv::Mat& stableMask)
 {
     cv::Mat outsideColor = cv::Mat::zeros(colorBgr.size(), colorBgr.type());
-    const cv::Mat stableMask = buildStableContourMask(colorBgr.size(), stableMaterials);
+    if (stableMask.empty() || stableMask.size() != colorBgr.size())
+    {
+        return colorBgr.clone();
+    }
 
     cv::Mat outsideMask;
     cv::compare(stableMask, 0, outsideMask, cv::CMP_EQ);
@@ -3744,7 +4422,7 @@ cv::Mat ensureBgrFrame(const cv::Mat& source)
     return converted;
 }
 
-cv::Mat buildRecordingFrame(const std::vector<cv::Mat>& views)
+cv::Mat buildTiledFrame(const std::vector<cv::Mat>& views, int columns = 2)
 {
     if (views.empty())
     {
@@ -3773,11 +4451,23 @@ cv::Mat buildRecordingFrame(const std::vector<cv::Mat>& views)
     }
 
     const int panelCount = static_cast<int>(panels.size());
-    cv::Mat frame(panelSize.height, panelSize.width * panelCount, CV_8UC3, cv::Scalar(0, 0, 0));
+    const int columnCount = std::max(1, std::min(columns, panelCount));
+    const int rowCount = (panelCount + columnCount - 1) / columnCount;
+    cv::Mat frame(
+        panelSize.height * rowCount,
+        panelSize.width * columnCount,
+        CV_8UC3,
+        cv::Scalar(0, 0, 0));
     for (int index = 0; index < panelCount; ++index)
     {
+        const int row = index / columnCount;
+        const int column = index % columnCount;
         panels[static_cast<size_t>(index)].copyTo(
-            frame(cv::Rect(panelSize.width * index, 0, panelSize.width, panelSize.height)));
+            frame(cv::Rect(
+                panelSize.width * column,
+                panelSize.height * row,
+                panelSize.width,
+                panelSize.height)));
     }
     return frame;
 }
@@ -3858,22 +4548,17 @@ private:
 
         frameSize_ = frameSize;
         outputPath_ = output.string();
+        std::string backendName;
         bool opened = writer_.open(
             outputPath_,
-            cv::CAP_OPENCV_MJPEG,
+            cv::CAP_FFMPEG,
             cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
             static_cast<double>(config_.fps),
             frameSize_,
             true);
-        if (!opened)
+        if (opened)
         {
-            opened = writer_.open(
-                outputPath_,
-                cv::CAP_FFMPEG,
-                cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
-                static_cast<double>(config_.fps),
-                frameSize_,
-                true);
+            backendName = "ffmpeg";
         }
         if (!opened)
         {
@@ -3884,6 +4569,24 @@ private:
                 static_cast<double>(config_.fps),
                 frameSize_,
                 true);
+            if (opened)
+            {
+                backendName = "msmf";
+            }
+        }
+        if (!opened)
+        {
+            opened = writer_.open(
+                outputPath_,
+                cv::CAP_OPENCV_MJPEG,
+                cv::VideoWriter::fourcc('M', 'J', 'P', 'G'),
+                static_cast<double>(config_.fps),
+                frameSize_,
+                true);
+            if (opened)
+            {
+                backendName = "opencv-mjpeg";
+            }
         }
         if (!opened)
         {
@@ -3893,6 +4596,10 @@ private:
                 static_cast<double>(config_.fps),
                 frameSize_,
                 true);
+            if (opened)
+            {
+                backendName = "default";
+            }
         }
         if (!opened || !writer_.isOpened())
         {
@@ -3900,6 +4607,7 @@ private:
         }
 
         std::cout << "Recording video: " << outputPath_
+            << " backend=" << backendName
             << " fps=" << config_.fps
             << " every=" << config_.everyN
             << " scale=" << config_.scalePercent << "%"
@@ -4023,8 +4731,9 @@ double contourBoundaryDistancePx(
 class AcceptanceMetricsWriter
 {
 public:
-    explicit AcceptanceMetricsWriter(const AcceptanceMetricsConfig& config)
-        : config_(config)
+    AcceptanceMetricsWriter(const AcceptanceMetricsConfig& config, bool includePoseColumns)
+        : config_(config),
+          includePoseColumns_(includePoseColumns)
     {
     }
 
@@ -4046,7 +4755,8 @@ public:
         int anchorCount,
         int anchorPointsOnCandidates,
         const ColorContourCompletionStats& completionStats,
-        const FrameTimingStats& timingStats)
+        const FrameTimingStats& timingStats,
+        const PoseState& poseState)
     {
         if (!config_.enabled)
         {
@@ -4139,7 +4849,33 @@ public:
             << timingStats.completionMs << ','
             << timingStats.diagnosticsMs << ','
             << timingStats.displayMs << ','
-            << timingStats.recordMs << '\n';
+            << timingStats.recordMs;
+
+        if (includePoseColumns_)
+        {
+            stream_
+                << ',' << (poseState.enabled ? 1 : 0)
+                << ',' << (poseState.accelStreamEnabled ? 1 : 0)
+                << ',' << (poseState.gyroStreamEnabled ? 1 : 0)
+                << ',' << (poseState.accelValid ? 1 : 0)
+                << ',' << (poseState.gyroValid ? 1 : 0)
+                << ',' << (poseState.orientationValid ? 1 : 0)
+                << ',' << poseState.accelFrames
+                << ',' << poseState.gyroFrames
+                << ',' << std::setprecision(3) << poseState.accelTimestampMs
+                << ',' << poseState.gyroTimestampMs
+                << ',' << poseState.rollDeg
+                << ',' << poseState.pitchDeg
+                << ',' << poseState.yawDeg
+                << ',' << poseState.accelMps2[0]
+                << ',' << poseState.accelMps2[1]
+                << ',' << poseState.accelMps2[2]
+                << ',' << poseState.gyroRadPerSec[0]
+                << ',' << poseState.gyroRadPerSec[1]
+                << ',' << poseState.gyroRadPerSec[2];
+        }
+
+        stream_ << '\n';
 
         previousStableById_.clear();
         for (const ObservationMaterial& material : stableMaterials)
@@ -4191,11 +4927,23 @@ private:
             << "color_completion_input,color_completion_adopted,color_completion_rejected,"
             << "depth_post_ms,frame_convert_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
             << "extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
-            << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms\n";
+            << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms";
+        if (includePoseColumns_)
+        {
+            stream_
+                << ",pose_enabled,pose_accel_stream_enabled,pose_gyro_stream_enabled,"
+                << "pose_accel_valid,pose_gyro_valid,pose_orientation_valid,"
+                << "pose_accel_frames,pose_gyro_frames,pose_accel_timestamp_ms,pose_gyro_timestamp_ms,"
+                << "pose_roll_deg,pose_pitch_deg,pose_yaw_relative_deg,"
+                << "pose_accel_x_mps2,pose_accel_y_mps2,pose_accel_z_mps2,"
+                << "pose_gyro_x_radps,pose_gyro_y_radps,pose_gyro_z_radps";
+        }
+        stream_ << "\n";
         std::cout << "Acceptance metrics: " << outputPath_ << '\n';
     }
 
     AcceptanceMetricsConfig config_;
+    bool includePoseColumns_ = false;
     std::ofstream stream_;
     std::string outputPath_;
     std::map<uint64_t, ObservationMaterial> previousStableById_;
@@ -4576,64 +5324,6 @@ void printRgbDepthAnchorStats(
         << " p99=" << percentileFromSorted(depths, 0.99) << '\n';
 }
 
-struct StableContourSupport
-{
-    int anchorCount = 0;
-    int meanAnchorDepthMm = 0;
-    cv::Point anchorCenter;
-};
-
-StableContourSupport measureStableContourSupport(
-    const ObservationMaterial& material,
-    const cv::Mat& anchorMask,
-    const cv::Mat& depth16,
-    float depthScale)
-{
-    StableContourSupport support;
-    const cv::Rect imageBounds(0, 0, anchorMask.cols, anchorMask.rows);
-    const cv::Rect roi = material.roi & imageBounds;
-    if (roi.empty() || material.contour.size() < 3)
-    {
-        return support;
-    }
-
-    const cv::Mat localContourMask = contourMaskInRoi(material, roi);
-    int64_t sumX = 0;
-    int64_t sumY = 0;
-    int64_t sumDepthUnits = 0;
-    for (int localY = 0; localY < roi.height; ++localY)
-    {
-        const uint8_t* contourRow = localContourMask.ptr<uint8_t>(localY);
-        const uint8_t* anchorRow = anchorMask.ptr<uint8_t>(roi.y + localY);
-        const uint16_t* depthRow = depth16.ptr<uint16_t>(roi.y + localY);
-        for (int localX = 0; localX < roi.width; ++localX)
-        {
-            if (contourRow[localX] == 0 || anchorRow[roi.x + localX] == 0)
-            {
-                continue;
-            }
-
-            const int x = roi.x + localX;
-            const int y = roi.y + localY;
-            ++support.anchorCount;
-            sumX += x;
-            sumY += y;
-            sumDepthUnits += depthRow[x];
-        }
-    }
-
-    if (support.anchorCount > 0)
-    {
-        support.anchorCenter = cv::Point(
-            static_cast<int>(sumX / support.anchorCount),
-            static_cast<int>(sumY / support.anchorCount));
-        support.meanAnchorDepthMm = static_cast<int>(
-            (sumDepthUnits / static_cast<double>(support.anchorCount)) * depthScale * 1000.0f + 0.5f);
-    }
-
-    return support;
-}
-
 std::vector<ObservationMaterial> calibrateMaterialsWithStableAnchors(
     const std::vector<ObservationMaterial>& materials,
     const cv::Mat& anchorMask,
@@ -4664,6 +5354,489 @@ std::vector<ObservationMaterial> calibrateMaterialsWithStableAnchors(
     }
 
     return calibrated;
+}
+
+struct StablePlaneAnchorAssignment
+{
+    int anchorLabel = 0;
+    int anchorCount = 0;
+};
+
+int buildStablePlaneAnchorLabels(
+    const cv::Mat& anchorMask,
+    const cv::Mat& splitBoundaryMask,
+    const cv::Mat& depth16,
+    const SegmentationConfig& config,
+    float depthScale,
+    cv::Mat& anchorLabels)
+{
+    anchorLabels.release();
+    if (!config.stablePlaneMerge || anchorMask.empty() || depth16.empty())
+    {
+        return 0;
+    }
+
+    cv::Mat clusterMask = dilateMask(anchorMask, config.stablePlaneMergeAnchorGapPixels * 2 + 1);
+    const cv::Mat validMask = makeRawDepthRangeMask(depth16, config, depthScale);
+    clusterMask.setTo(0, ~validMask);
+
+    if (!splitBoundaryMask.empty())
+    {
+        cv::Mat boundaryBarrier = dilateMask(
+            splitBoundaryMask,
+            std::max(3, config.splitBoundaryPixels * 2 + 1));
+        clusterMask.setTo(0, boundaryBarrier);
+    }
+
+    if (cv::countNonZero(clusterMask) == 0)
+    {
+        return 0;
+    }
+
+    cv::Mat stats;
+    cv::Mat centroids;
+    return cv::connectedComponentsWithStats(clusterMask, anchorLabels, stats, centroids, 8, CV_32S);
+}
+
+StablePlaneAnchorAssignment assignMaterialToStablePlaneAnchorCluster(
+    const ObservationMaterial& material,
+    const cv::Mat& anchorMask,
+    const cv::Mat& anchorLabels)
+{
+    StablePlaneAnchorAssignment assignment;
+    if (material.contour.size() < 3 || anchorMask.empty() || anchorLabels.empty())
+    {
+        return assignment;
+    }
+
+    const cv::Rect imageBounds(0, 0, anchorMask.cols, anchorMask.rows);
+    const cv::Rect roi = material.roi & imageBounds;
+    if (roi.empty())
+    {
+        return assignment;
+    }
+
+    const cv::Mat localMask = contourMaskInRoi(material, roi);
+    std::map<int, int> labelVotes;
+    for (int localY = 0; localY < roi.height; ++localY)
+    {
+        const uint8_t* maskRow = localMask.ptr<uint8_t>(localY);
+        const uint8_t* anchorRow = anchorMask.ptr<uint8_t>(roi.y + localY);
+        const int* labelRow = anchorLabels.ptr<int>(roi.y + localY);
+        for (int localX = 0; localX < roi.width; ++localX)
+        {
+            const int x = roi.x + localX;
+            if (maskRow[localX] == 0 || anchorRow[x] == 0)
+            {
+                continue;
+            }
+
+            ++assignment.anchorCount;
+            const int anchorLabel = labelRow[x];
+            if (anchorLabel > 0)
+            {
+                ++labelVotes[anchorLabel];
+            }
+        }
+    }
+
+    int bestVotes = 0;
+    for (const auto& [label, votes] : labelVotes)
+    {
+        if (votes > bestVotes)
+        {
+            bestVotes = votes;
+            assignment.anchorLabel = label;
+        }
+    }
+
+    return assignment;
+}
+
+int countMaterialOverlapInMask(
+    const ObservationMaterial& material,
+    const cv::Mat& globalMask)
+{
+    if (material.contour.size() < 3 || globalMask.empty())
+    {
+        return 0;
+    }
+
+    const cv::Rect imageBounds(0, 0, globalMask.cols, globalMask.rows);
+    const cv::Rect roi = material.roi & imageBounds;
+    if (roi.empty())
+    {
+        return 0;
+    }
+
+    const cv::Mat localMask = contourMaskInRoi(material, roi);
+    cv::Mat overlap;
+    cv::bitwise_and(globalMask(roi), localMask, overlap);
+    return cv::countNonZero(overlap);
+}
+
+bool buildMergedStablePlaneMaterial(
+    const cv::Mat& componentMask,
+    const std::vector<ObservationMaterial>& sourceMaterials,
+    const std::vector<size_t>& sourceIndexes,
+    const cv::Mat& depth16,
+    const cv::Mat& anchorMask,
+    const SegmentationConfig& config,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    uint64_t sourceFrameId,
+    ObservationMaterial& mergedMaterial)
+{
+    if (componentMask.empty() || sourceIndexes.size() < 2)
+    {
+        return false;
+    }
+
+    const int pixelCount = cv::countNonZero(componentMask);
+    if (pixelCount < config.minAreaPixels)
+    {
+        return false;
+    }
+
+    const int frameArea = depth16.rows * depth16.cols;
+    const int maxAreaPixels = frameArea * config.stablePlaneMergeMaxAreaPercent / 100;
+    if (pixelCount > maxAreaPixels)
+    {
+        return false;
+    }
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(componentMask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    if (contours.empty())
+    {
+        return false;
+    }
+
+    const auto largestContourIt = std::max_element(
+        contours.begin(),
+        contours.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return cv::contourArea(lhs) < cv::contourArea(rhs);
+        });
+
+    const double contourArea = cv::contourArea(*largestContourIt);
+    if (contourArea < static_cast<double>(config.minAreaPixels))
+    {
+        return false;
+    }
+
+    std::vector<cv::Point> preciseContour;
+    const double epsilon = cv::arcLength(*largestContourIt, true) * config.contourApproxRatio;
+    if (epsilon >= 0.5)
+    {
+        cv::approxPolyDP(*largestContourIt, preciseContour, epsilon, true);
+    }
+    if (preciseContour.size() < 3)
+    {
+        preciseContour = *largestContourIt;
+    }
+    if (preciseContour.size() < 3)
+    {
+        return false;
+    }
+
+    const cv::Rect frameRect(0, 0, depth16.cols, depth16.rows);
+    const cv::Rect roi = cv::boundingRect(preciseContour) & frameRect;
+    const int maxRoiAreaPixels = frameArea * config.stablePlaneMergeMaxRoiAreaPercent / 100;
+    if (roi.empty() || roi.area() > maxRoiAreaPixels)
+    {
+        return false;
+    }
+
+    int validDepthCount = 0;
+    int64_t depthSumUnits = 0;
+    uint16_t minDepthUnits = std::numeric_limits<uint16_t>::max();
+    uint16_t maxDepthUnits = 0;
+    cv::Point3f minPoint(
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    cv::Point3f maxPoint(
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
+    const bool canDeproject = intrinsics.fx > 0.0f && intrinsics.fy > 0.0f;
+    int pointCount = 0;
+
+    for (int localY = 0; localY < roi.height; ++localY)
+    {
+        const uint8_t* maskRow = componentMask.ptr<uint8_t>(roi.y + localY);
+        const uint16_t* depthRow = depth16.ptr<uint16_t>(roi.y + localY);
+        for (int localX = 0; localX < roi.width; ++localX)
+        {
+            const int x = roi.x + localX;
+            if (maskRow[x] == 0)
+            {
+                continue;
+            }
+
+            const uint16_t depthUnits = depthRow[x];
+            if (depthUnits == 0)
+            {
+                continue;
+            }
+
+            depthSumUnits += depthUnits;
+            minDepthUnits = std::min(minDepthUnits, depthUnits);
+            maxDepthUnits = std::max(maxDepthUnits, depthUnits);
+            ++validDepthCount;
+
+            if (!canDeproject)
+            {
+                continue;
+            }
+
+            const cv::Point3f point = deprojectPixelMeters(x, roi.y + localY, depthUnits, depthScale, intrinsics);
+            minPoint.x = std::min(minPoint.x, point.x);
+            minPoint.y = std::min(minPoint.y, point.y);
+            minPoint.z = std::min(minPoint.z, point.z);
+            maxPoint.x = std::max(maxPoint.x, point.x);
+            maxPoint.y = std::max(maxPoint.y, point.y);
+            maxPoint.z = std::max(maxPoint.z, point.z);
+            ++pointCount;
+        }
+    }
+
+    if (validDepthCount == 0)
+    {
+        return false;
+    }
+
+    uint64_t observationId = sourceMaterials[sourceIndexes.front()].observationId;
+    int pclClusterId = sourceMaterials[sourceIndexes.front()].pclClusterId;
+    for (const size_t sourceIndex : sourceIndexes)
+    {
+        observationId = std::min(observationId, sourceMaterials[sourceIndex].observationId);
+        if (sourceMaterials[sourceIndex].pclClusterId != pclClusterId)
+        {
+            pclClusterId = 0;
+        }
+    }
+
+    mergedMaterial = ObservationMaterial{};
+    mergedMaterial.sourceFrameId = sourceFrameId;
+    mergedMaterial.observationId = observationId;
+    mergedMaterial.roi = roi;
+    mergedMaterial.center = cv::Point(roi.x + roi.width / 2, roi.y + roi.height / 2);
+    mergedMaterial.pixelCount = pixelCount;
+    mergedMaterial.depthMinMm = static_cast<int>(minDepthUnits * depthScale * 1000.0f + 0.5f);
+    mergedMaterial.depthMaxMm = static_cast<int>(maxDepthUnits * depthScale * 1000.0f + 0.5f);
+    mergedMaterial.observedDepthMinMm = mergedMaterial.depthMinMm;
+    mergedMaterial.observedDepthMaxMm = mergedMaterial.depthMaxMm;
+    mergedMaterial.meanDepthMm =
+        static_cast<int>((depthSumUnits / static_cast<double>(validDepthCount)) * depthScale * 1000.0f + 0.5f);
+    mergedMaterial.pclClusterId = pclClusterId;
+    mergedMaterial.contourArea = contourArea;
+    mergedMaterial.hasPointCloudBounds = pointCount > 0;
+    mergedMaterial.minPointMeters = minPoint;
+    mergedMaterial.maxPointMeters = maxPoint;
+    mergedMaterial.contour = std::move(preciseContour);
+
+    const StableContourSupport support =
+        measureStableContourSupport(mergedMaterial, anchorMask, depth16, depthScale);
+    if (support.anchorCount < config.stablePlaneMergeMinAnchors)
+    {
+        return false;
+    }
+
+    mergedMaterial.center = support.anchorCenter;
+    mergedMaterial.meanDepthMm = support.meanAnchorDepthMm;
+    mergedMaterial.groupId = support.anchorCount;
+    return true;
+}
+
+int countStableAnchorPointsOnMaterials(
+    const std::vector<ObservationMaterial>& materials,
+    const cv::Mat& anchorMask,
+    const cv::Mat& depth16,
+    float depthScale)
+{
+    int totalAnchorPoints = 0;
+    for (const ObservationMaterial& material : materials)
+    {
+        totalAnchorPoints += measureStableContourSupport(material, anchorMask, depth16, depthScale).anchorCount;
+    }
+    return totalAnchorPoints;
+}
+
+std::vector<ObservationMaterial> mergeStablePlaneFragmentsByAnchors(
+    const std::vector<ObservationMaterial>& materials,
+    const cv::Mat& anchorMask,
+    const cv::Mat& splitBoundaryMask,
+    const cv::Mat& depth16,
+    const SegmentationConfig& config,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    uint64_t sourceFrameId)
+{
+    if (!config.stablePlaneMerge || materials.size() < 2 || anchorMask.empty() || depth16.empty())
+    {
+        return materials;
+    }
+
+    cv::Mat anchorLabels;
+    const int anchorLabelCount =
+        buildStablePlaneAnchorLabels(anchorMask, splitBoundaryMask, depth16, config, depthScale, anchorLabels);
+    if (anchorLabelCount <= 1 || anchorLabels.empty())
+    {
+        return materials;
+    }
+
+    std::vector<StablePlaneAnchorAssignment> assignments(materials.size());
+    std::map<int, std::vector<size_t>> materialsByAnchorLabel;
+    for (size_t index = 0; index < materials.size(); ++index)
+    {
+        assignments[index] =
+            assignMaterialToStablePlaneAnchorCluster(materials[index], anchorMask, anchorLabels);
+        if (assignments[index].anchorLabel > 0)
+        {
+            materialsByAnchorLabel[assignments[index].anchorLabel].push_back(index);
+        }
+    }
+
+    std::vector<bool> consumed(materials.size(), false);
+    std::vector<ObservationMaterial> mergedMaterials;
+    const cv::Size frameSize(depth16.cols, depth16.rows);
+    const cv::Mat mergeKernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(config.stablePlaneMergeMaskGapPixels | 1, config.stablePlaneMergeMaskGapPixels | 1));
+
+    for (const auto& [anchorLabel, groupIndexes] : materialsByAnchorLabel)
+    {
+        (void)anchorLabel;
+        if (groupIndexes.size() < 2)
+        {
+            continue;
+        }
+
+        int groupAnchorCount = 0;
+        cv::Mat groupMask = cv::Mat::zeros(frameSize, CV_8UC1);
+        for (const size_t materialIndex : groupIndexes)
+        {
+            groupAnchorCount += assignments[materialIndex].anchorCount;
+            if (materials[materialIndex].contour.size() < 3)
+            {
+                continue;
+            }
+
+            const std::vector<std::vector<cv::Point>> contours{materials[materialIndex].contour};
+            cv::drawContours(groupMask, contours, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+        }
+        if (groupAnchorCount < config.stablePlaneMergeMinAnchors)
+        {
+            continue;
+        }
+
+        cv::morphologyEx(groupMask, groupMask, cv::MORPH_CLOSE, mergeKernel);
+        if (!splitBoundaryMask.empty())
+        {
+            groupMask.setTo(0, splitBoundaryMask);
+        }
+
+        cv::Mat componentLabels;
+        cv::Mat componentStats;
+        cv::Mat componentCentroids;
+        const int componentLabelCount = cv::connectedComponentsWithStats(
+            groupMask,
+            componentLabels,
+            componentStats,
+            componentCentroids,
+            8,
+            CV_32S);
+
+        for (int label = 1; label < componentLabelCount; ++label)
+        {
+            if (componentStats.at<int>(label, cv::CC_STAT_AREA) < config.minAreaPixels)
+            {
+                continue;
+            }
+
+            cv::Mat componentMask;
+            cv::compare(componentLabels, label, componentMask, cv::CMP_EQ);
+            std::vector<size_t> componentMaterialIndexes;
+            int componentAnchorCount = 0;
+            for (const size_t materialIndex : groupIndexes)
+            {
+                if (consumed[materialIndex])
+                {
+                    continue;
+                }
+                if (countMaterialOverlapInMask(materials[materialIndex], componentMask) == 0)
+                {
+                    continue;
+                }
+
+                componentMaterialIndexes.push_back(materialIndex);
+                componentAnchorCount += assignments[materialIndex].anchorCount;
+            }
+
+            if (componentMaterialIndexes.size() < 2 ||
+                componentAnchorCount < config.stablePlaneMergeMinAnchors)
+            {
+                continue;
+            }
+
+            ObservationMaterial mergedMaterial;
+            if (!buildMergedStablePlaneMaterial(
+                    componentMask,
+                    materials,
+                    componentMaterialIndexes,
+                    depth16,
+                    anchorMask,
+                    config,
+                    depthScale,
+                    intrinsics,
+                    sourceFrameId,
+                    mergedMaterial))
+            {
+                continue;
+            }
+
+            for (const size_t materialIndex : componentMaterialIndexes)
+            {
+                consumed[materialIndex] = true;
+            }
+            mergedMaterials.push_back(std::move(mergedMaterial));
+        }
+    }
+
+    if (mergedMaterials.empty())
+    {
+        return materials;
+    }
+
+    std::vector<ObservationMaterial> output;
+    output.reserve(materials.size());
+    for (const ObservationMaterial& material : mergedMaterials)
+    {
+        output.push_back(material);
+    }
+    for (size_t index = 0; index < materials.size(); ++index)
+    {
+        if (!consumed[index])
+        {
+            output.push_back(materials[index]);
+        }
+    }
+
+    std::sort(
+        output.begin(),
+        output.end(),
+        [](const ObservationMaterial& lhs, const ObservationMaterial& rhs)
+        {
+            return lhs.contourArea > rhs.contourArea;
+        });
+    if (output.size() > static_cast<size_t>(config.maxMaterials))
+    {
+        output.resize(static_cast<size_t>(config.maxMaterials));
+    }
+    return output;
 }
 
 struct StableContourTrackAggregate
@@ -4958,6 +6131,46 @@ cv::Mat buildStableContourVisualization(
         1,
         cv::LINE_AA);
 
+    return view;
+}
+
+cv::Mat buildRealtimeStableContourVisualization(
+    const cv::Mat& colorBgr,
+    const std::vector<ObservationMaterial>& anchorSupportedCandidates,
+    const std::vector<ObservationMaterial>& stableMaterials,
+    int frameIndex)
+{
+    cv::Mat view;
+    colorBgr.convertTo(view, -1, 0.70, 0.0);
+
+    for (const ObservationMaterial& material : anchorSupportedCandidates)
+    {
+        if (material.contour.size() < 3)
+        {
+            continue;
+        }
+        const std::vector<std::vector<cv::Point>> contours{material.contour};
+        cv::drawContours(view, contours, -1, cv::Scalar(0, 210, 255), 1, cv::LINE_8);
+    }
+
+    for (size_t index = 0; index < stableMaterials.size(); ++index)
+    {
+        const ObservationMaterial& material = stableMaterials[index];
+        if (material.contour.size() < 3)
+        {
+            continue;
+        }
+
+        const std::vector<std::vector<cv::Point>> contours{material.contour};
+        cv::drawContours(view, contours, -1, palette(index), 2, cv::LINE_8);
+    }
+
+    drawOutlinedText(
+        view,
+        "F" + std::to_string(frameIndex) +
+            " realtime: yellow=candidates color=stable",
+        cv::Point(12, 24),
+        0.48);
     return view;
 }
 
@@ -5510,6 +6723,17 @@ int runStableContourTest(
                 depthScale,
                 stableConfig.stableContourMinAnchors,
                 anchorPointsOnCandidates);
+        anchorSupportedCandidates = mergeStablePlaneFragmentsByAnchors(
+            anchorSupportedCandidates,
+            anchorMask,
+            splitBoundaryMask,
+            depth16,
+            config,
+            depthScale,
+            colorIntrinsics,
+            frameId);
+        anchorPointsOnCandidates =
+            countStableAnchorPointsOnMaterials(anchorSupportedCandidates, anchorMask, depth16, depthScale);
 
         const std::vector<ObservationMaterial> stableMaterials =
             tracker.update(anchorSupportedCandidates, config, frameId);
@@ -6070,7 +7294,7 @@ int runDepthStabilityTest(
 void printUsage()
 {
     std::cout
-        << "D455 four-window observation-material demo\n"
+        << "D455 2x2 observation-material dashboard demo\n"
         << "Keys: q or Esc exits.\n"
         << "Options:\n"
         << "  --probe-only\n"
@@ -6108,6 +7332,13 @@ void printUsage()
         << "  --acceptance-no-record\n"
         << "  --acceptance-label=acceptance_baseline\n"
         << "  --acceptance-csv=recordings\\acceptance_baseline.csv\n"
+        << "  --pose-read\n"
+        << "  --no-pose-read\n"
+        << "  --pose-overlay\n"
+        << "  --no-pose-overlay\n"
+        << "  --pose-log\n"
+        << "  --pose-log-every-n=30\n"
+        << "  --pose-smooth-percent=20\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
@@ -6147,6 +7378,11 @@ void printUsage()
         << "  --indoor-plane-horizontal-normal-min-percent=65\n"
         << "  --indoor-plane-vertical-normal-max-percent=65\n"
         << "  --indoor-plane-ceiling-band-percent=30\n"
+        << "  --stable-plane-merge-anchor-gap-px=14\n"
+        << "  --stable-plane-merge-mask-gap-px=21\n"
+        << "  --stable-plane-merge-min-anchors=24\n"
+        << "  --stable-plane-merge-max-area-percent=85\n"
+        << "  --stable-plane-merge-max-roi-area-percent=98\n"
         << "  --split-boundary-px=3\n"
         << "  --group-gap-px=24\n"
         << "  --group-depth-gap-mm=450\n"
@@ -6163,8 +7399,28 @@ void printUsage()
         << "  --pcl-sample-step-px=3\n"
         << "  --pcl-max-input-points=7000\n"
         << "  --pcl-frame-interval=2\n"
+        << "  --realtime-30\n"
+        << "  --no-realtime-30\n"
+        << "  --realtime-skip-depth-post\n"
+        << "  --no-realtime-skip-depth-post\n"
+        << "  --realtime-fast-depth-post\n"
+        << "  --no-realtime-fast-depth-post\n"
+        << "  --realtime-lite-visualization\n"
+        << "  --no-realtime-lite-visualization\n"
+        << "  --realtime-disable-pcl\n"
+        << "  --no-realtime-disable-pcl\n"
+        << "  --realtime-disable-depth-confirm-split\n"
+        << "  --no-realtime-disable-depth-confirm-split\n"
+        << "  --realtime-depth-only-boundary\n"
+        << "  --no-realtime-depth-only-boundary\n"
+        << "  --realtime-pcl-frame-interval=6\n"
+        << "  --realtime-anchor-step-px=6\n"
+        << "  --realtime-stable-contour-min-anchors=10\n"
+        << "  --realtime-depth-slice-mm=450\n"
         << "  --color-contour-completion\n"
         << "  --no-color-contour-completion\n"
+        << "  --color-contour-primary\n"
+        << "  --no-color-contour-primary\n"
         << "  --color-contour-completion-padding-px=12\n"
         << "  --color-contour-completion-min-iou-percent=72\n"
         << "  --color-contour-completion-max-area-delta-percent=24\n"
@@ -6172,6 +7428,11 @@ void printUsage()
         << "  --color-contour-completion-close-px=3\n"
         << "  --color-contour-completion-other-guard-px=7\n"
         << "  --color-contour-completion-max-other-overlap-px=4\n"
+        << "  --color-contour-primary-min-anchors=24\n"
+        << "  --color-contour-primary-min-overlap-percent=45\n"
+        << "  --color-contour-primary-max-area-delta-percent=220\n"
+        << "  --color-contour-primary-max-center-shift-px=96\n"
+        << "  --color-contour-primary-max-area-percent=85\n"
         << "  --contour-line-px=1\n"
         << "  --max-materials=24\n"
         << "  --no-boundary-split\n"
@@ -6182,8 +7443,11 @@ void printUsage()
         << "  --depth-hole-split\n"
         << "  --no-depth-hole-split\n"
         << "  --no-cue-selection\n"
+        << "  --pcl-clustering\n"
         << "  --no-pcl-clustering\n"
         << "  --no-spatial-cluster-check\n"
+        << "  --stable-plane-merge\n"
+        << "  --no-stable-plane-merge\n"
         << "  --no-history-tracking\n"
         << "  --boundary-diagnostics\n"
         << "  --indoor-plane-diagnostics\n"
@@ -6198,7 +7462,8 @@ void printUsage()
 
 int main(int argc, char** argv)
 {
-    const SegmentationConfig config = parseConfig(argc, argv);
+    SegmentationConfig config = parseConfig(argc, argv);
+    PoseReadConfig poseConfig = parsePoseReadConfig(argc, argv);
     const int maxFrames = std::max(0, parseIntOptionOrDefault(argc, argv, "--max-frames=", 0));
     const bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_WARNING);
@@ -6235,11 +7500,39 @@ int main(int argc, char** argv)
             return 1;
         }
 
+        bool poseAccelStreamEnabled = false;
+        bool poseGyroStreamEnabled = false;
+        if (poseConfig.enabled)
+        {
+            poseAccelStreamEnabled = deviceListSupportsStream(devices, RS2_STREAM_ACCEL);
+            poseGyroStreamEnabled = deviceListSupportsStream(devices, RS2_STREAM_GYRO);
+            if (!poseAccelStreamEnabled && !poseGyroStreamEnabled)
+            {
+                std::cerr << "Pose read disabled: no accel/gyro motion stream found on connected device.\n";
+                poseConfig.enabled = false;
+            }
+        }
+
         rs2::pipeline pipeline;
         rs2::config rsConfig;
         rsConfig.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
         rsConfig.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
         rsConfig.enable_stream(RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 30);
+        if (poseConfig.enabled && poseAccelStreamEnabled)
+        {
+            rsConfig.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
+        }
+        if (poseConfig.enabled && poseGyroStreamEnabled)
+        {
+            rsConfig.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
+        }
+        if (poseConfig.enabled)
+        {
+            std::cout << "Pose read enabled: accel=" << (poseAccelStreamEnabled ? 1 : 0)
+                << " gyro=" << (poseGyroStreamEnabled ? 1 : 0)
+                << " smooth_percent=" << poseConfig.smoothPercent
+                << " overlay=" << (poseConfig.overlay ? 1 : 0) << '\n';
+        }
 
         const rs2::pipeline_profile profile = pipeline.start(rsConfig);
         const float depthScale = findDepthScale(profile);
@@ -6293,11 +7586,64 @@ int main(int argc, char** argv)
         }
 
         rs2::align alignToColor(RS2_STREAM_COLOR);
-        DepthPostProcessor depthPostProcessor;
         RgbDepthAccuracyConfig stableDisplayConfig = parseRgbDepthAccuracyConfig(argc, argv);
         stableDisplayConfig.stableContourVideo = true;
-        VideoRecordingConfig recordingConfig = parseVideoRecordingConfig(argc, argv, true);
+        if (config.realtime30)
+        {
+            const bool explicitAnchorStep =
+                hasOptionPrefix(argc, argv, "--rgb-depth-anchor-step-px=");
+            const bool explicitStableMinAnchors =
+                hasOptionPrefix(argc, argv, "--stable-contour-min-anchors=");
+            const bool explicitDepthSlice =
+                hasOptionPrefix(argc, argv, "--depth-slice-mm=");
+            if (!explicitAnchorStep)
+            {
+                stableDisplayConfig.anchorStepPixels =
+                    std::max(stableDisplayConfig.anchorStepPixels, config.realtimeAnchorStepPixels);
+            }
+            if (!explicitStableMinAnchors)
+            {
+                stableDisplayConfig.stableContourMinAnchors =
+                    std::min(stableDisplayConfig.stableContourMinAnchors, config.realtimeStableContourMinAnchors);
+            }
+            if (!explicitDepthSlice)
+            {
+                config.depthSliceMm = std::max(config.depthSliceMm, config.realtimeDepthSliceMm);
+            }
+            config.pclFrameInterval = std::max(config.pclFrameInterval, config.realtimePclFrameInterval);
+            if (config.realtimeDisablePcl)
+            {
+                config.pclClustering = false;
+            }
+            if (config.realtimeDepthOnlyBoundary)
+            {
+                config.colorSplit = false;
+                config.contourDepthConfirmSplit = false;
+            }
+            if (config.realtimeDisableDepthConfirmSplit)
+            {
+                config.contourDepthConfirmSplit = false;
+            }
+            std::cout << "Realtime 30ms mode: fast_depth_post="
+                << ((config.realtimeFastDepthPost && config.realtime30 && !config.realtimeSkipDepthPost) ? 1 : 0)
+                << " skip_depth_post=" << (config.realtimeSkipDepthPost ? 1 : 0)
+                << " lite_visualization=" << (config.realtimeLiteVisualization ? 1 : 0)
+                << " pcl=" << (config.pclClustering ? 1 : 0)
+                << " color_split=" << (config.colorSplit ? 1 : 0)
+                << " depth_confirm_split=" << (config.contourDepthConfirmSplit ? 1 : 0)
+                << " depth_slice_mm=" << config.depthSliceMm
+                << " anchor_step=" << stableDisplayConfig.anchorStepPixels
+                << " min_anchors=" << stableDisplayConfig.stableContourMinAnchors << '\n';
+        }
+        const bool skipDepthPost = config.realtime30 && config.realtimeSkipDepthPost;
+        DepthPostProcessor depthPostProcessor(
+            config.realtime30 && config.realtimeFastDepthPost && !skipDepthPost);
         AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
+        const bool explicitRecordingOption =
+            hasFlag(argc, argv, "--record-video") ||
+            hasOptionPrefix(argc, argv, "--record-video=");
+        VideoRecordingConfig recordingConfig =
+            parseVideoRecordingConfig(argc, argv, acceptanceConfig.enabled || explicitRecordingOption);
         if (acceptanceConfig.enabled)
         {
             if (acceptanceConfig.recordVideo && recordingConfig.enabled)
@@ -6327,10 +7673,7 @@ int main(int argc, char** argv)
 
         if (displayEnabled)
         {
-            cv::namedWindow(kRawWindow, cv::WINDOW_AUTOSIZE);
-            cv::namedWindow(kSegmentedWindow, cv::WINDOW_AUTOSIZE);
-            cv::namedWindow(kMosaicWindow, cv::WINDOW_AUTOSIZE);
-            cv::namedWindow(kOutsideMosaicWindow, cv::WINDOW_AUTOSIZE);
+            cv::namedWindow(kObservationDashboardWindow, cv::WINDOW_AUTOSIZE);
             if (config.boundaryDiagnostics)
             {
                 cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
@@ -6349,12 +7692,19 @@ int main(int argc, char** argv)
         const bool needsViews = displayEnabled || recordingConfig.enabled;
 
         VideoRecorder videoRecorder(recordingConfig);
-        AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig);
+        AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled);
+        PoseReader poseReader(poseConfig, poseAccelStreamEnabled, poseGyroStreamEnabled);
         uint64_t frameId = 0;
         while (true)
         {
-            rs2::frameset frames = pipeline.wait_for_frames();
-            frames = alignToColor.process(frames);
+            rs2::frameset rawFrames = waitForLatestRgbdFrames(pipeline);
+            poseReader.update(rawFrames);
+            if (!rawFrames.get_color_frame() || !rawFrames.get_depth_frame())
+            {
+                continue;
+            }
+
+            rs2::frameset frames = alignToColor.process(rawFrames);
 
             const rs2::video_frame colorFrame = frames.get_color_frame();
             const rs2::depth_frame depthFrame = frames.get_depth_frame();
@@ -6374,11 +7724,13 @@ int main(int argc, char** argv)
                 sectionStart = sectionEnd;
                 return elapsedMs;
             };
-            const rs2::depth_frame filteredDepth = depthPostProcessor.process(depthFrame);
+            const rs2::depth_frame filteredDepth = skipDepthPost
+                ? depthFrame
+                : depthPostProcessor.process(depthFrame);
             timingStats.depthPostMs = takeSectionMs();
             cv::Mat colorBgr = colorFrameToBgr(colorFrame);
             cv::Mat rawDepth16 = depthFrameToMat(depthFrame);
-            cv::Mat depth16 = depthFrameToMat(filteredDepth);
+            cv::Mat depth16 = skipDepthPost ? rawDepth16 : depthFrameToMat(filteredDepth);
 
             if (rawDepth16.size() != colorBgr.size())
             {
@@ -6470,6 +7822,18 @@ int main(int argc, char** argv)
                     stableDisplayConfig.stableContourMinAnchors,
                     anchorPointsOnCandidates);
             timingStats.calibrateMs = takeSectionMs();
+            anchorSupportedCandidates = mergeStablePlaneFragmentsByAnchors(
+                anchorSupportedCandidates,
+                anchorMask,
+                splitBoundaryMask,
+                depth16,
+                config,
+                depthScale,
+                colorIntrinsics,
+                frameId);
+            anchorPointsOnCandidates =
+                countStableAnchorPointsOnMaterials(anchorSupportedCandidates, anchorMask, depth16, depthScale);
+            timingStats.calibrateMs += takeSectionMs();
 
             CueSelectionSummary cueSummary;
             std::vector<ObservationMaterial> cueSelectedCandidates =
@@ -6540,29 +7904,51 @@ int main(int argc, char** argv)
             {
                 cv::Mat segmentationBgr;
                 cv::cvtColor(segmentationGray, segmentationBgr, cv::COLOR_GRAY2BGR);
-                segmentedView = buildStableContourVisualization(
-                    segmentationBgr,
-                    anchorMask,
-                    depth16,
-                    depthScale,
-                    cueSelectedCandidates,
-                    stableMaterials,
-                    stableTrackAggregates,
-                    stableDisplayConfig,
-                    static_cast<int>(frameId + 1));
+                if (config.realtime30 && config.realtimeLiteVisualization)
+                {
+                    segmentedView = buildRealtimeStableContourVisualization(
+                        segmentationBgr,
+                        cueSelectedCandidates,
+                        stableMaterials,
+                        static_cast<int>(frameId + 1));
+                }
+                else
+                {
+                    segmentedView = buildStableContourVisualization(
+                        segmentationBgr,
+                        anchorMask,
+                        depth16,
+                        depthScale,
+                        cueSelectedCandidates,
+                        stableMaterials,
+                        stableTrackAggregates,
+                        stableDisplayConfig,
+                        static_cast<int>(frameId + 1));
+                }
                 if (config.cueSelection)
                 {
                     drawCueSelectionOverlay(segmentedView, cueSummary);
                 }
                 timingStats.renderMs = takeSectionMs();
 
+                const std::vector<ObservationMaterial> displayBaseMaterials =
+                    buildCurrentFrameDisplayBaseMaterials(stableMaterials, cueSelectedCandidates, config);
                 const std::vector<ObservationMaterial> displayStableMaterials =
-                    buildDisplayStableMaterials(colorBgr, stableMaterials, config, completionStats);
+                    buildDisplayStableMaterials(
+                        colorBgr,
+                        anchorMask,
+                        depth16,
+                        depthScale,
+                        displayBaseMaterials,
+                        config,
+                        completionStats);
                 timingStats.completionMs = takeSectionMs();
 
-                mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials);
+                const cv::Mat displayStableMask =
+                    buildStableContourMask(colorBgr.size(), displayStableMaterials);
+                mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials, displayStableMask);
                 drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
-                outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMaterials);
+                outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMask);
                 timingStats.renderMs += takeSectionMs();
 
                 if (config.boundaryDiagnostics)
@@ -6579,13 +7965,27 @@ int main(int argc, char** argv)
             (void)frameAnchorStats;
             (void)anchorPointsOnCandidates;
 
+            if (poseConfig.enabled &&
+                poseConfig.logConsole &&
+                frameId % static_cast<uint64_t>(poseConfig.logEveryFrames) == 0)
+            {
+                std::cout << poseStateSummary(frameId, poseReader.state()) << '\n';
+            }
+
+            cv::Mat rawView = colorBgr;
+            if (needsViews && poseConfig.enabled && poseConfig.overlay)
+            {
+                rawView = colorBgr.clone();
+                drawPoseOverlay(rawView, poseReader.state());
+            }
+
             int key = -1;
+            cv::Mat dashboardView;
+            const std::vector<cv::Mat> dashboardViews{rawView, segmentedView, mosaicView, outsideColorView};
             if (displayEnabled)
             {
-                cv::imshow(kRawWindow, colorBgr);
-                cv::imshow(kSegmentedWindow, segmentedView);
-                cv::imshow(kMosaicWindow, mosaicView);
-                cv::imshow(kOutsideMosaicWindow, outsideColorView);
+                dashboardView = buildTiledFrame(dashboardViews, 2);
+                cv::imshow(kObservationDashboardWindow, dashboardView);
                 if (config.boundaryDiagnostics)
                 {
                     cv::imshow(kBoundaryDiagnosticsWindow, boundaryDiagnosticsView);
@@ -6600,7 +8000,7 @@ int main(int argc, char** argv)
 
             if (recordingConfig.enabled)
             {
-                std::vector<cv::Mat> recordingViews{colorBgr, segmentedView, mosaicView, outsideColorView};
+                std::vector<cv::Mat> recordingViews = dashboardViews;
                 if (config.boundaryDiagnostics)
                 {
                     recordingViews.push_back(boundaryDiagnosticsView);
@@ -6609,7 +8009,7 @@ int main(int argc, char** argv)
                 {
                     recordingViews.push_back(indoorPlaneDiagnosticsView);
                 }
-                videoRecorder.write(buildRecordingFrame(recordingViews));
+                videoRecorder.write(buildTiledFrame(recordingViews, 2));
             }
             timingStats.recordMs = takeSectionMs();
 
@@ -6634,7 +8034,8 @@ int main(int argc, char** argv)
                     cv::countNonZero(anchorMask),
                     anchorPointsOnCandidates,
                     completionStats,
-                    timingStats);
+                    timingStats,
+                    poseReader.state());
             }
 
             if (displayEnabled && (key == 27 || key == 'q' || key == 'Q'))
