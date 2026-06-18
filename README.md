@@ -119,6 +119,30 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 .\x64\Release\D455.exe --pose-read --no-pose-overlay --pose-smooth-percent=10
 ```
 
+### IMU Z 轴是否可当作重力轴的确认方案
+
+不要直接假设 D455 IMU 的 Z 轴就是重力方向轴。静止时 accelerometer 给出的是当前相机姿态下的重力/支撑加速度方向在 IMU 坐标系中的投影；如果相机发生俯仰或横滚，重力方向会在 X/Y/Z 三轴之间重新分配。因此确认口径分两层：
+
+- 只确认当前固定安装姿态：用 `--imu-gravity-check` 静止采样，判断 Z 分量是否稳定占主导。
+- 确认 IMU 轴映射：对相机做六面静止测试，分别让不同外壳面朝上/朝下，检查 `best_gravity_axis` 是否按物理翻转在 `+X/-X/+Y/-Y/+Z/-Z` 间切换。
+
+当前固定姿态的可复跑命令：
+
+```powershell
+.\x64\Release\D455.exe --imu-gravity-check
+.\x64\Release\D455.exe --imu-gravity-check --imu-gravity-frames=300 --imu-gravity-csv=recordings\imu_z_static.csv
+```
+
+默认判定条件：
+
+- `accel_norm_mps2` 接近 9.80665，误差不超过 `--imu-gravity-norm-tolerance-percent=15`。
+- `z_axis_angle_deg <= --imu-gravity-z-max-angle-deg=10`。
+- `z_axis_dominance_percent >= --imu-gravity-z-min-dominance-percent=90`。
+- `accel_std_*` 最大值不超过 `--imu-gravity-max-accel-std-milli-mps2=250`，表示采样期间相机足够静止。
+- 如果 gyro 可用，`gyro_rms_radps <= --imu-gravity-max-gyro-milliradps=50`。
+
+程序会输出 `best_gravity_axis` 和 `z_axis_can_be_gravity`，并默认保存到 `recordings\imu_gravity_check_时间戳.csv`。只有 `z_axis_can_be_gravity=1` 时，才可以在当前固定安装姿态下临时把 IMU Z 轴当作重力方向轴；如果相机运行中会移动或倾斜，应使用 `pose_accel_x/y/z` 的完整重力向量实时估计 roll/pitch，而不是把 Z 轴硬编码为重力方向。
+
 P1 IR-D 边界类型验收会额外打开 `D455 IR-D boundary diagnostics`，第五栏显示边界来源：红色为深度突变，洋红为深度空洞/无效深度交界，蓝色为红外/灰度边，青色为深度边附近的灰度边，绿色为局部深度跨度确认的灰度边，黄色为最终切分边界。CSV 会同步记录各类边界像素数。深度空洞边默认只诊断和计数，不参与最终切分：
 
 ```powershell

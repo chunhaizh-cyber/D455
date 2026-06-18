@@ -323,6 +323,19 @@ struct PoseReadConfig
     int smoothPercent = 20;
 };
 
+struct ImuGravityCheckConfig
+{
+    bool enabled = false;
+    int sampleFrames = 120;
+    int warmupFrames = 30;
+    int zMaxAngleDeg = 10;
+    int zMinDominancePercent = 90;
+    int gravityNormTolerancePercent = 15;
+    int maxAccelStdMilliMps2 = 250;
+    int maxGyroMilliRadps = 50;
+    std::string csvPath;
+};
+
 struct InverseDepthCalibration
 {
     double intercept = 0.0;
@@ -715,6 +728,18 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg == "--imu-gravity-check" ||
+            arg.rfind("--imu-gravity-frames=", 0) == 0 ||
+            arg.rfind("--imu-gravity-warmup=", 0) == 0 ||
+            arg.rfind("--imu-gravity-z-max-angle-deg=", 0) == 0 ||
+            arg.rfind("--imu-gravity-z-min-dominance-percent=", 0) == 0 ||
+            arg.rfind("--imu-gravity-norm-tolerance-percent=", 0) == 0 ||
+            arg.rfind("--imu-gravity-max-accel-std-milli-mps2=", 0) == 0 ||
+            arg.rfind("--imu-gravity-max-gyro-milliradps=", 0) == 0 ||
+            arg.rfind("--imu-gravity-csv=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--depth-stability-test" ||
             arg.rfind("--depth-stability-frames=", 0) == 0 ||
             arg.rfind("--depth-stability-warmup=", 0) == 0 ||
@@ -1008,6 +1033,37 @@ PoseReadConfig parsePoseReadConfig(int argc, char** argv)
 
     config.logEveryFrames = std::clamp(config.logEveryFrames, 1, 100000);
     config.smoothPercent = std::clamp(config.smoothPercent, 1, 100);
+    return config;
+}
+
+ImuGravityCheckConfig parseImuGravityCheckConfig(int argc, char** argv)
+{
+    ImuGravityCheckConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--imu-gravity-check")
+        {
+            config.enabled = true;
+            continue;
+        }
+        parseIntOption(arg, "--imu-gravity-frames=", config.sampleFrames);
+        parseIntOption(arg, "--imu-gravity-warmup=", config.warmupFrames);
+        parseIntOption(arg, "--imu-gravity-z-max-angle-deg=", config.zMaxAngleDeg);
+        parseIntOption(arg, "--imu-gravity-z-min-dominance-percent=", config.zMinDominancePercent);
+        parseIntOption(arg, "--imu-gravity-norm-tolerance-percent=", config.gravityNormTolerancePercent);
+        parseIntOption(arg, "--imu-gravity-max-accel-std-milli-mps2=", config.maxAccelStdMilliMps2);
+        parseIntOption(arg, "--imu-gravity-max-gyro-milliradps=", config.maxGyroMilliRadps);
+        parseStringOption(arg, "--imu-gravity-csv=", config.csvPath);
+    }
+
+    config.sampleFrames = std::clamp(config.sampleFrames, 10, 2000);
+    config.warmupFrames = std::clamp(config.warmupFrames, 0, 2000);
+    config.zMaxAngleDeg = std::clamp(config.zMaxAngleDeg, 1, 45);
+    config.zMinDominancePercent = std::clamp(config.zMinDominancePercent, 50, 100);
+    config.gravityNormTolerancePercent = std::clamp(config.gravityNormTolerancePercent, 1, 50);
+    config.maxAccelStdMilliMps2 = std::clamp(config.maxAccelStdMilliMps2, 1, 5000);
+    config.maxGyroMilliRadps = std::clamp(config.maxGyroMilliRadps, 1, 1000);
     return config;
 }
 
@@ -4365,6 +4421,15 @@ std::string defaultAcceptanceMetricsPath(const std::string& label)
     return path.string();
 }
 
+std::string defaultImuGravityCheckPath()
+{
+    const std::filesystem::path path =
+        projectRootForOutput() /
+        "recordings" /
+        ("imu_gravity_check_" + timestampForFilename() + ".csv");
+    return path.string();
+}
+
 std::filesystem::path resolveProjectOutputPath(
     const std::filesystem::path& requestedPath,
     const std::string& defaultExtension)
@@ -4386,6 +4451,353 @@ std::string companionCsvPathForVideo(const std::string& videoPath)
     std::filesystem::path output = resolveProjectOutputPath(videoPath, ".avi");
     output.replace_extension(".csv");
     return output.string();
+}
+
+struct Vec3Stats
+{
+    int count = 0;
+    cv::Vec3d sum{0.0, 0.0, 0.0};
+    cv::Vec3d sumSquares{0.0, 0.0, 0.0};
+
+    void add(const cv::Vec3d& sample)
+    {
+        ++count;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            sum[axis] += sample[axis];
+            sumSquares[axis] += sample[axis] * sample[axis];
+        }
+    }
+
+    cv::Vec3d mean() const
+    {
+        if (count == 0)
+        {
+            return {};
+        }
+
+        return cv::Vec3d(
+            sum[0] / static_cast<double>(count),
+            sum[1] / static_cast<double>(count),
+            sum[2] / static_cast<double>(count));
+    }
+
+    cv::Vec3d stddev() const
+    {
+        if (count <= 1)
+        {
+            return {};
+        }
+
+        const cv::Vec3d average = mean();
+        cv::Vec3d result;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const double variance =
+                sumSquares[axis] / static_cast<double>(count) -
+                average[axis] * average[axis];
+            result[axis] = std::sqrt(std::max(0.0, variance));
+        }
+        return result;
+    }
+
+    double rmsMagnitude() const
+    {
+        if (count == 0)
+        {
+            return 0.0;
+        }
+
+        return std::sqrt(
+            (sumSquares[0] + sumSquares[1] + sumSquares[2]) /
+            static_cast<double>(count));
+    }
+};
+
+double vec3Norm(const cv::Vec3d& value)
+{
+    return std::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]);
+}
+
+double maxVec3Component(const cv::Vec3d& value)
+{
+    return std::max(value[0], std::max(value[1], value[2]));
+}
+
+std::string signedAxisName(int axisIndex, double value)
+{
+    static constexpr std::array<char, 3> axisNames{'X', 'Y', 'Z'};
+    if (axisIndex < 0 || axisIndex >= static_cast<int>(axisNames.size()))
+    {
+        return "?";
+    }
+
+    std::string result;
+    result += value >= 0.0 ? '+' : '-';
+    result += axisNames[axisIndex];
+    return result;
+}
+
+void writeImuGravityCheckCsv(
+    const std::filesystem::path& output,
+    const ImuGravityCheckConfig& config,
+    const Vec3Stats& accelStats,
+    const Vec3Stats& gyroStats,
+    const std::string& bestAxis,
+    double accelNorm,
+    double gravityNormErrorPercent,
+    double zAxisAngleDeg,
+    double zDominancePercent,
+    double accelStdMax,
+    double gyroRms,
+    bool normOk,
+    bool zAngleOk,
+    bool zDominanceOk,
+    bool accelStableOk,
+    bool gyroStableOk,
+    bool zAxisCanBeGravity)
+{
+    if (output.has_parent_path())
+    {
+        std::filesystem::create_directories(output.parent_path());
+    }
+
+    std::ofstream stream(output, std::ios::out | std::ios::trunc);
+    if (!stream.is_open())
+    {
+        throw std::runtime_error("Failed to open IMU gravity check CSV: " + output.string());
+    }
+
+    const cv::Vec3d accelMean = accelStats.mean();
+    const cv::Vec3d accelStd = accelStats.stddev();
+    const cv::Vec3d gyroMean = gyroStats.mean();
+    const cv::Vec3d gyroStd = gyroStats.stddev();
+
+    stream
+        << "sample_frames,warmup_frames,accel_samples,gyro_samples,"
+        << "accel_mean_x_mps2,accel_mean_y_mps2,accel_mean_z_mps2,"
+        << "accel_std_x_mps2,accel_std_y_mps2,accel_std_z_mps2,"
+        << "accel_norm_mps2,gravity_norm_error_percent,best_gravity_axis,"
+        << "z_axis_angle_deg,z_axis_dominance_percent,"
+        << "gyro_mean_x_radps,gyro_mean_y_radps,gyro_mean_z_radps,"
+        << "gyro_std_x_radps,gyro_std_y_radps,gyro_std_z_radps,gyro_rms_radps,"
+        << "norm_ok,z_angle_ok,z_dominance_ok,accel_stable_ok,gyro_stable_ok,"
+        << "z_axis_can_be_gravity\n";
+    stream
+        << config.sampleFrames << ','
+        << config.warmupFrames << ','
+        << accelStats.count << ','
+        << gyroStats.count << ','
+        << std::fixed << std::setprecision(6)
+        << accelMean[0] << ','
+        << accelMean[1] << ','
+        << accelMean[2] << ','
+        << accelStd[0] << ','
+        << accelStd[1] << ','
+        << accelStd[2] << ','
+        << accelNorm << ','
+        << gravityNormErrorPercent << ','
+        << bestAxis << ','
+        << zAxisAngleDeg << ','
+        << zDominancePercent << ','
+        << gyroMean[0] << ','
+        << gyroMean[1] << ','
+        << gyroMean[2] << ','
+        << gyroStd[0] << ','
+        << gyroStd[1] << ','
+        << gyroStd[2] << ','
+        << gyroRms << ','
+        << (normOk ? 1 : 0) << ','
+        << (zAngleOk ? 1 : 0) << ','
+        << (zDominanceOk ? 1 : 0) << ','
+        << (accelStableOk ? 1 : 0) << ','
+        << (gyroStableOk ? 1 : 0) << ','
+        << (zAxisCanBeGravity ? 1 : 0)
+        << '\n';
+}
+
+int runImuGravityCheck(
+    const rs2::device_list& devices,
+    const ImuGravityCheckConfig& config)
+{
+    if (!deviceListSupportsStream(devices, RS2_STREAM_ACCEL))
+    {
+        std::cerr << "IMU gravity check failed: no accel motion stream found on connected device.\n";
+        return 2;
+    }
+
+    const bool gyroAvailable = deviceListSupportsStream(devices, RS2_STREAM_GYRO);
+    std::cout << "IMU gravity check: keep the camera still during sampling."
+        << " samples=" << config.sampleFrames
+        << " warmup=" << config.warmupFrames
+        << " gyro=" << (gyroAvailable ? 1 : 0)
+        << '\n';
+
+    rs2::pipeline pipeline;
+    rs2::config rsConfig;
+    rsConfig.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
+    if (gyroAvailable)
+    {
+        rsConfig.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
+    }
+
+    (void)pipeline.start(rsConfig);
+    Vec3Stats accelStats;
+    Vec3Stats gyroStats;
+    int accelFramesSeen = 0;
+    int attempts = 0;
+    const int maxAttempts =
+        std::max(1000, (config.warmupFrames + config.sampleFrames) * 40);
+
+    while (accelStats.count < config.sampleFrames && attempts < maxAttempts)
+    {
+        const rs2::frameset frames = pipeline.wait_for_frames();
+        ++attempts;
+
+        const rs2::motion_frame accelFrame(frames.first_or_default(RS2_STREAM_ACCEL));
+        if (accelFrame)
+        {
+            ++accelFramesSeen;
+            if (accelFramesSeen > config.warmupFrames)
+            {
+                const rs2_vector data = accelFrame.get_motion_data();
+                accelStats.add(cv::Vec3d(data.x, data.y, data.z));
+            }
+        }
+
+        const rs2::motion_frame gyroFrame(frames.first_or_default(RS2_STREAM_GYRO));
+        if (gyroFrame && accelFramesSeen > config.warmupFrames)
+        {
+            const rs2_vector data = gyroFrame.get_motion_data();
+            gyroStats.add(cv::Vec3d(data.x, data.y, data.z));
+        }
+    }
+
+    pipeline.stop();
+
+    if (accelStats.count < std::max(10, config.sampleFrames / 2))
+    {
+        std::cerr << "IMU gravity check collected too few accel samples: "
+            << accelStats.count << "/" << config.sampleFrames << '\n';
+        return 3;
+    }
+    if (accelStats.count < config.sampleFrames)
+    {
+        std::cerr << "IMU gravity check warning: collected only "
+            << accelStats.count << "/" << config.sampleFrames
+            << " accel samples after " << attempts << " waits.\n";
+    }
+
+    const cv::Vec3d accelMean = accelStats.mean();
+    const cv::Vec3d accelStd = accelStats.stddev();
+    const double accelNorm = vec3Norm(accelMean);
+    const double gravityNorm = 9.80665;
+    const double gravityNormErrorPercent =
+        accelNorm <= 1e-9
+            ? 100.0
+            : std::abs(accelNorm - gravityNorm) * 100.0 / gravityNorm;
+    const double zRatio =
+        accelNorm <= 1e-9
+            ? 0.0
+            : std::clamp(std::abs(accelMean[2]) / accelNorm, 0.0, 1.0);
+    const double zAxisAngleDeg = radiansToDegrees(std::acos(zRatio));
+    const double zDominancePercent = zRatio * 100.0;
+    const double accelStdMax = maxVec3Component(accelStd);
+    const double gyroRms = gyroStats.rmsMagnitude();
+
+    int bestAxisIndex = 0;
+    for (int axis = 1; axis < 3; ++axis)
+    {
+        if (std::abs(accelMean[axis]) > std::abs(accelMean[bestAxisIndex]))
+        {
+            bestAxisIndex = axis;
+        }
+    }
+    const std::string bestAxis = signedAxisName(bestAxisIndex, accelMean[bestAxisIndex]);
+
+    const double maxAccelStd = config.maxAccelStdMilliMps2 / 1000.0;
+    const double maxGyroRms = config.maxGyroMilliRadps / 1000.0;
+    const bool normOk = gravityNormErrorPercent <= config.gravityNormTolerancePercent;
+    const bool zAngleOk = zAxisAngleDeg <= config.zMaxAngleDeg;
+    const bool zDominanceOk = zDominancePercent >= config.zMinDominancePercent;
+    const bool accelStableOk = accelStdMax <= maxAccelStd;
+    const bool gyroStableOk = gyroStats.count == 0 || gyroRms <= maxGyroRms;
+    const bool zAxisCanBeGravity =
+        normOk && zAngleOk && zDominanceOk && accelStableOk && gyroStableOk;
+
+    std::cout << "\n[IMU gravity axis check]\n";
+    std::cout << "accel_samples=" << accelStats.count
+        << " gyro_samples=" << gyroStats.count
+        << " attempts=" << attempts << '\n';
+    std::cout << "accel_mean_mps2=("
+        << fixedNumber(accelMean[0], 4) << ", "
+        << fixedNumber(accelMean[1], 4) << ", "
+        << fixedNumber(accelMean[2], 4) << ")"
+        << " norm=" << fixedNumber(accelNorm, 4)
+        << " gravity_norm_error=" << fixedNumber(gravityNormErrorPercent, 2) << "%\n";
+    std::cout << "accel_std_mps2=("
+        << fixedNumber(accelStd[0], 4) << ", "
+        << fixedNumber(accelStd[1], 4) << ", "
+        << fixedNumber(accelStd[2], 4) << ")"
+        << " max=" << fixedNumber(accelStdMax, 4)
+        << " limit=" << fixedNumber(maxAccelStd, 4) << '\n';
+    std::cout << "best_gravity_axis=" << bestAxis
+        << " z_axis_angle=" << fixedNumber(zAxisAngleDeg, 2) << "deg"
+        << " z_axis_dominance=" << fixedNumber(zDominancePercent, 2) << "%\n";
+    if (gyroStats.count > 0)
+    {
+        const cv::Vec3d gyroMean = gyroStats.mean();
+        std::cout << "gyro_mean_radps=("
+            << fixedNumber(gyroMean[0], 5) << ", "
+            << fixedNumber(gyroMean[1], 5) << ", "
+            << fixedNumber(gyroMean[2], 5) << ")"
+            << " gyro_rms=" << fixedNumber(gyroRms, 5)
+            << " limit=" << fixedNumber(maxGyroRms, 5) << '\n';
+    }
+    else
+    {
+        std::cout << "gyro_samples=0; static verdict uses accel stability only.\n";
+    }
+
+    std::cout << "checks:"
+        << " norm=" << (normOk ? "ok" : "fail")
+        << " z_angle=" << (zAngleOk ? "ok" : "fail")
+        << " z_dominance=" << (zDominanceOk ? "ok" : "fail")
+        << " accel_stable=" << (accelStableOk ? "ok" : "fail")
+        << " gyro_stable=" << (gyroStableOk ? "ok" : "fail")
+        << '\n';
+    std::cout << "verdict="
+        << (zAxisCanBeGravity
+            ? "PASS: current IMU Z axis can be treated as the gravity axis for this fixed pose."
+            : "FAIL: do not treat IMU Z as the gravity axis in this pose.")
+        << '\n';
+
+    const std::filesystem::path csvOutput = resolveProjectOutputPath(
+        config.csvPath.empty()
+            ? std::filesystem::path(defaultImuGravityCheckPath())
+            : std::filesystem::path(config.csvPath),
+        ".csv");
+    writeImuGravityCheckCsv(
+        csvOutput,
+        config,
+        accelStats,
+        gyroStats,
+        bestAxis,
+        accelNorm,
+        gravityNormErrorPercent,
+        zAxisAngleDeg,
+        zDominancePercent,
+        accelStdMax,
+        gyroRms,
+        normOk,
+        zAngleOk,
+        zDominanceOk,
+        accelStableOk,
+        gyroStableOk,
+        zAxisCanBeGravity);
+    std::cout << "IMU gravity check CSV saved: " << csvOutput.string() << '\n';
+
+    return zAxisCanBeGravity ? 0 : 6;
 }
 
 cv::Mat ensureBgrFrame(const cv::Mat& source)
@@ -7339,6 +7751,15 @@ void printUsage()
         << "  --pose-log\n"
         << "  --pose-log-every-n=30\n"
         << "  --pose-smooth-percent=20\n"
+        << "  --imu-gravity-check\n"
+        << "  --imu-gravity-frames=120\n"
+        << "  --imu-gravity-warmup=30\n"
+        << "  --imu-gravity-z-max-angle-deg=10\n"
+        << "  --imu-gravity-z-min-dominance-percent=90\n"
+        << "  --imu-gravity-norm-tolerance-percent=15\n"
+        << "  --imu-gravity-max-accel-std-milli-mps2=250\n"
+        << "  --imu-gravity-max-gyro-milliradps=50\n"
+        << "  --imu-gravity-csv=recordings\\imu_gravity_check.csv\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
@@ -7464,6 +7885,7 @@ int main(int argc, char** argv)
 {
     SegmentationConfig config = parseConfig(argc, argv);
     PoseReadConfig poseConfig = parsePoseReadConfig(argc, argv);
+    ImuGravityCheckConfig imuGravityConfig = parseImuGravityCheckConfig(argc, argv);
     const int maxFrames = std::max(0, parseIntOptionOrDefault(argc, argv, "--max-frames=", 0));
     const bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_WARNING);
@@ -7498,6 +7920,11 @@ int main(int argc, char** argv)
         {
             std::cerr << "No RealSense device found. Connect D455 and run again.\n";
             return 1;
+        }
+
+        if (imuGravityConfig.enabled)
+        {
+            return runImuGravityCheck(devices, imuGravityConfig);
         }
 
         bool poseAccelStreamEnabled = false;
