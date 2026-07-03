@@ -131,6 +131,9 @@ struct SegmentationConfig
     int nearPlaneSampleStepPixels = 16;
     int nearPlaneMorphKernelSize = 9;
     int nearPlaneFrameInterval = 10;
+    int clusterMapVisualMinAreaPixels = 700;
+    int clusterMapVisualMorphKernelSize = 7;
+    int clusterMapMaxVisualRegions = 24;
     int processedViewScalePercent = 75;
     int overlapTrimMinSupportPercent = 3;
     int overlapTrimPaddingPixels = 6;
@@ -164,8 +167,10 @@ struct SegmentationConfig
     bool nearPlaneDisplay = true;
     bool extraCandidatesInMosaic = false;
     bool overlapTrim = true;
+    bool clusterMap = false;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
+    std::string clusterMapExportPath;
 };
 
 struct ObservationMaterial
@@ -202,6 +207,37 @@ struct FarDistanceMaterial
     int rankNearFirst = 0;
     double contourArea = 0.0;
     std::vector<cv::Point> contour;
+};
+
+enum class ClusterSpatialMode
+{
+    NearPreciseObject,
+    FarContourObject,
+    ImageOnlyContour,
+    BackgroundPlane,
+    Unknown
+};
+
+struct ClusterInfo
+{
+    int id = 0;
+    ClusterSpatialMode mode = ClusterSpatialMode::Unknown;
+    cv::Rect bbox;
+    cv::Point2f center;
+    int pixelCount = 0;
+    int depthMinMm = 0;
+    int depthMeanMm = 0;
+    int depthMaxMm = 0;
+    double confidence = 0.0;
+    std::string source;
+};
+
+struct ClusterMapFrame
+{
+    cv::Mat clusterIdMap;
+    std::vector<ClusterInfo> clusters;
+    double coveragePercent = 0.0;
+    double unknownPixelPercent = 0.0;
 };
 
 struct ObservationGroup
@@ -273,6 +309,7 @@ struct ColorContourCompletionStats
 
 struct FrameTimingStats
 {
+    double captureWaitAlignMs = 0.0;
     double depthPostMs = 0.0;
     double frameConvertMs = 0.0;
     double motionMs = 0.0;
@@ -369,6 +406,12 @@ struct AcceptanceMetricsConfig
     bool enabled = false;
     bool recordVideo = true;
     std::string label = "acceptance_baseline";
+    std::string csvPath;
+};
+
+struct ProfileCsvConfig
+{
+    bool enabled = false;
     std::string csvPath;
 };
 
@@ -579,6 +622,9 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--near-plane-sample-step-px=", config.nearPlaneSampleStepPixels) ||
             parseIntOption(arg, "--near-plane-morph-kernel-px=", config.nearPlaneMorphKernelSize) ||
             parseIntOption(arg, "--near-plane-frame-interval=", config.nearPlaneFrameInterval) ||
+            parseIntOption(arg, "--cluster-map-visual-min-area-px=", config.clusterMapVisualMinAreaPixels) ||
+            parseIntOption(arg, "--cluster-map-visual-morph-kernel-px=", config.clusterMapVisualMorphKernelSize) ||
+            parseIntOption(arg, "--cluster-map-max-visual-regions=", config.clusterMapMaxVisualRegions) ||
             parseIntOption(arg, "--processed-view-scale-percent=", config.processedViewScalePercent) ||
             parseIntOption(arg, "--overlap-trim-min-support-percent=", config.overlapTrimMinSupportPercent) ||
             parseIntOption(arg, "--overlap-trim-padding-px=", config.overlapTrimPaddingPixels) ||
@@ -826,6 +872,21 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.overlapTrim = false;
             continue;
         }
+        if (arg == "--cluster-map")
+        {
+            config.clusterMap = true;
+            continue;
+        }
+        if (arg == "--no-cluster-map")
+        {
+            config.clusterMap = false;
+            continue;
+        }
+        if (parseStringOption(arg, "--cluster-map-export=", config.clusterMapExportPath))
+        {
+            config.clusterMap = true;
+            continue;
+        }
         if (arg == "--probe-only" || arg == "--help" || arg == "-h")
         {
             continue;
@@ -848,6 +909,11 @@ SegmentationConfig parseConfig(int argc, char** argv)
             arg == "--acceptance-no-record" ||
             arg.rfind("--acceptance-label=", 0) == 0 ||
             arg.rfind("--acceptance-csv=", 0) == 0)
+        {
+            continue;
+        }
+        if (arg == "--profile-csv" ||
+            arg.rfind("--profile-csv=", 0) == 0)
         {
             continue;
         }
@@ -1027,6 +1093,9 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.nearPlaneSampleStepPixels = std::clamp(config.nearPlaneSampleStepPixels, 2, 32);
     config.nearPlaneMorphKernelSize = std::clamp(config.nearPlaneMorphKernelSize | 1, 3, 31);
     config.nearPlaneFrameInterval = std::clamp(config.nearPlaneFrameInterval, 1, 120);
+    config.clusterMapVisualMinAreaPixels = std::clamp(config.clusterMapVisualMinAreaPixels, 1, 200000);
+    config.clusterMapVisualMorphKernelSize = std::clamp(config.clusterMapVisualMorphKernelSize | 1, 3, 31);
+    config.clusterMapMaxVisualRegions = std::clamp(config.clusterMapMaxVisualRegions, 1, 200);
     config.processedViewScalePercent = std::clamp(config.processedViewScalePercent, 25, 100);
     config.overlapTrimMinSupportPercent = std::clamp(config.overlapTrimMinSupportPercent, 1, 80);
     config.overlapTrimPaddingPixels = std::clamp(config.overlapTrimPaddingPixels, 0, 128);
@@ -1160,6 +1229,27 @@ AcceptanceMetricsConfig parseAcceptanceMetricsConfig(int argc, char** argv)
         if (!std::isalnum(value) && character != '_' && character != '-')
         {
             character = '_';
+        }
+    }
+
+    return config;
+}
+
+ProfileCsvConfig parseProfileCsvConfig(int argc, char** argv)
+{
+    ProfileCsvConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--profile-csv")
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (parseStringOption(arg, "--profile-csv=", config.csvPath))
+        {
+            config.enabled = true;
+            continue;
         }
     }
 
@@ -5490,6 +5580,463 @@ cv::Mat buildOutsideStableContourColorImage(
     return outsideColor;
 }
 
+std::string defaultClusterMapExportBasePath();
+
+std::filesystem::path resolveProjectOutputPath(
+    const std::filesystem::path& requestedPath,
+    const std::string& defaultExtension);
+
+const char* clusterSpatialModeName(ClusterSpatialMode mode)
+{
+    switch (mode)
+    {
+    case ClusterSpatialMode::NearPreciseObject:
+        return "NearPreciseObject";
+    case ClusterSpatialMode::FarContourObject:
+        return "FarContourObject";
+    case ClusterSpatialMode::ImageOnlyContour:
+        return "ImageOnlyContour";
+    case ClusterSpatialMode::BackgroundPlane:
+        return "BackgroundPlane";
+    case ClusterSpatialMode::Unknown:
+    default:
+        return "Unknown";
+    }
+}
+
+cv::Scalar clusterColorForId(int id)
+{
+    if (id <= 0)
+    {
+        return cv::Scalar(0, 0, 0);
+    }
+
+    const int r = (37 * id + 67) % 206 + 50;
+    const int g = (83 * id + 29) % 206 + 50;
+    const int b = (131 * id + 113) % 206 + 50;
+    return cv::Scalar(b, g, r);
+}
+
+cv::Point2f centerFromMask(const cv::Mat& mask, const cv::Rect& bbox)
+{
+    const cv::Moments moments = cv::moments(mask, true);
+    if (std::abs(moments.m00) > 1e-6)
+    {
+        return cv::Point2f(
+            static_cast<float>(moments.m10 / moments.m00),
+            static_cast<float>(moments.m01 / moments.m00));
+    }
+
+    return cv::Point2f(
+        static_cast<float>(bbox.x + bbox.width * 0.5),
+        static_cast<float>(bbox.y + bbox.height * 0.5));
+}
+
+bool appendClusterFromMask(
+    ClusterMapFrame& frame,
+    const cv::Mat& inputMask,
+    ClusterSpatialMode mode,
+    const std::string& source,
+    int depthMinMm,
+    int depthMeanMm,
+    int depthMaxMm,
+    double confidence,
+    int& nextClusterId)
+{
+    if (inputMask.empty() || frame.clusterIdMap.empty() || inputMask.size() != frame.clusterIdMap.size())
+    {
+        return false;
+    }
+
+    cv::Mat mask;
+    if (inputMask.type() == CV_8UC1)
+    {
+        mask = inputMask.clone();
+    }
+    else
+    {
+        cv::compare(inputMask, 0, mask, cv::CMP_NE);
+    }
+
+    cv::Mat unassigned;
+    cv::compare(frame.clusterIdMap, 0, unassigned, cv::CMP_EQ);
+    cv::bitwise_and(mask, unassigned, mask);
+    const int pixelCount = cv::countNonZero(mask);
+    if (pixelCount <= 0)
+    {
+        return false;
+    }
+
+    const int id = nextClusterId++;
+    frame.clusterIdMap.setTo(id, mask);
+
+    std::vector<cv::Point> nonZeroPoints;
+    cv::findNonZero(mask, nonZeroPoints);
+    const cv::Rect bbox = nonZeroPoints.empty()
+        ? cv::Rect()
+        : cv::boundingRect(nonZeroPoints);
+
+    ClusterInfo info;
+    info.id = id;
+    info.mode = mode;
+    info.bbox = bbox;
+    info.center = centerFromMask(mask, bbox);
+    info.pixelCount = pixelCount;
+    info.depthMinMm = depthMinMm;
+    info.depthMeanMm = depthMeanMm;
+    info.depthMaxMm = depthMaxMm;
+    info.confidence = confidence;
+    info.source = source;
+    frame.clusters.push_back(info);
+    return true;
+}
+
+bool appendClusterFromContour(
+    ClusterMapFrame& frame,
+    const std::vector<cv::Point>& contour,
+    ClusterSpatialMode mode,
+    const std::string& source,
+    int depthMinMm,
+    int depthMeanMm,
+    int depthMaxMm,
+    double confidence,
+    int& nextClusterId)
+{
+    if (contour.empty() || frame.clusterIdMap.empty())
+    {
+        return false;
+    }
+
+    cv::Mat mask = cv::Mat::zeros(frame.clusterIdMap.size(), CV_8UC1);
+    const std::vector<std::vector<cv::Point>> contours{contour};
+    cv::drawContours(mask, contours, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+    return appendClusterFromMask(
+        frame,
+        mask,
+        mode,
+        source,
+        depthMinMm,
+        depthMeanMm,
+        depthMaxMm,
+        confidence,
+        nextClusterId);
+}
+
+void appendObservationMaterialClusters(
+    ClusterMapFrame& frame,
+    const std::vector<ObservationMaterial>& materials,
+    ClusterSpatialMode mode,
+    const std::string& source,
+    double confidence,
+    int& nextClusterId)
+{
+    for (const ObservationMaterial& material : materials)
+    {
+        appendClusterFromContour(
+            frame,
+            material.contour,
+            mode,
+            source,
+            material.depthMinMm,
+            material.meanDepthMm,
+            material.depthMaxMm,
+            confidence,
+            nextClusterId);
+    }
+}
+
+void appendFarDistanceClusters(
+    ClusterMapFrame& frame,
+    const std::vector<FarDistanceMaterial>& materials,
+    int& nextClusterId)
+{
+    for (const FarDistanceMaterial& material : materials)
+    {
+        appendClusterFromContour(
+            frame,
+            material.contour,
+            ClusterSpatialMode::FarContourObject,
+            "far_depth_interval",
+            material.observedDepthMinMm,
+            material.medianDepthMm,
+            material.observedDepthMaxMm,
+            0.45,
+            nextClusterId);
+    }
+}
+
+void appendVisualContourClusters(
+    ClusterMapFrame& frame,
+    const cv::Mat& visualGray,
+    const SegmentationConfig& config,
+    int& nextClusterId)
+{
+    if (visualGray.empty() || frame.clusterIdMap.empty())
+    {
+        return;
+    }
+
+    cv::Mat gray;
+    if (visualGray.channels() == 1)
+    {
+        gray = visualGray;
+    }
+    else
+    {
+        cv::cvtColor(visualGray, gray, cv::COLOR_BGR2GRAY);
+    }
+
+    cv::Mat blurred;
+    cv::GaussianBlur(gray, blurred, cv::Size(3, 3), 0.0);
+    cv::Mat edges;
+    cv::Canny(blurred, edges, 60, 150);
+    const int kernelSize = config.clusterMapVisualMorphKernelSize | 1;
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernelSize, kernelSize));
+    cv::morphologyEx(edges, edges, cv::MORPH_CLOSE, kernel);
+    cv::dilate(edges, edges, kernel);
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(edges, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    std::sort(
+        contours.begin(),
+        contours.end(),
+        [](const std::vector<cv::Point>& lhs, const std::vector<cv::Point>& rhs)
+        {
+            return std::abs(cv::contourArea(lhs)) > std::abs(cv::contourArea(rhs));
+        });
+
+    int accepted = 0;
+    for (const std::vector<cv::Point>& contour : contours)
+    {
+        if (accepted >= config.clusterMapMaxVisualRegions)
+        {
+            break;
+        }
+        if (std::abs(cv::contourArea(contour)) < config.clusterMapVisualMinAreaPixels)
+        {
+            continue;
+        }
+
+        if (appendClusterFromContour(
+                frame,
+                contour,
+                ClusterSpatialMode::ImageOnlyContour,
+                "visual_contour_no_depth_requirement",
+                0,
+                0,
+                0,
+                0.35,
+                nextClusterId))
+        {
+            ++accepted;
+        }
+    }
+}
+
+void appendIndoorPlaneClusters(
+    ClusterMapFrame& frame,
+    const IndoorPlaneAnalysis& indoorPlaneAnalysis,
+    int& nextClusterId)
+{
+    appendClusterFromMask(
+        frame,
+        indoorPlaneAnalysis.supportMask,
+        ClusterSpatialMode::BackgroundPlane,
+        "indoor_support_plane",
+        0,
+        0,
+        0,
+        0.55,
+        nextClusterId);
+    appendClusterFromMask(
+        frame,
+        indoorPlaneAnalysis.wallMask,
+        ClusterSpatialMode::BackgroundPlane,
+        "indoor_wall_plane",
+        0,
+        0,
+        0,
+        0.50,
+        nextClusterId);
+    appendClusterFromMask(
+        frame,
+        indoorPlaneAnalysis.ceilingMask,
+        ClusterSpatialMode::BackgroundPlane,
+        "indoor_ceiling_plane",
+        0,
+        0,
+        0,
+        0.50,
+        nextClusterId);
+}
+
+ClusterMapFrame buildFullFrameClusterMap(
+    const cv::Size& frameSize,
+    const std::vector<ObservationMaterial>& stableMaterials,
+    const std::vector<FarDistanceMaterial>& farDistanceMaterials,
+    const std::vector<ObservationMaterial>& nearPlaneMaterials,
+    const IndoorPlaneAnalysis& indoorPlaneAnalysis,
+    const cv::Mat& visualGray,
+    const SegmentationConfig& config)
+{
+    ClusterMapFrame frame;
+    frame.clusterIdMap = cv::Mat::zeros(frameSize, CV_32S);
+    int nextClusterId = 1;
+
+    appendObservationMaterialClusters(
+        frame,
+        stableMaterials,
+        ClusterSpatialMode::NearPreciseObject,
+        "stable_depth_tracker",
+        0.90,
+        nextClusterId);
+    appendFarDistanceClusters(frame, farDistanceMaterials, nextClusterId);
+    appendVisualContourClusters(frame, visualGray, config, nextClusterId);
+    appendObservationMaterialClusters(
+        frame,
+        nearPlaneMaterials,
+        ClusterSpatialMode::BackgroundPlane,
+        "near_horizontal_plane_display",
+        0.50,
+        nextClusterId);
+    appendIndoorPlaneClusters(frame, indoorPlaneAnalysis, nextClusterId);
+
+    cv::Mat unassigned;
+    cv::compare(frame.clusterIdMap, 0, unassigned, cv::CMP_EQ);
+    appendClusterFromMask(
+        frame,
+        unassigned,
+        ClusterSpatialMode::Unknown,
+        "unassigned_full_frame_remainder",
+        0,
+        0,
+        0,
+        0.10,
+        nextClusterId);
+
+    const int framePixels = std::max(1, frameSize.width * frameSize.height);
+    int assignedPixels = 0;
+    int unknownPixels = 0;
+    for (const ClusterInfo& cluster : frame.clusters)
+    {
+        assignedPixels += cluster.pixelCount;
+        if (cluster.mode == ClusterSpatialMode::Unknown)
+        {
+            unknownPixels += cluster.pixelCount;
+        }
+    }
+    frame.coveragePercent = 100.0 * static_cast<double>(assignedPixels) / static_cast<double>(framePixels);
+    frame.unknownPixelPercent = 100.0 * static_cast<double>(unknownPixels) / static_cast<double>(framePixels);
+    return frame;
+}
+
+cv::Mat colorizeClusterIdMap(const cv::Mat& clusterIdMap)
+{
+    cv::Mat color(clusterIdMap.size(), CV_8UC3, cv::Scalar(0, 0, 0));
+    for (int y = 0; y < clusterIdMap.rows; ++y)
+    {
+        const int* idRow = clusterIdMap.ptr<int>(y);
+        cv::Vec3b* colorRow = color.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < clusterIdMap.cols; ++x)
+        {
+            const cv::Scalar scalar = clusterColorForId(idRow[x]);
+            colorRow[x] = cv::Vec3b(
+                static_cast<uchar>(scalar[0]),
+                static_cast<uchar>(scalar[1]),
+                static_cast<uchar>(scalar[2]));
+        }
+    }
+    return color;
+}
+
+std::filesystem::path clusterMapExportBasePath(const SegmentationConfig& config)
+{
+    std::filesystem::path requested = config.clusterMapExportPath.empty()
+        ? std::filesystem::path(defaultClusterMapExportBasePath())
+        : std::filesystem::path(config.clusterMapExportPath);
+    std::filesystem::path output = resolveProjectOutputPath(requested, "");
+    const std::string extension = output.extension().string();
+    if (extension == ".json" || extension == ".png" || extension == ".bin" || extension == ".csv")
+    {
+        output.replace_extension();
+    }
+    return output;
+}
+
+void writeClusterMapExport(
+    const ClusterMapFrame& frame,
+    const cv::Mat& colorBgr,
+    const SegmentationConfig& config)
+{
+    if (frame.clusterIdMap.empty())
+    {
+        return;
+    }
+
+    const std::filesystem::path base = clusterMapExportBasePath(config);
+    if (base.has_parent_path())
+    {
+        std::filesystem::create_directories(base.parent_path());
+    }
+
+    const std::filesystem::path idPath =
+        base.parent_path() / (base.filename().string() + "_ids.png");
+    const std::filesystem::path overlayPath =
+        base.parent_path() / (base.filename().string() + "_overlay.png");
+    const std::filesystem::path metadataPath =
+        base.parent_path() / (base.filename().string() + "_metadata.json");
+
+    cv::Mat ids16;
+    frame.clusterIdMap.convertTo(ids16, CV_16U);
+    cv::imwrite(idPath.string(), ids16);
+
+    if (!colorBgr.empty() && colorBgr.size() == frame.clusterIdMap.size())
+    {
+        cv::Mat overlay;
+        cv::addWeighted(colorBgr, 0.55, colorizeClusterIdMap(frame.clusterIdMap), 0.45, 0.0, overlay);
+        cv::imwrite(overlayPath.string(), overlay);
+    }
+
+    std::ofstream metadata(metadataPath, std::ios::out | std::ios::trunc);
+    if (!metadata.is_open())
+    {
+        throw std::runtime_error("Failed to open cluster map metadata file: " + metadataPath.string());
+    }
+
+    metadata << "{\n";
+    metadata << "  \"image_size\": [" << frame.clusterIdMap.cols << ", " << frame.clusterIdMap.rows << "],\n";
+    metadata << "  \"coverage_percent\": " << std::fixed << std::setprecision(3) << frame.coveragePercent << ",\n";
+    metadata << "  \"unknown_pixel_percent\": " << std::fixed << std::setprecision(3) << frame.unknownPixelPercent << ",\n";
+    metadata << "  \"clusters\": [\n";
+    for (size_t index = 0; index < frame.clusters.size(); ++index)
+    {
+        const ClusterInfo& cluster = frame.clusters[index];
+        metadata << "    {\n";
+        metadata << "      \"id\": " << cluster.id << ",\n";
+        metadata << "      \"mode\": \"" << clusterSpatialModeName(cluster.mode) << "\",\n";
+        metadata << "      \"source\": \"" << cluster.source << "\",\n";
+        metadata << "      \"pixel_count\": " << cluster.pixelCount << ",\n";
+        metadata << "      \"bbox_2d\": ["
+            << cluster.bbox.x << ", " << cluster.bbox.y << ", "
+            << cluster.bbox.width << ", " << cluster.bbox.height << "],\n";
+        metadata << "      \"center_2d\": ["
+            << std::setprecision(3) << cluster.center.x << ", "
+            << std::setprecision(3) << cluster.center.y << "],\n";
+        metadata << "      \"depth_min_mm\": " << cluster.depthMinMm << ",\n";
+        metadata << "      \"depth_mean_mm\": " << cluster.depthMeanMm << ",\n";
+        metadata << "      \"depth_max_mm\": " << cluster.depthMaxMm << ",\n";
+        metadata << "      \"confidence\": " << std::setprecision(3) << cluster.confidence << "\n";
+        metadata << "    }" << (index + 1 == frame.clusters.size() ? "\n" : ",\n");
+    }
+    metadata << "  ]\n";
+    metadata << "}\n";
+    metadata.close();
+
+    std::cout << "Cluster map export saved: "
+        << idPath.string() << " ; "
+        << metadataPath.string() << '\n';
+}
+
 std::string timestampForFilename()
 {
     const auto now = std::chrono::system_clock::now();
@@ -5571,6 +6118,24 @@ std::string defaultImuGravityCheckPath()
         projectRootForOutput() /
         "recordings" /
         ("imu_gravity_check_" + timestampForFilename() + ".csv");
+    return path.string();
+}
+
+std::string defaultProfileCsvPath()
+{
+    const std::filesystem::path path =
+        projectRootForOutput() /
+        "recordings" /
+        ("profile_" + timestampForFilename() + ".csv");
+    return path.string();
+}
+
+std::string defaultClusterMapExportBasePath()
+{
+    const std::filesystem::path path =
+        projectRootForOutput() /
+        "recordings" /
+        ("cluster_map_" + timestampForFilename());
     return path.string();
 }
 
@@ -6568,6 +7133,7 @@ public:
             << completionStats.adoptedContours << ','
             << completionStats.rejectedContours << ','
             << std::setprecision(3)
+            << timingStats.captureWaitAlignMs << ','
             << timingStats.depthPostMs << ','
             << timingStats.frameConvertMs << ','
             << timingStats.motionMs << ','
@@ -6685,7 +7251,7 @@ private:
             << "indoor_plane_components,indoor_plane_cached,"
             << "anchor_count,anchor_points_on_candidates,"
             << "color_completion_input,color_completion_adopted,color_completion_rejected,"
-            << "depth_post_ms,frame_convert_ms,motion_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
+            << "capture_wait_align_ms,depth_post_ms,frame_convert_ms,motion_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
             << "extract_ms,far_extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
             << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms";
         if (includePoseColumns_)
@@ -6718,6 +7284,117 @@ private:
     std::ofstream stream_;
     std::string outputPath_;
     std::map<uint64_t, ObservationMaterial> previousStableById_;
+};
+
+class ProfileCsvWriter
+{
+public:
+    explicit ProfileCsvWriter(const ProfileCsvConfig& config)
+        : config_(config)
+    {
+    }
+
+    ~ProfileCsvWriter()
+    {
+        close();
+    }
+
+    void write(
+        uint64_t frameId,
+        double processingMs,
+        int candidateCount,
+        int anchorSupportedCount,
+        int stableCount,
+        int farCandidateCount,
+        int anchorCount,
+        int anchorPointsOnCandidates,
+        const FrameTimingStats& timingStats)
+    {
+        if (!config_.enabled)
+        {
+            return;
+        }
+        if (!stream_.is_open())
+        {
+            open();
+        }
+
+        const double totalMs = timingStats.captureWaitAlignMs + processingMs;
+        stream_
+            << frameId << ','
+            << std::fixed << std::setprecision(3)
+            << totalMs << ','
+            << processingMs << ','
+            << timingStats.captureWaitAlignMs << ','
+            << timingStats.depthPostMs << ','
+            << timingStats.frameConvertMs << ','
+            << timingStats.motionMs << ','
+            << timingStats.grayPrepareMs << ','
+            << timingStats.anchorMs << ','
+            << timingStats.boundaryMs << ','
+            << timingStats.extractMs << ','
+            << timingStats.farExtractMs << ','
+            << timingStats.pclMs << ','
+            << timingStats.calibrateMs << ','
+            << timingStats.cueMs << ','
+            << timingStats.trackerMs << ','
+            << timingStats.supportMs << ','
+            << timingStats.renderMs << ','
+            << timingStats.completionMs << ','
+            << timingStats.diagnosticsMs << ','
+            << timingStats.displayMs << ','
+            << timingStats.recordMs << ','
+            << candidateCount << ','
+            << anchorSupportedCount << ','
+            << stableCount << ','
+            << farCandidateCount << ','
+            << anchorCount << ','
+            << anchorPointsOnCandidates
+            << '\n';
+    }
+
+    void close()
+    {
+        if (stream_.is_open())
+        {
+            stream_.close();
+            std::cout << "Profile CSV saved: " << outputPath_ << '\n';
+        }
+    }
+
+private:
+    void open()
+    {
+        const std::filesystem::path output = resolveProjectOutputPath(
+            config_.csvPath.empty()
+                ? std::filesystem::path(defaultProfileCsvPath())
+                : std::filesystem::path(config_.csvPath),
+            ".csv");
+        if (output.has_parent_path())
+        {
+            std::filesystem::create_directories(output.parent_path());
+        }
+
+        outputPath_ = output.string();
+        stream_.open(outputPath_, std::ios::out | std::ios::trunc);
+        if (!stream_.is_open())
+        {
+            throw std::runtime_error("Failed to open profile CSV file: " + outputPath_);
+        }
+
+        stream_
+            << "frame_index,total_ms,processing_ms,capture_wait_align_ms,"
+            << "depth_post_ms,frame_convert_ms,motion_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
+            << "extract_ms,far_extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
+            << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms,"
+            << "candidate_count,anchor_supported_count,stable_count,far_candidate_count,"
+            << "anchor_count,anchor_points_on_candidates\n";
+        std::cout << "Profile CSV: " << outputPath_ << '\n';
+    }
+
+    ProfileCsvConfig config_;
+    std::ofstream stream_;
+    std::string outputPath_;
 };
 
 cv::Mat normalizeFloat01(const cv::Mat& source)
@@ -9201,6 +9878,8 @@ void printUsage()
         << "  --acceptance-no-record\n"
         << "  --acceptance-label=acceptance_baseline\n"
         << "  --acceptance-csv=recordings\\acceptance_baseline.csv\n"
+        << "  --profile-csv\n"
+        << "  --profile-csv=recordings\\profile.csv\n"
         << "  --pose-read\n"
         << "  --no-pose-read\n"
         << "  --pose-overlay\n"
@@ -9255,6 +9934,11 @@ void printUsage()
         << "  --near-plane-sample-step-px=16\n"
         << "  --near-plane-morph-kernel-px=9\n"
         << "  --near-plane-frame-interval=10\n"
+        << "  --cluster-map\n"
+        << "  --cluster-map-export=recordings\\cluster_map_sample\n"
+        << "  --cluster-map-visual-min-area-px=700\n"
+        << "  --cluster-map-visual-morph-kernel-px=7\n"
+        << "  --cluster-map-max-visual-regions=24\n"
         << "  --extra-candidates-in-mosaic\n"
         << "  --no-extra-candidates-in-mosaic\n"
         << "  --processed-view-scale-percent=75\n"
@@ -9587,6 +10271,7 @@ int main(int argc, char** argv)
         DepthPostProcessor depthPostProcessor(
             config.realtime30 && config.realtimeFastDepthPost && !skipDepthPost);
         AcceptanceMetricsConfig acceptanceConfig = parseAcceptanceMetricsConfig(argc, argv);
+        ProfileCsvConfig profileCsvConfig = parseProfileCsvConfig(argc, argv);
         const bool explicitRecordingOption =
             hasFlag(argc, argv, "--record-video") ||
             hasOptionPrefix(argc, argv, "--record-video=");
@@ -9646,11 +10331,16 @@ int main(int argc, char** argv)
 
         VideoRecorder videoRecorder(recordingConfig);
         AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled, motionConfig.enabled);
+        ProfileCsvWriter profileCsv(profileCsvConfig);
         PoseReader poseReader(poseConfig, poseAccelStreamEnabled, poseGyroStreamEnabled);
         MotionDiagnostics motionDiagnostics(motionConfig);
+        ClusterMapFrame lastClusterMapFrame;
+        cv::Mat lastClusterMapColor;
+        bool hasLastClusterMapFrame = false;
         uint64_t frameId = 0;
         while (true)
         {
+            const auto captureWaitStart = std::chrono::steady_clock::now();
             rs2::frameset rawFrames = waitForLatestRgbdFrames(pipeline);
             poseReader.update(rawFrames);
             if (!rawFrames.get_color_frame() || !rawFrames.get_depth_frame())
@@ -9669,6 +10359,8 @@ int main(int argc, char** argv)
 
             const auto frameStart = std::chrono::steady_clock::now();
             FrameTimingStats timingStats;
+            timingStats.captureWaitAlignMs =
+                std::chrono::duration<double, std::milli>(frameStart - captureWaitStart).count();
             auto sectionStart = frameStart;
             auto takeSectionMs = [&sectionStart]()
             {
@@ -9745,7 +10437,7 @@ int main(int argc, char** argv)
                     nullptr);
             timingStats.extractMs = takeSectionMs();
             std::vector<FarDistanceMaterial> farDistanceMaterials;
-            if (config.farDistanceIntervals && (needsViews || acceptanceConfig.enabled))
+            if (config.farDistanceIntervals && (needsViews || acceptanceConfig.enabled || config.clusterMap))
             {
                 farDistanceMaterials =
                     extractFarDistanceMaterials(
@@ -9839,7 +10531,7 @@ int main(int argc, char** argv)
             timingStats.supportMs = takeSectionMs();
 
             std::vector<ObservationMaterial> nearPlaneMaterials;
-            if (needsViews && config.nearPlaneDisplay)
+            if ((needsViews || config.clusterMap) && config.nearPlaneDisplay)
             {
                 const bool refreshNearPlanes =
                     !hasNearPlaneCache ||
@@ -9861,12 +10553,12 @@ int main(int argc, char** argv)
             }
 
             cv::Mat stableMaskForFrame;
-            if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled)
+            if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled || config.clusterMap)
             {
                 stableMaskForFrame = buildStableContourMask(colorBgr.size(), stableMaterials);
             }
             IndoorPlaneAnalysis indoorPlaneAnalysis;
-            if (config.indoorPlaneDiagnostics)
+            if (config.indoorPlaneDiagnostics || config.clusterMap)
             {
                 const bool refreshIndoorPlanes =
                     !hasIndoorPlaneCache ||
@@ -9886,6 +10578,21 @@ int main(int argc, char** argv)
                 indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
             }
             timingStats.diagnosticsMs += takeSectionMs();
+
+            if (config.clusterMap)
+            {
+                lastClusterMapFrame = buildFullFrameClusterMap(
+                    colorBgr.size(),
+                    stableMaterials,
+                    farDistanceMaterials,
+                    nearPlaneMaterials,
+                    indoorPlaneAnalysis,
+                    segmentationGray,
+                    config);
+                lastClusterMapColor = colorBgr.clone();
+                hasLastClusterMapFrame = true;
+                timingStats.diagnosticsMs += takeSectionMs();
+            }
             ColorContourCompletionStats completionStats;
             cv::Mat segmentedView;
             cv::Mat mosaicView;
@@ -10079,6 +10786,16 @@ int main(int argc, char** argv)
             const auto frameEnd = std::chrono::steady_clock::now();
             const double frameMs =
                 std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+            profileCsv.write(
+                frameId,
+                frameMs,
+                static_cast<int>(candidateMaterials.size()),
+                static_cast<int>(anchorSupportedCandidates.size()),
+                static_cast<int>(stableMaterials.size()),
+                static_cast<int>(farDistanceMaterials.size()),
+                cv::countNonZero(anchorMask),
+                anchorPointsOnCandidates,
+                timingStats);
             if (acceptanceConfig.enabled)
             {
                 const cv::Mat stableMask = stableMaskForFrame.empty()
@@ -10116,6 +10833,11 @@ int main(int argc, char** argv)
         }
 
         acceptanceMetrics.close();
+        profileCsv.close();
+        if (config.clusterMap && hasLastClusterMapFrame)
+        {
+            writeClusterMapExport(lastClusterMapFrame, lastClusterMapColor, config);
+        }
         videoRecorder.close();
         pipeline.stop();
         cv::destroyAllWindows();

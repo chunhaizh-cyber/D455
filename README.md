@@ -16,6 +16,50 @@
 
 当前输出只表示“外设观察存在材料 / 稳定候选轮廓”，不是世界真值、已确认观察存在、扫描事实或跟踪事实。
 
+## 维护规则
+
+每次调整算法、显示、性能、验证或排查方向时，都必须同步更新本 README，说明本次改进方向、影响的观察/显示链路、默认行为变化、主要开关参数和验证方式。README 应作为当前方案边界和后续调参入口，不能只在代码或对话中保留改进意图。
+
+## 下一阶段工程化路线
+
+当前项目已经进入工程化、可验证、可复现实验阶段。后续优先级不再是继续把所有能力塞进 `D455.cpp`，而是先建立可拆分、可回放、可量化的实验骨架：
+
+| 阶段 | 目标 | 当前动作 | 判定方式 |
+| --- | --- | --- | --- |
+| P4.5 工程拆分 | 将采集、深度后处理、边界分析、材料提取、PCL、tracker、诊断显示分层 | 先保持单文件行为不变，新增独立 profile CSV 作为拆分前基线；后续再逐步搬到 `src/` 模块 | 拆分前后 2x2 画面、验收 CSV 字段和核心指标基本一致 |
+| P5 全画面归簇 | 每个像素都有 `cluster_id`，近场给精确 3D，远场/无效深度先保留 2D 轮廓，剩余区域归 background/unknown | 已新增可选 `--cluster-map` 原型，导出最后一帧 `*_ids.png`、`*_overlay.png`、`*_metadata.json`；仍不改变默认 2x2 稳定显示 | `coverage_percent` 接近 100%，`unknown_pixel_percent` 可控，metadata 能区分近场、远场、图像轮廓、背景和未知 |
+| P6 指标门槛 | 把“感觉更稳”变成 pass/fail | 用 acceptance CSV + profile CSV 汇总 p50/p90/p95、IoU、抖动和 flicker | 指标达到阶段阈值，且失败帧可定位 |
+| P7 配置系统 | 减少命令行参数雪崩 | 后续增加 `configs/default.json` / `configs/fast.json`，命令行只做覆盖 | 一组效果参数能随仓库保存并复跑 |
+| P8 构建复现 | 降低换机器成本 | 后续补 `vcpkg.json`、`CMakeLists.txt`、`CMakePresets.json`，保留现有 `.vcxproj` | 新机器可按 preset 构建 |
+| P9 最小测试 | 防止纯算法行为被改坏 | 优先覆盖 config clamp、tracker 匹配、IoU、边界抖动和 cue selection | 无相机也能跑核心单元测试 |
+| P10-P12 解释化 | 让 PCL/cue/tracker、双目粗距和输出语义可追踪 | 后续启用 IR2，新增远场 contour disparity；当前远场距离仍只沿用已有深度区间候选，不伪装成精确 3D | 每类失败能对应至少一个 CSV 字段或 overlay 证据 |
+
+建议的长期文件结构如下，迁移时必须先保留行为基线，再拆模块：
+
+```text
+src/
+  main.cpp
+  camera/
+    RealSenseCapture.h/.cpp
+    DepthPostProcessor.h/.cpp
+  segmentation/
+    BoundaryAnalysis.h/.cpp
+    MaterialExtractor.h/.cpp
+    PclClusterRefiner.h/.cpp
+    CueSelection.h/.cpp
+  tracking/
+    SegmentationTracker.h/.cpp
+    StableContourMetrics.h/.cpp
+  diagnostics/
+    AcceptanceMetricsWriter.h/.cpp
+    ProfileCsvWriter.h/.cpp
+    IndoorPlaneDiagnostics.h/.cpp
+    Visualizer.h/.cpp
+  config/
+    SegmentationConfig.h/.cpp
+    CliOptions.h/.cpp
+```
+
 ## 本机依赖
 
 工程按当前机器的 vcpkg 路径配置：
@@ -100,11 +144,31 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 .\x64\Release\D455.exe --record-video=recordings\d455_stable_contours.avi --record-fps=30
 ```
 
-性能分析时可以关闭窗口显示和验收录制，只保留 CSV 指标；CSV 会追加各阶段耗时字段，方便区分算法、渲染、显示和录制开销：
+性能分析时可以关闭窗口显示和验收录制，只保留 CSV 指标；验收 CSV 会追加各阶段耗时字段，方便区分算法、渲染、显示和录制开销。需要只定位速度瓶颈时，优先用独立的 `--profile-csv`，它不要求启用 P0 验收，也不会自动录像；输出字段包含 `total_ms`、`processing_ms`、`capture_wait_align_ms`、`depth_post_ms`、`boundary_ms`、`extract_ms`、`pcl_ms`、`tracker_ms`、`render_ms`、`display_ms`、`record_ms` 以及候选/稳定轮廓计数。注意 `capture_wait_align_ms` 包含等待相机帧和 RealSense 对齐时间，不等同于纯算法处理耗时；判断 30fps 处理瓶颈时重点看 `processing_ms` 和各算法分段：
 
 ```powershell
 .\x64\Release\D455.exe --acceptance-baseline --acceptance-no-record --no-display --max-frames=600
+.\x64\Release\D455.exe --profile-csv=recordings\profile_fast.csv --no-display --max-frames=600
+.\x64\Release\D455.exe --profile-csv --no-display --max-frames=600
 ```
+
+全画面归簇是可选 P5 原型，默认关闭，不改变现有稳定候选显示。启用后程序会在最后一帧导出三类文件：`*_ids.png` 是 16-bit cluster id 图，每个像素都有非零归属；`*_overlay.png` 是叠加到原始彩图上的调试图；`*_metadata.json` 记录每个 cluster 的 `mode`、来源、像素数、2D bbox、中心、深度统计和置信度。当前分层口径如下：
+
+| mode | 含义 | 空间精度口径 |
+| --- | --- | --- |
+| `NearPreciseObject` | 当前稳定 tracker 输出的近场深度稳定轮廓 | 可使用 D455 深度统计，属于较高精度 3D 观察材料 |
+| `FarContourObject` | 超出有效距离但仍有深度区间支持的远距候选 | 只表示区间距离和近远顺序，不是精确 3D |
+| `ImageOnlyContour` | 不依赖有效深度的 IR/RGB 视觉轮廓 | 只确认 2D 轮廓归属，距离未知 |
+| `BackgroundPlane` | 室内平面/近处水平面诊断得到的背景结构 | 背景结构归属，不进入前景稳定 tracker |
+| `Unknown` | 剩余像素 | 为保证全画面覆盖的未知归属 |
+
+```powershell
+.\x64\Release\D455.exe --cluster-map --no-display --max-frames=120
+.\x64\Release\D455.exe --cluster-map-export=recordings\cluster_map_p5 --no-display --max-frames=120
+.\x64\Release\D455.exe --cluster-map --cluster-map-visual-min-area-px=500 --cluster-map-max-visual-regions=32
+```
+
+注意：P5 原型只解决“每个像素有归属”和“深度精度分层标注”。右红外 IR2 + 双目轮廓偏差粗距属于后续 P6，不应把当前 `ImageOnlyContour` 当成已有距离估计。
 
 实时运行默认启用 `--realtime-30`，目标是把主处理链压到 33ms 以内，避免相机移动时旧帧积压。实时档默认跳过 RealSense 深度后处理、使用轻量右上格、用 450mm 深度切片和略稀疏的稳定点采样，并关闭每帧 PCL 聚类、灰度/红外切分和灰度边局部深度确认切分；稳定输出仍需要稳定深度点和历史 tracker 确认。需要回到质量优先全链，或在现场噪声较高时恢复深度后处理：
 
@@ -130,6 +194,15 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 .\x64\Release\D455.exe --acceptance-baseline --acceptance-label=acceptance_p0 --max-frames=600
 .\x64\Release\D455.exe --acceptance-baseline --record-video=recordings\acceptance_p0.avi --acceptance-csv=recordings\acceptance_p0.csv --max-frames=600
 ```
+
+阶段验收表暂定如下，后续有固定回放集后再把阈值按场景细化。当前先用真实 D455 录制和 CSV 汇总判断是否退化：
+
+| 阶段 | 关注指标 | 建议门槛 | 典型失败信号 |
+| --- | --- | --- | --- |
+| P0 稳定性/速度 | `processing_ms` p95、`avg_contour_iou`、`boundary_jitter_px`、`stable_count` 抖动 | p95 尽量 <= 33ms；质量优先模式可放宽到 <= 50ms；连续稳定轮廓 IoU 均值尽量 >= 0.85；边界抖动 p90 尽量 <= 3px | 相机移动时视觉残留、稳定轮廓闪烁、窗口尺寸变化 |
+| P1 边界质量 | `split_boundary_px`、`gray_depth_confirmed_edge_px`、`depth_step_edge_px`、`depth_hole_edge_px` | 边界像素不应异常飙升；深度确认边应随真实物体边界变化 | 大框误检、斜面被切成碎片、空洞边误切 |
+| P2 cue selection | `cue_rejected_texture_count`、`cue_accepted_by_depth`、`cue_accepted_by_anchor`、`stable_count` | 纹理拒绝上升时，真实稳定轮廓数量不应明显下降 | 纹理边误检、真实物体被 cue 拦掉 |
+| P3 平面诊断 | `indoor_plane_cached`、`indoor_plane_px`、`indoor_support_px`、稳定前景遮罩 | 平面诊断应稳定命中，且不吞掉稳定前景 | 墙/桌/天面诊断漂移，平面 mask 压住前景 |
 
 姿态读取是可选旁路能力，默认不改变 RGBD 分割和稳定观察单元。打开 `--pose-read` 后，程序会在设备支持时同时启用 accel/gyro motion stream：roll/pitch 由加速度重力方向估计，`yaw_rel` 由陀螺仪短时积分得到，只能作为本次启动后的相对航向参考，会随时间漂移。默认会把姿态摘要叠加到原始彩图窗口和录制视频；验收 CSV 只在启用姿态时追加 `pose_*` 字段：
 
