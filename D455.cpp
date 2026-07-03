@@ -118,6 +118,23 @@ struct SegmentationConfig
     int colorContourPrimaryMaxAreaDeltaPercent = 220;
     int colorContourPrimaryMaxCenterShiftPixels = 96;
     int colorContourPrimaryMaxAreaPercent = 85;
+    int farMaxDepthMm = 12000;
+    int farIntervalMm = 1500;
+    int farMinAreaPixels = 600;
+    int farMaxMaterials = 8;
+    int farMorphKernelSize = 7;
+    int nearPlaneMaxDepthMm = 2200;
+    int nearPlaneMinAreaPercent = 3;
+    int nearPlaneMaxMaterials = 2;
+    int nearPlaneNormalMinPercent = 60;
+    int nearPlaneMinCenterYPercent = 30;
+    int nearPlaneSampleStepPixels = 16;
+    int nearPlaneMorphKernelSize = 9;
+    int nearPlaneFrameInterval = 10;
+    int processedViewScalePercent = 75;
+    int overlapTrimMinSupportPercent = 3;
+    int overlapTrimPaddingPixels = 6;
+    int overlapTrimExtraCropPixels = 2;
     bool showLabels = false;
     bool showCenters = false;
     bool showRegionContours = false;
@@ -143,6 +160,10 @@ struct SegmentationConfig
     bool realtimeDepthOnlyBoundary = true;
     bool colorContourCompletion = false;
     bool colorContourPrimary = false;
+    bool farDistanceIntervals = true;
+    bool nearPlaneDisplay = true;
+    bool extraCandidatesInMosaic = false;
+    bool overlapTrim = true;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
 };
@@ -165,6 +186,21 @@ struct ObservationMaterial
     bool hasPointCloudBounds = false;
     cv::Point3f minPointMeters;
     cv::Point3f maxPointMeters;
+    std::vector<cv::Point> contour;
+};
+
+struct FarDistanceMaterial
+{
+    cv::Rect roi;
+    cv::Point center;
+    int pixelCount = 0;
+    int observedDepthMinMm = 0;
+    int observedDepthMaxMm = 0;
+    int medianDepthMm = 0;
+    int intervalMinMm = 0;
+    int intervalMaxMm = 0;
+    int rankNearFirst = 0;
+    double contourArea = 0.0;
     std::vector<cv::Point> contour;
 };
 
@@ -244,6 +280,7 @@ struct FrameTimingStats
     double anchorMs = 0.0;
     double boundaryMs = 0.0;
     double extractMs = 0.0;
+    double farExtractMs = 0.0;
     double pclMs = 0.0;
     double calibrateMs = 0.0;
     double cueMs = 0.0;
@@ -528,7 +565,24 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--color-contour-primary-min-overlap-percent=", config.colorContourPrimaryMinOverlapPercent) ||
             parseIntOption(arg, "--color-contour-primary-max-area-delta-percent=", config.colorContourPrimaryMaxAreaDeltaPercent) ||
             parseIntOption(arg, "--color-contour-primary-max-center-shift-px=", config.colorContourPrimaryMaxCenterShiftPixels) ||
-            parseIntOption(arg, "--color-contour-primary-max-area-percent=", config.colorContourPrimaryMaxAreaPercent))
+            parseIntOption(arg, "--color-contour-primary-max-area-percent=", config.colorContourPrimaryMaxAreaPercent) ||
+            parseIntOption(arg, "--far-max-depth-mm=", config.farMaxDepthMm) ||
+            parseIntOption(arg, "--far-interval-mm=", config.farIntervalMm) ||
+            parseIntOption(arg, "--far-min-area-px=", config.farMinAreaPixels) ||
+            parseIntOption(arg, "--far-max-materials=", config.farMaxMaterials) ||
+            parseIntOption(arg, "--far-morph-kernel-px=", config.farMorphKernelSize) ||
+            parseIntOption(arg, "--near-plane-max-depth-mm=", config.nearPlaneMaxDepthMm) ||
+            parseIntOption(arg, "--near-plane-min-area-percent=", config.nearPlaneMinAreaPercent) ||
+            parseIntOption(arg, "--near-plane-max-materials=", config.nearPlaneMaxMaterials) ||
+            parseIntOption(arg, "--near-plane-normal-min-percent=", config.nearPlaneNormalMinPercent) ||
+            parseIntOption(arg, "--near-plane-min-center-y-percent=", config.nearPlaneMinCenterYPercent) ||
+            parseIntOption(arg, "--near-plane-sample-step-px=", config.nearPlaneSampleStepPixels) ||
+            parseIntOption(arg, "--near-plane-morph-kernel-px=", config.nearPlaneMorphKernelSize) ||
+            parseIntOption(arg, "--near-plane-frame-interval=", config.nearPlaneFrameInterval) ||
+            parseIntOption(arg, "--processed-view-scale-percent=", config.processedViewScalePercent) ||
+            parseIntOption(arg, "--overlap-trim-min-support-percent=", config.overlapTrimMinSupportPercent) ||
+            parseIntOption(arg, "--overlap-trim-padding-px=", config.overlapTrimPaddingPixels) ||
+            parseIntOption(arg, "--overlap-trim-extra-crop-px=", config.overlapTrimExtraCropPixels))
         {
             continue;
         }
@@ -732,6 +786,46 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.colorContourPrimary = false;
             continue;
         }
+        if (arg == "--far-distance-intervals")
+        {
+            config.farDistanceIntervals = true;
+            continue;
+        }
+        if (arg == "--no-far-distance-intervals")
+        {
+            config.farDistanceIntervals = false;
+            continue;
+        }
+        if (arg == "--near-plane-display")
+        {
+            config.nearPlaneDisplay = true;
+            continue;
+        }
+        if (arg == "--no-near-plane-display")
+        {
+            config.nearPlaneDisplay = false;
+            continue;
+        }
+        if (arg == "--extra-candidates-in-mosaic")
+        {
+            config.extraCandidatesInMosaic = true;
+            continue;
+        }
+        if (arg == "--no-extra-candidates-in-mosaic")
+        {
+            config.extraCandidatesInMosaic = false;
+            continue;
+        }
+        if (arg == "--overlap-trim")
+        {
+            config.overlapTrim = true;
+            continue;
+        }
+        if (arg == "--no-overlap-trim")
+        {
+            config.overlapTrim = false;
+            continue;
+        }
         if (arg == "--probe-only" || arg == "--help" || arg == "-h")
         {
             continue;
@@ -920,6 +1014,23 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.colorContourPrimaryMaxCenterShiftPixels =
         std::clamp(config.colorContourPrimaryMaxCenterShiftPixels, 1, 640);
     config.colorContourPrimaryMaxAreaPercent = std::clamp(config.colorContourPrimaryMaxAreaPercent, 1, 100);
+    config.farMaxDepthMm = std::max(config.maxDepthMm + 1, config.farMaxDepthMm);
+    config.farIntervalMm = std::clamp(config.farIntervalMm, 100, 10000);
+    config.farMinAreaPixels = std::max(1, config.farMinAreaPixels);
+    config.farMaxMaterials = std::clamp(config.farMaxMaterials, 1, 32);
+    config.farMorphKernelSize = std::clamp(config.farMorphKernelSize | 1, 3, 31);
+    config.nearPlaneMaxDepthMm = std::clamp(config.nearPlaneMaxDepthMm, config.minDepthMm, config.maxDepthMm);
+    config.nearPlaneMinAreaPercent = std::clamp(config.nearPlaneMinAreaPercent, 1, 80);
+    config.nearPlaneMaxMaterials = std::clamp(config.nearPlaneMaxMaterials, 1, 8);
+    config.nearPlaneNormalMinPercent = std::clamp(config.nearPlaneNormalMinPercent, 1, 100);
+    config.nearPlaneMinCenterYPercent = std::clamp(config.nearPlaneMinCenterYPercent, 0, 95);
+    config.nearPlaneSampleStepPixels = std::clamp(config.nearPlaneSampleStepPixels, 2, 32);
+    config.nearPlaneMorphKernelSize = std::clamp(config.nearPlaneMorphKernelSize | 1, 3, 31);
+    config.nearPlaneFrameInterval = std::clamp(config.nearPlaneFrameInterval, 1, 120);
+    config.processedViewScalePercent = std::clamp(config.processedViewScalePercent, 25, 100);
+    config.overlapTrimMinSupportPercent = std::clamp(config.overlapTrimMinSupportPercent, 1, 80);
+    config.overlapTrimPaddingPixels = std::clamp(config.overlapTrimPaddingPixels, 0, 128);
+    config.overlapTrimExtraCropPixels = std::clamp(config.overlapTrimExtraCropPixels, 0, 32);
 
     return config;
 }
@@ -2309,6 +2420,230 @@ std::vector<ObservationMaterial> extractObservationMaterials(
             const std::vector<std::vector<cv::Point>> contours{material.contour};
             cv::drawContours(*acceptedMask, contours, -1, cv::Scalar(255), cv::FILLED);
         }
+    }
+
+    return materials;
+}
+
+cv::Mat cleanFarDistanceMask(const cv::Mat& inputMask, const SegmentationConfig& config)
+{
+    cv::Mat mask = inputMask.clone();
+    const int kernelSize = std::max(3, config.farMorphKernelSize | 1);
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(kernelSize, kernelSize));
+
+    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+    return mask;
+}
+
+cv::Mat makeFarDistanceBoundaryMask(
+    const cv::Mat& edgeGrayOrBgr,
+    const cv::Mat& farMask,
+    const SegmentationConfig& config,
+    bool edgeSourceIsInfrared)
+{
+    if (edgeGrayOrBgr.empty() || farMask.empty() || !config.boundarySplit)
+    {
+        return {};
+    }
+
+    cv::Mat gray;
+    if (edgeGrayOrBgr.channels() == 1)
+    {
+        gray = edgeGrayOrBgr.clone();
+    }
+    else
+    {
+        cv::cvtColor(edgeGrayOrBgr, gray, cv::COLOR_BGR2GRAY);
+    }
+    if (gray.size() != farMask.size())
+    {
+        cv::resize(gray, gray, farMask.size(), 0.0, 0.0, cv::INTER_LINEAR);
+    }
+
+    cv::GaussianBlur(gray, gray, cv::Size(3, 3), 0.0);
+    cv::Mat edges;
+    const int edgeCannyLow = edgeSourceIsInfrared ? config.infraredCannyLow : config.colorCannyLow;
+    const int edgeCannyHigh = edgeSourceIsInfrared ? config.infraredCannyHigh : config.colorCannyHigh;
+    cv::Canny(gray, edges, edgeCannyLow, edgeCannyHigh, 3, true);
+    cv::bitwise_and(edges, farMask, edges);
+
+    const int kernelSize = std::max(1, config.splitBoundaryPixels | 1);
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(kernelSize, kernelSize));
+    cv::dilate(edges, edges, kernel);
+    return edges;
+}
+
+int quantizeFarIntervalMinMm(int medianDepthMm, const SegmentationConfig& config)
+{
+    const int clampedDepth = std::clamp(medianDepthMm, config.maxDepthMm + 1, config.farMaxDepthMm);
+    const int bucket = (clampedDepth - config.maxDepthMm - 1) / std::max(1, config.farIntervalMm);
+    return config.maxDepthMm + bucket * config.farIntervalMm;
+}
+
+std::vector<FarDistanceMaterial> extractFarDistanceMaterials(
+    const cv::Mat& depth16,
+    const cv::Mat& splitBoundaryMask,
+    const cv::Mat& edgeGrayOrBgr,
+    bool edgeSourceIsInfrared,
+    const SegmentationConfig& config,
+    float depthScale)
+{
+    std::vector<FarDistanceMaterial> materials;
+    if (!config.farDistanceIntervals || depth16.empty() || config.farMaxDepthMm <= config.maxDepthMm)
+    {
+        return materials;
+    }
+
+    cv::Mat farMask;
+    cv::inRange(
+        depth16,
+        depthUnitsFromMm(config.maxDepthMm + 1, depthScale),
+        depthUnitsFromMm(config.farMaxDepthMm, depthScale),
+        farMask);
+
+    farMask = cleanFarDistanceMask(farMask, config);
+    if (!splitBoundaryMask.empty())
+    {
+        farMask.setTo(0, splitBoundaryMask);
+    }
+    const cv::Mat farBoundaryMask =
+        makeFarDistanceBoundaryMask(edgeGrayOrBgr, farMask, config, edgeSourceIsInfrared);
+    if (!farBoundaryMask.empty())
+    {
+        farMask.setTo(0, farBoundaryMask);
+    }
+
+    cv::Mat contourSource = farMask.clone();
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(contourSource, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    for (const std::vector<cv::Point>& contour : contours)
+    {
+        if (contour.size() < 3)
+        {
+            continue;
+        }
+
+        const double contourArea = cv::contourArea(contour);
+        if (contourArea < static_cast<double>(config.farMinAreaPixels))
+        {
+            continue;
+        }
+
+        const cv::Rect roi = cv::boundingRect(contour);
+        if (roi.empty())
+        {
+            continue;
+        }
+
+        const cv::Mat localMask = farMask(roi);
+        const int pixelCount = cv::countNonZero(localMask);
+        if (pixelCount < config.farMinAreaPixels)
+        {
+            continue;
+        }
+
+        std::vector<int> depthSamplesMm;
+        depthSamplesMm.reserve(static_cast<size_t>(pixelCount));
+        int observedMinMm = std::numeric_limits<int>::max();
+        int observedMaxMm = 0;
+        for (int y = 0; y < roi.height; ++y)
+        {
+            const uint8_t* maskRow = localMask.ptr<uint8_t>(y);
+            const uint16_t* depthRow = depth16.ptr<uint16_t>(roi.y + y) + roi.x;
+            for (int x = 0; x < roi.width; ++x)
+            {
+                if (maskRow[x] == 0 || depthRow[x] == 0)
+                {
+                    continue;
+                }
+
+                const int depthMm = static_cast<int>(depthRow[x] * depthScale * 1000.0f + 0.5f);
+                if (depthMm <= config.maxDepthMm || depthMm > config.farMaxDepthMm)
+                {
+                    continue;
+                }
+
+                depthSamplesMm.push_back(depthMm);
+                observedMinMm = std::min(observedMinMm, depthMm);
+                observedMaxMm = std::max(observedMaxMm, depthMm);
+            }
+        }
+
+        if (depthSamplesMm.empty())
+        {
+            continue;
+        }
+
+        const size_t medianIndex = depthSamplesMm.size() / 2;
+        std::nth_element(depthSamplesMm.begin(), depthSamplesMm.begin() + medianIndex, depthSamplesMm.end());
+        const int medianDepthMm = depthSamplesMm[medianIndex];
+        const int intervalMinMm = quantizeFarIntervalMinMm(medianDepthMm, config);
+        const int intervalMaxMm = std::min(config.farMaxDepthMm, intervalMinMm + config.farIntervalMm);
+
+        std::vector<cv::Point> preciseContour;
+        const double epsilon = cv::arcLength(contour, true) * config.contourApproxRatio;
+        if (epsilon >= 0.5)
+        {
+            cv::approxPolyDP(contour, preciseContour, epsilon, true);
+        }
+        if (preciseContour.size() < 3)
+        {
+            preciseContour = contour;
+        }
+
+        FarDistanceMaterial material;
+        material.roi = roi;
+        const cv::Moments moments = cv::moments(contour);
+        if (std::abs(moments.m00) > 1e-6)
+        {
+            material.center = cv::Point(
+                static_cast<int>(moments.m10 / moments.m00 + 0.5),
+                static_cast<int>(moments.m01 / moments.m00 + 0.5));
+        }
+        else
+        {
+            material.center = cv::Point(roi.x + roi.width / 2, roi.y + roi.height / 2);
+        }
+        material.pixelCount = pixelCount;
+        material.observedDepthMinMm = observedMinMm;
+        material.observedDepthMaxMm = observedMaxMm;
+        material.medianDepthMm = medianDepthMm;
+        material.intervalMinMm = intervalMinMm;
+        material.intervalMaxMm = intervalMaxMm;
+        material.contourArea = contourArea;
+        material.contour = std::move(preciseContour);
+        materials.push_back(std::move(material));
+    }
+
+    std::sort(
+        materials.begin(),
+        materials.end(),
+        [](const FarDistanceMaterial& lhs, const FarDistanceMaterial& rhs)
+        {
+            if (lhs.medianDepthMm != rhs.medianDepthMm)
+            {
+                return lhs.medianDepthMm < rhs.medianDepthMm;
+            }
+            if (lhs.observedDepthMinMm != rhs.observedDepthMinMm)
+            {
+                return lhs.observedDepthMinMm < rhs.observedDepthMinMm;
+            }
+            return lhs.contourArea > rhs.contourArea;
+        });
+
+    if (materials.size() > static_cast<size_t>(config.farMaxMaterials))
+    {
+        materials.resize(static_cast<size_t>(config.farMaxMaterials));
+    }
+    for (size_t index = 0; index < materials.size(); ++index)
+    {
+        materials[index].rankNearFirst = static_cast<int>(index + 1);
     }
 
     return materials;
@@ -3776,6 +4111,291 @@ double vectorLength(const cv::Point3f& value)
         static_cast<double>(value.z) * value.z);
 }
 
+bool buildNearPlaneMaterialFromMask(
+    const cv::Mat& componentMask,
+    const cv::Mat& depth16,
+    const SegmentationConfig& config,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    uint64_t sourceFrameId,
+    uint64_t& nextObservationId,
+    ObservationMaterial& material)
+{
+    if (componentMask.empty())
+    {
+        return false;
+    }
+
+    const int pixelCount = cv::countNonZero(componentMask);
+    const int minAreaPixels = std::max(1, depth16.rows * depth16.cols * config.nearPlaneMinAreaPercent / 100);
+    if (pixelCount < minAreaPixels)
+    {
+        return false;
+    }
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(componentMask.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    if (contours.empty())
+    {
+        return false;
+    }
+
+    const auto largestContourIt = std::max_element(
+        contours.begin(),
+        contours.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return cv::contourArea(lhs) < cv::contourArea(rhs);
+        });
+
+    const double contourArea = cv::contourArea(*largestContourIt);
+    if (contourArea < static_cast<double>(minAreaPixels))
+    {
+        return false;
+    }
+
+    std::vector<cv::Point> preciseContour;
+    const double epsilon = cv::arcLength(*largestContourIt, true) * config.contourApproxRatio;
+    if (epsilon >= 0.5)
+    {
+        cv::approxPolyDP(*largestContourIt, preciseContour, epsilon, true);
+    }
+    if (preciseContour.size() < 3)
+    {
+        preciseContour = *largestContourIt;
+    }
+    if (preciseContour.size() < 3)
+    {
+        return false;
+    }
+
+    const cv::Rect frameRect(0, 0, depth16.cols, depth16.rows);
+    const cv::Rect roi = cv::boundingRect(preciseContour) & frameRect;
+    if (roi.empty())
+    {
+        return false;
+    }
+
+    int validDepthCount = 0;
+    int64_t depthSumUnits = 0;
+    uint16_t minDepthUnits = std::numeric_limits<uint16_t>::max();
+    uint16_t maxDepthUnits = 0;
+    cv::Point3f minPoint(
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max());
+    cv::Point3f maxPoint(
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest());
+
+    const bool canDeproject = intrinsics.fx > 0.0f && intrinsics.fy > 0.0f;
+    int pointCount = 0;
+    for (int y = roi.y; y < roi.y + roi.height; ++y)
+    {
+        const uint8_t* maskRow = componentMask.ptr<uint8_t>(y);
+        const uint16_t* depthRow = depth16.ptr<uint16_t>(y);
+        for (int x = roi.x; x < roi.x + roi.width; ++x)
+        {
+            if (maskRow[x] == 0 || depthRow[x] == 0)
+            {
+                continue;
+            }
+
+            const uint16_t depthUnits = depthRow[x];
+            minDepthUnits = std::min(minDepthUnits, depthUnits);
+            maxDepthUnits = std::max(maxDepthUnits, depthUnits);
+            depthSumUnits += depthUnits;
+            ++validDepthCount;
+
+            if (!canDeproject)
+            {
+                continue;
+            }
+
+            const cv::Point3f point = deprojectDepthPoint(x, y, depthUnits, depthScale, intrinsics);
+            minPoint.x = std::min(minPoint.x, point.x);
+            minPoint.y = std::min(minPoint.y, point.y);
+            minPoint.z = std::min(minPoint.z, point.z);
+            maxPoint.x = std::max(maxPoint.x, point.x);
+            maxPoint.y = std::max(maxPoint.y, point.y);
+            maxPoint.z = std::max(maxPoint.z, point.z);
+            ++pointCount;
+        }
+    }
+
+    if (validDepthCount == 0)
+    {
+        return false;
+    }
+
+    const cv::Moments moments = cv::moments(*largestContourIt);
+    cv::Point center(roi.x + roi.width / 2, roi.y + roi.height / 2);
+    if (std::abs(moments.m00) > 1e-6)
+    {
+        center = cv::Point(
+            static_cast<int>(moments.m10 / moments.m00 + 0.5),
+            static_cast<int>(moments.m01 / moments.m00 + 0.5));
+    }
+
+    material = ObservationMaterial{};
+    material.sourceFrameId = sourceFrameId;
+    material.observationId = sourceFrameId * 1000ULL + 700ULL + nextObservationId++;
+    material.roi = roi;
+    material.center = center;
+    material.pixelCount = pixelCount;
+    material.depthMinMm = static_cast<int>(minDepthUnits * depthScale * 1000.0f + 0.5f);
+    material.depthMaxMm = static_cast<int>(maxDepthUnits * depthScale * 1000.0f + 0.5f);
+    material.observedDepthMinMm = material.depthMinMm;
+    material.observedDepthMaxMm = material.depthMaxMm;
+    material.meanDepthMm =
+        static_cast<int>((depthSumUnits / static_cast<double>(validDepthCount)) * depthScale * 1000.0f + 0.5f);
+    material.groupId = 700;
+    material.contourArea = contourArea;
+    material.hasPointCloudBounds = pointCount > 0;
+    material.minPointMeters = minPoint;
+    material.maxPointMeters = maxPoint;
+    material.contour = std::move(preciseContour);
+    return true;
+}
+
+std::vector<ObservationMaterial> extractNearPlaneDisplayMaterials(
+    const cv::Mat& depth16,
+    const cv::Mat& splitBoundaryMask,
+    const SegmentationConfig& config,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    uint64_t sourceFrameId)
+{
+    std::vector<ObservationMaterial> materials;
+    if (!config.nearPlaneDisplay || depth16.empty() || intrinsics.fx <= 0.0f || intrinsics.fy <= 0.0f)
+    {
+        return materials;
+    }
+
+    cv::Mat validMask;
+    cv::inRange(
+        depth16,
+        depthUnitsFromMm(config.minDepthMm, depthScale),
+        depthUnitsFromMm(config.nearPlaneMaxDepthMm, depthScale),
+        validMask);
+
+    cv::Mat planeMask = cv::Mat::zeros(depth16.size(), CV_8UC1);
+    const int sampleStep = config.nearPlaneSampleStepPixels;
+    const int neighborStep = std::max(2, std::min(config.indoorPlaneNormalNeighborPixels, sampleStep * 2));
+    const int minDepthUnits = depthUnitsFromMm(config.minDepthMm, depthScale);
+    const int maxDepthUnits = depthUnitsFromMm(config.nearPlaneMaxDepthMm, depthScale);
+    const double horizontalMin = config.nearPlaneNormalMinPercent / 100.0;
+    const int minY = depth16.rows * config.nearPlaneMinCenterYPercent / 100;
+
+    for (int y = std::max(neighborStep, minY); y + neighborStep < depth16.rows; y += sampleStep)
+    {
+        for (int x = neighborStep; x + neighborStep < depth16.cols; x += sampleStep)
+        {
+            if (validMask.at<uint8_t>(y, x) == 0)
+            {
+                continue;
+            }
+
+            const uint16_t centerDepth = depth16.at<uint16_t>(y, x);
+            const uint16_t rightDepth = depth16.at<uint16_t>(y, x + neighborStep);
+            const uint16_t downDepth = depth16.at<uint16_t>(y + neighborStep, x);
+            if (centerDepth < minDepthUnits || centerDepth > maxDepthUnits ||
+                rightDepth < minDepthUnits || rightDepth > maxDepthUnits ||
+                downDepth < minDepthUnits || downDepth > maxDepthUnits)
+            {
+                continue;
+            }
+
+            const cv::Point3f center = deprojectDepthPoint(x, y, centerDepth, depthScale, intrinsics);
+            const cv::Point3f right = deprojectDepthPoint(x + neighborStep, y, rightDepth, depthScale, intrinsics);
+            const cv::Point3f down = deprojectDepthPoint(x, y + neighborStep, downDepth, depthScale, intrinsics);
+            const cv::Point3f normal = crossProduct(right - center, down - center);
+            const double length = vectorLength(normal);
+            if (length < 1e-6)
+            {
+                continue;
+            }
+
+            const double ny = std::abs(static_cast<double>(normal.y) / length);
+            if (ny < horizontalMin)
+            {
+                continue;
+            }
+
+            const cv::Rect block(
+                std::max(0, x - sampleStep / 2),
+                std::max(0, y - sampleStep / 2),
+                std::min(sampleStep, depth16.cols - std::max(0, x - sampleStep / 2)),
+                std::min(sampleStep, depth16.rows - std::max(0, y - sampleStep / 2)));
+            if (!block.empty())
+            {
+                planeMask(block).setTo(255);
+            }
+        }
+    }
+
+    const int kernelSize = config.nearPlaneMorphKernelSize | 1;
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernelSize, kernelSize));
+    cv::morphologyEx(planeMask, planeMask, cv::MORPH_CLOSE, kernel);
+    cv::morphologyEx(planeMask, planeMask, cv::MORPH_OPEN, kernel);
+    planeMask.setTo(0, ~validMask);
+    if (!splitBoundaryMask.empty())
+    {
+        cv::Mat boundaryBarrier = dilateMask(splitBoundaryMask, std::max(3, config.splitBoundaryPixels * 2 + 1));
+        planeMask.setTo(0, boundaryBarrier);
+    }
+
+    cv::Mat labels;
+    cv::Mat stats;
+    cv::Mat centroids;
+    const int labelCount = cv::connectedComponentsWithStats(planeMask, labels, stats, centroids, 8, CV_32S);
+    const int minAreaPixels = std::max(1, depth16.rows * depth16.cols * config.nearPlaneMinAreaPercent / 100);
+    std::vector<int> labelsByArea;
+    for (int label = 1; label < labelCount; ++label)
+    {
+        if (stats.at<int>(label, cv::CC_STAT_AREA) >= minAreaPixels)
+        {
+            labelsByArea.push_back(label);
+        }
+    }
+    std::sort(
+        labelsByArea.begin(),
+        labelsByArea.end(),
+        [&stats](int lhs, int rhs)
+        {
+            return stats.at<int>(lhs, cv::CC_STAT_AREA) > stats.at<int>(rhs, cv::CC_STAT_AREA);
+        });
+
+    uint64_t nextObservationId = 1;
+    for (const int label : labelsByArea)
+    {
+        cv::Mat componentMask;
+        cv::compare(labels, label, componentMask, cv::CMP_EQ);
+        cv::bitwise_and(componentMask, validMask, componentMask);
+
+        ObservationMaterial material;
+        if (buildNearPlaneMaterialFromMask(
+                componentMask,
+                depth16,
+                config,
+                depthScale,
+                intrinsics,
+                sourceFrameId,
+                nextObservationId,
+                material))
+        {
+            materials.push_back(std::move(material));
+            if (materials.size() >= static_cast<size_t>(config.nearPlaneMaxMaterials))
+            {
+                break;
+            }
+        }
+    }
+
+    return materials;
+}
+
 IndoorPlaneAnalysis buildIndoorPlaneAnalysis(
     const cv::Mat& depth16,
     const cv::Mat& stableForegroundMask,
@@ -4685,6 +5305,93 @@ std::vector<ObservationMaterial> buildDisplayStableMaterials(
     return displayMaterials;
 }
 
+std::string formatDistanceIntervalMeters(int minMm, int maxMm);
+
+ObservationMaterial farDistanceMaterialToObservationMaterial(
+    const FarDistanceMaterial& farMaterial,
+    uint64_t sourceFrameId)
+{
+    ObservationMaterial material;
+    material.sourceFrameId = sourceFrameId;
+    material.observationId = sourceFrameId * 1000ULL + 800ULL + static_cast<uint64_t>(farMaterial.rankNearFirst);
+    material.roi = farMaterial.roi;
+    material.center = farMaterial.center;
+    material.pixelCount = farMaterial.pixelCount;
+    material.depthMinMm = farMaterial.intervalMinMm;
+    material.depthMaxMm = farMaterial.intervalMaxMm;
+    material.observedDepthMinMm = farMaterial.observedDepthMinMm;
+    material.observedDepthMaxMm = farMaterial.observedDepthMaxMm;
+    material.meanDepthMm = farMaterial.medianDepthMm;
+    material.groupId = 800 + farMaterial.rankNearFirst;
+    material.contourArea = farMaterial.contourArea;
+    material.contour = farMaterial.contour;
+    return material;
+}
+
+std::vector<ObservationMaterial> buildMosaicDisplayMaterials(
+    const std::vector<ObservationMaterial>& displayStableMaterials,
+    const std::vector<ObservationMaterial>& nearPlaneMaterials,
+    const std::vector<FarDistanceMaterial>& farDistanceMaterials,
+    uint64_t sourceFrameId)
+{
+    std::vector<ObservationMaterial> materials = displayStableMaterials;
+    materials.reserve(
+        displayStableMaterials.size() +
+        nearPlaneMaterials.size() +
+        farDistanceMaterials.size());
+
+    for (const ObservationMaterial& material : nearPlaneMaterials)
+    {
+        materials.push_back(material);
+    }
+    for (const FarDistanceMaterial& farMaterial : farDistanceMaterials)
+    {
+        materials.push_back(farDistanceMaterialToObservationMaterial(farMaterial, sourceFrameId));
+    }
+
+    return materials;
+}
+
+void drawNearPlaneOverlay(
+    cv::Mat& view,
+    const std::vector<ObservationMaterial>& nearPlaneMaterials)
+{
+    if (view.empty() || nearPlaneMaterials.empty())
+    {
+        return;
+    }
+
+    for (size_t index = 0; index < nearPlaneMaterials.size(); ++index)
+    {
+        const ObservationMaterial& material = nearPlaneMaterials[index];
+        if (material.contour.size() < 3)
+        {
+            continue;
+        }
+
+        const cv::Scalar color(0, 180, 255);
+        const std::vector<std::vector<cv::Point>> contours{material.contour};
+        cv::drawContours(view, contours, -1, color, 2, cv::LINE_AA);
+        const std::string label =
+            "P" + std::to_string(index + 1) +
+            " near plane " + formatDistanceIntervalMeters(material.depthMinMm, material.depthMaxMm);
+
+        int baseline = 0;
+        const double fontScale = 0.42;
+        const int thickness = 1;
+        const cv::Size textSize = cv::getTextSize(
+            label,
+            cv::FONT_HERSHEY_SIMPLEX,
+            fontScale,
+            thickness,
+            &baseline);
+        cv::Point labelOrigin(material.center.x + 8, material.center.y - 8);
+        labelOrigin.x = std::clamp(labelOrigin.x, 2, std::max(2, view.cols - textSize.width - 2));
+        labelOrigin.y = std::clamp(labelOrigin.y, textSize.height + 52, std::max(textSize.height + 52, view.rows - 4));
+        drawOutlinedText(view, label, labelOrigin, fontScale, color);
+    }
+}
+
 void drawColorContourCompletionOverlay(
     cv::Mat& mosaic,
     const ColorContourCompletionStats& completionStats,
@@ -5321,6 +6028,153 @@ cv::Mat buildTiledFrame(const std::vector<cv::Mat>& views, int columns = 2)
     return frame;
 }
 
+cv::Rect computeStereoOverlapCrop(const cv::Mat& depth16, const SegmentationConfig& config, float depthScale)
+{
+    if (!config.overlapTrim || depth16.empty())
+    {
+        return cv::Rect(0, 0, depth16.cols, depth16.rows);
+    }
+
+    const int maxDepthUnits = depthUnitsFromMm(config.farMaxDepthMm, depthScale);
+    std::vector<int> columnCounts(static_cast<size_t>(depth16.cols), 0);
+    std::vector<int> rowCounts(static_cast<size_t>(depth16.rows), 0);
+    for (int y = 0; y < depth16.rows; ++y)
+    {
+        const uint16_t* depthRow = depth16.ptr<uint16_t>(y);
+        for (int x = 0; x < depth16.cols; ++x)
+        {
+            if (depthRow[x] == 0 || depthRow[x] > maxDepthUnits)
+            {
+                continue;
+            }
+
+            ++columnCounts[static_cast<size_t>(x)];
+            ++rowCounts[static_cast<size_t>(y)];
+        }
+    }
+
+    const int columnThreshold = std::max(1, depth16.rows * config.overlapTrimMinSupportPercent / 100);
+    const int rowThreshold = std::max(1, depth16.cols * config.overlapTrimMinSupportPercent / 100);
+
+    int left = 0;
+    while (left < depth16.cols && columnCounts[static_cast<size_t>(left)] < columnThreshold)
+    {
+        ++left;
+    }
+    int right = depth16.cols - 1;
+    while (right > left && columnCounts[static_cast<size_t>(right)] < columnThreshold)
+    {
+        --right;
+    }
+    int top = 0;
+    while (top < depth16.rows && rowCounts[static_cast<size_t>(top)] < rowThreshold)
+    {
+        ++top;
+    }
+    int bottom = depth16.rows - 1;
+    while (bottom > top && rowCounts[static_cast<size_t>(bottom)] < rowThreshold)
+    {
+        --bottom;
+    }
+
+    if (left >= right || top >= bottom)
+    {
+        return cv::Rect(0, 0, depth16.cols, depth16.rows);
+    }
+
+    const int padding = config.overlapTrimPaddingPixels;
+    left = std::max(0, left - padding);
+    right = std::min(depth16.cols - 1, right + padding);
+    top = std::max(0, top - padding);
+    bottom = std::min(depth16.rows - 1, bottom + padding);
+
+    const cv::Rect crop(left, top, right - left + 1, bottom - top + 1);
+    if (crop.width < std::max(1, depth16.cols / 2) || crop.height < std::max(1, depth16.rows / 2))
+    {
+        return cv::Rect(0, 0, depth16.cols, depth16.rows);
+    }
+
+    return crop;
+}
+
+cv::Rect insetCropRect(const cv::Rect& crop, int insetPixels, const cv::Size& frameSize)
+{
+    cv::Rect safeCrop = crop & cv::Rect(0, 0, frameSize.width, frameSize.height);
+    if (safeCrop.empty() || insetPixels <= 0)
+    {
+        return safeCrop.empty() ? cv::Rect(0, 0, frameSize.width, frameSize.height) : safeCrop;
+    }
+
+    const int inset = std::min(
+        insetPixels,
+        std::max(0, std::min(safeCrop.width / 2 - 1, safeCrop.height / 2 - 1)));
+    if (inset <= 0)
+    {
+        return safeCrop;
+    }
+
+    return cv::Rect(
+        safeCrop.x + inset,
+        safeCrop.y + inset,
+        safeCrop.width - inset * 2,
+        safeCrop.height - inset * 2);
+}
+
+cv::Size scaledPanelSize(const cv::Size& sourceSize, const SegmentationConfig& config)
+{
+    const double scale = config.processedViewScalePercent / 100.0;
+    return cv::Size(
+        std::max(1, static_cast<int>(std::round(sourceSize.width * scale))),
+        std::max(1, static_cast<int>(std::round(sourceSize.height * scale))));
+}
+
+cv::Mat postProcessViewForDashboard(
+    const cv::Mat& view,
+    const cv::Rect& crop,
+    const cv::Size& targetSize,
+    const SegmentationConfig& config)
+{
+    cv::Mat panel = ensureBgrFrame(view);
+    if (panel.empty())
+    {
+        return {};
+    }
+
+    cv::Rect safeCrop = crop & cv::Rect(0, 0, panel.cols, panel.rows);
+    if (safeCrop.empty())
+    {
+        safeCrop = cv::Rect(0, 0, panel.cols, panel.rows);
+    }
+
+    cv::Mat output = panel(safeCrop).clone();
+    cv::Size finalSize = targetSize;
+    if (finalSize.empty())
+    {
+        finalSize = scaledPanelSize(panel.size(), config);
+    }
+    if (output.size() != finalSize)
+    {
+        cv::resize(output, output, finalSize, 0.0, 0.0, cv::INTER_AREA);
+    }
+
+    return output;
+}
+
+std::vector<cv::Mat> postProcessViewsForDashboard(
+    const std::vector<cv::Mat>& views,
+    const cv::Rect& crop,
+    const cv::Size& targetSize,
+    const SegmentationConfig& config)
+{
+    std::vector<cv::Mat> output;
+    output.reserve(views.size());
+    for (const cv::Mat& view : views)
+    {
+        output.push_back(postProcessViewForDashboard(view, crop, targetSize, config));
+    }
+    return output;
+}
+
 class VideoRecorder
 {
 public:
@@ -5601,6 +6455,7 @@ public:
         int candidateCount,
         int anchorSupportedCount,
         const std::vector<ObservationMaterial>& stableMaterials,
+        const std::vector<FarDistanceMaterial>& farMaterials,
         const cv::Mat& stableMask,
         const BoundaryAnalysis& boundaryAnalysis,
         const CueSelectionSummary& cueSummary,
@@ -5625,6 +6480,24 @@ public:
         const int stablePixels = cv::countNonZero(stableMask);
         const double stableAreaPercent = 100.0 * static_cast<double>(stablePixels) / static_cast<double>(framePixels);
         const double blackAreaPercent = 100.0 - stableAreaPercent;
+        const int farCandidateCount = static_cast<int>(farMaterials.size());
+        int farNearestIntervalMinMm = 0;
+        int farNearestIntervalMaxMm = 0;
+        int farNearestMedianMm = 0;
+        int farFarthestIntervalMinMm = 0;
+        int farFarthestIntervalMaxMm = 0;
+        int farFarthestMedianMm = 0;
+        if (!farMaterials.empty())
+        {
+            const FarDistanceMaterial& nearest = farMaterials.front();
+            const FarDistanceMaterial& farthest = farMaterials.back();
+            farNearestIntervalMinMm = nearest.intervalMinMm;
+            farNearestIntervalMaxMm = nearest.intervalMaxMm;
+            farNearestMedianMm = nearest.medianDepthMm;
+            farFarthestIntervalMinMm = farthest.intervalMinMm;
+            farFarthestIntervalMaxMm = farthest.intervalMaxMm;
+            farFarthestMedianMm = farthest.medianDepthMm;
+        }
 
         int matchedStableCount = 0;
         double iouSum = 0.0;
@@ -5655,6 +6528,13 @@ public:
             << candidateCount << ','
             << anchorSupportedCount << ','
             << stableMaterials.size() << ','
+            << farCandidateCount << ','
+            << farNearestIntervalMinMm << ','
+            << farNearestIntervalMaxMm << ','
+            << farNearestMedianMm << ','
+            << farFarthestIntervalMinMm << ','
+            << farFarthestIntervalMaxMm << ','
+            << farFarthestMedianMm << ','
             << matchedStableCount << ','
             << std::setprecision(3) << stableAreaPercent << ','
             << std::setprecision(3) << blackAreaPercent << ','
@@ -5695,6 +6575,7 @@ public:
             << timingStats.anchorMs << ','
             << timingStats.boundaryMs << ','
             << timingStats.extractMs << ','
+            << timingStats.farExtractMs << ','
             << timingStats.pclMs << ','
             << timingStats.calibrateMs << ','
             << timingStats.cueMs << ','
@@ -5791,6 +6672,9 @@ private:
 
         stream_
             << "frame_index,frame_ms,candidate_count,anchor_supported_count,stable_count,"
+            << "far_candidate_count,far_nearest_interval_min_mm,far_nearest_interval_max_mm,"
+            << "far_nearest_median_mm,far_farthest_interval_min_mm,far_farthest_interval_max_mm,"
+            << "far_farthest_median_mm,"
             << "matched_stable_count,stable_area_percent,black_area_percent,avg_contour_iou,"
             << "boundary_jitter_px,depth_step_edge_px,depth_hole_edge_px,gray_edge_px,"
             << "gray_depth_supported_edge_px,gray_depth_confirmed_edge_px,split_boundary_px,"
@@ -5802,7 +6686,7 @@ private:
             << "anchor_count,anchor_points_on_candidates,"
             << "color_completion_input,color_completion_adopted,color_completion_rejected,"
             << "depth_post_ms,frame_convert_ms,motion_ms,gray_prepare_ms,anchor_ms,boundary_ms,"
-            << "extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
+            << "extract_ms,far_extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
             << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms";
         if (includePoseColumns_)
         {
@@ -7061,6 +7945,104 @@ cv::Mat buildRealtimeStableContourVisualization(
     return view;
 }
 
+cv::Scalar farDistanceColor(size_t index)
+{
+    static const std::array<cv::Scalar, 6> colors{
+        cv::Scalar(255, 255, 0),
+        cv::Scalar(255, 170, 0),
+        cv::Scalar(255, 110, 90),
+        cv::Scalar(220, 90, 255),
+        cv::Scalar(120, 170, 255),
+        cv::Scalar(80, 230, 180)};
+    return colors[index % colors.size()];
+}
+
+std::string formatDistanceIntervalMeters(int minMm, int maxMm)
+{
+    return fixedNumber(minMm / 1000.0, 1) + "-" + fixedNumber(maxMm / 1000.0, 1) + "m";
+}
+
+std::string farRelativeWord(int rankNearFirst, int total)
+{
+    if (total <= 1)
+    {
+        return "far";
+    }
+    if (rankNearFirst <= 1)
+    {
+        return "nearest";
+    }
+    if (rankNearFirst >= total)
+    {
+        return "farthest";
+    }
+    return "farther";
+}
+
+void drawFarDistanceOverlay(
+    cv::Mat& view,
+    const std::vector<FarDistanceMaterial>& farMaterials,
+    const SegmentationConfig& config)
+{
+    if (view.empty() || !config.farDistanceIntervals)
+    {
+        return;
+    }
+
+    std::ostringstream orderLine;
+    if (farMaterials.empty())
+    {
+        orderLine << "far intervals >" << fixedNumber(config.maxDepthMm / 1000.0, 1) << "m: 0";
+    }
+    else
+    {
+        orderLine << "far intervals near->far: ";
+        for (size_t index = 0; index < farMaterials.size(); ++index)
+        {
+            if (index > 0)
+            {
+                orderLine << "<";
+            }
+            orderLine << "F" << farMaterials[index].rankNearFirst;
+        }
+    }
+    drawOutlinedText(view, orderLine.str(), cv::Point(12, 48), 0.42, cv::Scalar(255, 255, 0));
+
+    const int total = static_cast<int>(farMaterials.size());
+    for (size_t index = 0; index < farMaterials.size(); ++index)
+    {
+        const FarDistanceMaterial& material = farMaterials[index];
+        if (material.contour.size() < 3)
+        {
+            continue;
+        }
+
+        const cv::Scalar color = farDistanceColor(index);
+        const std::vector<std::vector<cv::Point>> contours{material.contour};
+        cv::drawContours(view, contours, -1, color, 2, cv::LINE_AA);
+        cv::circle(view, material.center, 4, color, cv::FILLED, cv::LINE_AA);
+
+        const std::string label =
+            "F" + std::to_string(material.rankNearFirst) + " " +
+            farRelativeWord(material.rankNearFirst, total) + " " +
+            formatDistanceIntervalMeters(material.intervalMinMm, material.intervalMaxMm);
+
+        int baseline = 0;
+        const double fontScale = 0.42;
+        const int thickness = 1;
+        const cv::Size textSize = cv::getTextSize(
+            label,
+            cv::FONT_HERSHEY_SIMPLEX,
+            fontScale,
+            thickness,
+            &baseline);
+        cv::Point labelOrigin(material.center.x + 8, material.center.y - 8);
+        labelOrigin.x = std::clamp(labelOrigin.x, 2, std::max(2, view.cols - textSize.width - 2));
+        labelOrigin.y = std::clamp(labelOrigin.y, textSize.height + 52, std::max(textSize.height + 52, view.rows - 4));
+        drawOutlinedText(view, label, labelOrigin, fontScale, color);
+    }
+}
+
 bool solveInverseDepthFit(
     const std::vector<RgbDepthFitSample>& samples,
     InverseDepthCalibration& calibration)
@@ -8256,6 +9238,31 @@ void printUsage()
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
         << "  --max-depth-mm=3500\n"
+        << "  --far-distance-intervals\n"
+        << "  --no-far-distance-intervals\n"
+        << "  --far-max-depth-mm=12000\n"
+        << "  --far-interval-mm=1500\n"
+        << "  --far-min-area-px=600\n"
+        << "  --far-max-materials=8\n"
+        << "  --far-morph-kernel-px=7\n"
+        << "  --near-plane-display\n"
+        << "  --no-near-plane-display\n"
+        << "  --near-plane-max-depth-mm=2200\n"
+        << "  --near-plane-min-area-percent=3\n"
+        << "  --near-plane-max-materials=2\n"
+        << "  --near-plane-normal-min-percent=60\n"
+        << "  --near-plane-min-center-y-percent=30\n"
+        << "  --near-plane-sample-step-px=16\n"
+        << "  --near-plane-morph-kernel-px=9\n"
+        << "  --near-plane-frame-interval=10\n"
+        << "  --extra-candidates-in-mosaic\n"
+        << "  --no-extra-candidates-in-mosaic\n"
+        << "  --processed-view-scale-percent=75\n"
+        << "  --overlap-trim\n"
+        << "  --no-overlap-trim\n"
+        << "  --overlap-trim-min-support-percent=3\n"
+        << "  --overlap-trim-padding-px=6\n"
+        << "  --overlap-trim-extra-crop-px=2\n"
         << "  --min-area-px=900\n"
         << "  --depth-slice-mm=300\n"
         << "  --max-area-percent=24\n"
@@ -8629,7 +9636,12 @@ int main(int argc, char** argv)
         std::vector<ObservationMaterial> pclCandidateCache;
         std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
         IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
+        std::vector<ObservationMaterial> cachedNearPlaneMaterials;
         bool hasIndoorPlaneCache = false;
+        bool hasNearPlaneCache = false;
+        bool hasLockedOutputCrop = false;
+        cv::Rect lockedOutputCrop;
+        cv::Size lockedOutputPanelSize;
         const bool needsViews = displayEnabled || recordingConfig.enabled;
 
         VideoRecorder videoRecorder(recordingConfig);
@@ -8732,6 +9744,19 @@ int main(int argc, char** argv)
                     frameId,
                     nullptr);
             timingStats.extractMs = takeSectionMs();
+            std::vector<FarDistanceMaterial> farDistanceMaterials;
+            if (config.farDistanceIntervals && (needsViews || acceptanceConfig.enabled))
+            {
+                farDistanceMaterials =
+                    extractFarDistanceMaterials(
+                        depth16,
+                        splitBoundaryMask,
+                        segmentationGray,
+                        edgeSourceIsInfrared,
+                        config,
+                        depthScale);
+                timingStats.farExtractMs = takeSectionMs();
+            }
             if (config.pclClustering)
             {
                 if (candidateMaterials.empty())
@@ -8813,6 +9838,28 @@ int main(int argc, char** argv)
             }
             timingStats.supportMs = takeSectionMs();
 
+            std::vector<ObservationMaterial> nearPlaneMaterials;
+            if (needsViews && config.nearPlaneDisplay)
+            {
+                const bool refreshNearPlanes =
+                    !hasNearPlaneCache ||
+                    frameId % static_cast<uint64_t>(config.nearPlaneFrameInterval) == 0;
+                if (refreshNearPlanes)
+                {
+                    cachedNearPlaneMaterials =
+                        extractNearPlaneDisplayMaterials(
+                            depth16,
+                            splitBoundaryMask,
+                            config,
+                            depthScale,
+                            colorIntrinsics,
+                            frameId);
+                    hasNearPlaneCache = true;
+                }
+                nearPlaneMaterials = cachedNearPlaneMaterials;
+                timingStats.diagnosticsMs += takeSectionMs();
+            }
+
             cv::Mat stableMaskForFrame;
             if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled)
             {
@@ -8838,7 +9885,7 @@ int main(int argc, char** argv)
                 indoorPlaneAnalysis = cachedIndoorPlaneAnalysis;
                 indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
             }
-            timingStats.diagnosticsMs = takeSectionMs();
+            timingStats.diagnosticsMs += takeSectionMs();
             ColorContourCompletionStats completionStats;
             cv::Mat segmentedView;
             cv::Mat mosaicView;
@@ -8874,6 +9921,8 @@ int main(int argc, char** argv)
                 {
                     drawCueSelectionOverlay(segmentedView, cueSummary);
                 }
+                drawFarDistanceOverlay(segmentedView, farDistanceMaterials, config);
+                drawNearPlaneOverlay(segmentedView, nearPlaneMaterials);
                 timingStats.renderMs = takeSectionMs();
 
                 const std::vector<ObservationMaterial> displayBaseMaterials =
@@ -8889,10 +9938,23 @@ int main(int argc, char** argv)
                         completionStats);
                 timingStats.completionMs = takeSectionMs();
 
+                const std::vector<ObservationMaterial> mosaicDisplayMaterials =
+                    config.extraCandidatesInMosaic
+                        ? buildMosaicDisplayMaterials(
+                            displayStableMaterials,
+                            nearPlaneMaterials,
+                            farDistanceMaterials,
+                            frameId)
+                        : displayStableMaterials;
                 const cv::Mat displayStableMask =
-                    buildStableContourMask(colorBgr.size(), displayStableMaterials);
-                mosaicView = buildStableContourColorMosaic(colorBgr, displayStableMaterials, displayStableMask);
+                    buildStableContourMask(colorBgr.size(), mosaicDisplayMaterials);
+                mosaicView = buildStableContourColorMosaic(colorBgr, mosaicDisplayMaterials, displayStableMask);
                 drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
+                if (config.extraCandidatesInMosaic)
+                {
+                    drawFarDistanceOverlay(mosaicView, farDistanceMaterials, config);
+                    drawNearPlaneOverlay(mosaicView, nearPlaneMaterials);
+                }
                 outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMask);
                 timingStats.renderMs += takeSectionMs();
 
@@ -8946,7 +10008,43 @@ int main(int argc, char** argv)
 
             int key = -1;
             cv::Mat dashboardView;
-            const std::vector<cv::Mat> dashboardViews{rawView, segmentedView, mosaicView, outsideColorView};
+            if (needsViews && !hasLockedOutputCrop)
+            {
+                lockedOutputCrop = insetCropRect(
+                    computeStereoOverlapCrop(depth16, config, depthScale),
+                    config.overlapTrimExtraCropPixels,
+                    colorBgr.size());
+                lockedOutputPanelSize = scaledPanelSize(colorBgr.size(), config);
+                hasLockedOutputCrop = true;
+                std::cout << "Locked dashboard crop: x=" << lockedOutputCrop.x
+                    << " y=" << lockedOutputCrop.y
+                    << " w=" << lockedOutputCrop.width
+                    << " h=" << lockedOutputCrop.height
+                    << " panel=" << lockedOutputPanelSize.width
+                    << "x" << lockedOutputPanelSize.height << '\n';
+            }
+            const cv::Rect outputCrop = hasLockedOutputCrop
+                ? lockedOutputCrop
+                : cv::Rect(0, 0, colorBgr.cols, colorBgr.rows);
+            const cv::Size outputPanelSize = hasLockedOutputCrop
+                ? lockedOutputPanelSize
+                : scaledPanelSize(colorBgr.size(), config);
+            std::vector<cv::Mat> dashboardViews =
+                postProcessViewsForDashboard(
+                    std::vector<cv::Mat>{rawView, segmentedView, mosaicView, outsideColorView},
+                    outputCrop,
+                    outputPanelSize,
+                    config);
+            if (config.boundaryDiagnostics)
+            {
+                boundaryDiagnosticsView =
+                    postProcessViewForDashboard(boundaryDiagnosticsView, outputCrop, outputPanelSize, config);
+            }
+            if (config.indoorPlaneDiagnostics)
+            {
+                indoorPlaneDiagnosticsView =
+                    postProcessViewForDashboard(indoorPlaneDiagnosticsView, outputCrop, outputPanelSize, config);
+            }
             if (displayEnabled)
             {
                 dashboardView = buildTiledFrame(dashboardViews, 2);
@@ -8992,6 +10090,7 @@ int main(int argc, char** argv)
                     static_cast<int>(candidateMaterials.size()),
                     static_cast<int>(anchorSupportedCandidates.size()),
                     stableMaterials,
+                    farDistanceMaterials,
                     stableMask,
                     boundaryAnalysis,
                     cueSummary,

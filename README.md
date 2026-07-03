@@ -67,6 +67,26 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 
 稳定轮廓视图是默认模式。主窗口用 2x2 同步显示：右上显示当前稳定点/候选轮廓/稳定轮廓信息，左下只保留稳定轮廓内部彩图，右下单独显示左下黑区对应的彩图，方便直接观察轮廓是否抖动、漂移、漏分或误合并。
 
+默认有效距离仍由 `--max-depth-mm=3500` 控制，有效距离内的候选、稳定轮廓和彩图拼接流程不变。超过有效距离但仍在 `--far-max-depth-mm=12000` 内的深度点，会作为低置信远距候选只叠加到右上分割视图：程序用远距深度掩码叠加红外/灰度边界提取粗轮廓，用中位深度排序，显示 `far intervals near->far: F1<F2...`，并在轮廓旁标出类似 `F1 nearest 3.5-5.0m`、`F2 farthest 5.0-6.5m` 的区间距离。`F1/F2` 表示当前帧远距候选的相对近远顺序，不表示已经确认存在；验收 CSV 会追加 `far_candidate_count`、最近/最远远距候选的区间和中位深度字段：
+
+```powershell
+.\x64\Release\D455.exe --far-distance-intervals
+.\x64\Release\D455.exe --far-max-depth-mm=12000 --far-interval-mm=1500 --far-min-area-px=600
+.\x64\Release\D455.exe --no-far-distance-intervals
+```
+
+远距候选和近处水平平面候选默认只叠加到右上诊断视图，仍只属于显示/观察材料层，不进入稳定 tracker，也不影响左下稳定拼接图。近处水平平面用于把桌面这类大平面作为一个可视候选补出来；默认每 10 帧刷新一次并缓存显示，避免拖慢主链；如果误把地面或柜面纳入，可以收紧中心位置、最大深度或最小面积。需要临时检查远距/桌面候选在彩图拼接里的覆盖效果时，再显式启用 `--extra-candidates-in-mosaic`。2x2 输出默认在处理后裁剪掉对齐深度中缺少有效双目重叠的边缘，首次估计后锁定裁剪框，并向内额外裁 2px；每个面板固定缩到原图尺寸的 75%，所以窗口尺寸不会随深度边缘抖动而变化：
+
+```powershell
+.\x64\Release\D455.exe --near-plane-display
+.\x64\Release\D455.exe --near-plane-max-depth-mm=1800 --near-plane-min-center-y-percent=45
+.\x64\Release\D455.exe --near-plane-frame-interval=5 --near-plane-sample-step-px=12
+.\x64\Release\D455.exe --extra-candidates-in-mosaic
+.\x64\Release\D455.exe --processed-view-scale-percent=75 --overlap-trim
+.\x64\Release\D455.exe --overlap-trim-extra-crop-px=2
+.\x64\Release\D455.exe --processed-view-scale-percent=100 --no-overlap-trim
+```
+
 实时模式默认直接用稳定轮廓掩码拼接彩图，以降低相机移动时的显示滞后。需要诊断 RGB 边缘能否补齐稳定轮廓时，可以显式启用严格 RGB 轮廓补齐：只在稳定轮廓的小邻域里用彩图生成候选补齐轮廓；如果候选和原稳定轮廓的 IoU、面积变化、中心偏移都在阈值内，且候选不会进入其他稳定轮廓的隔离带，左下/右下两格才采用彩图补齐后的轮廓，否则继续使用原稳定轮廓。未知背景不会被强行分配给任何前景轮廓，也不会为了补齐而把两个轮廓融合：
 
 ```powershell
