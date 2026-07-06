@@ -1,0 +1,30 @@
+{
+  "candidate_id": "candidate_0029",
+  "parent": "candidate_0025",
+  "purpose": "Full-quality async slow-pan probe with refresh cooldown before moving to ROI-local refresh.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Test whether cooldown alone can reduce full-quality async over-100ms spikes.",
+    "Preserve candidate_0017 color-contour quality and far-distance retention.",
+    "Provide a fair full-quality baseline before implementing ROI-local refresh."
+  ],
+  "risk": [
+    "Full-frame color extraction can still compete with the main loop while the worker is active.",
+    "Cooldown may increase cache age and visible lag during continuous pan."
+  ]
+}

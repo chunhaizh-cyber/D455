@@ -67,6 +67,7 @@ FRAME_FIELDS = [
     "color_contour_async_applied",
     "color_contour_async_dropped",
     "color_contour_async_pending",
+    "color_contour_refresh_cooldown_skipped",
     "color_contour_cache_age_frames",
     "color_contour_async_worker_ms",
     "unknown_spike",
@@ -389,6 +390,7 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "color_contour_async_applied": as_int(profile_row.get("color_contour_async_applied")),
         "color_contour_async_dropped": as_int(profile_row.get("color_contour_async_dropped")),
         "color_contour_async_pending": as_int(profile_row.get("color_contour_async_pending")),
+        "color_contour_refresh_cooldown_skipped": as_int(profile_row.get("color_contour_refresh_cooldown_skipped")),
         "color_contour_cache_age_frames": as_int(profile_row.get("color_contour_cache_age_frames")),
         "color_contour_async_worker_ms": round(
             as_float(profile_row.get("color_contour_async_worker_ms")),

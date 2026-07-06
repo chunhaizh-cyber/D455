@@ -170,6 +170,7 @@ struct SegmentationConfig
     int nonPreciseColorOwnershipMinPercent = 10;
     int analysisExportEveryN = 0;
     int colorContourFrameInterval = 1;
+    int colorContourRefreshMinGapFrames = 0;
     int colorContourRefreshMotionDeltaPercent = 25;
     int colorContourRefreshUnknownPercent = 5;
     int stereoContourMinDisparityTenthsPx = 5;
@@ -432,6 +433,7 @@ struct ColorContourRefreshStats
     bool asyncApplied = false;
     bool asyncDropped = false;
     bool asyncPending = false;
+    bool cooldownSkipped = false;
     int cacheAgeFrames = 0;
     double asyncWorkerMs = 0.0;
 };
@@ -755,6 +757,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--d455-precision-min-color-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
             parseIntOption(arg, "--analysis-export-every-n=", config.analysisExportEveryN) ||
             parseIntOption(arg, "--color-contour-frame-interval=", config.colorContourFrameInterval) ||
+            parseIntOption(arg, "--color-contour-refresh-min-gap-frames=", config.colorContourRefreshMinGapFrames) ||
             parseIntOption(arg, "--color-contour-refresh-motion-delta-percent=", config.colorContourRefreshMotionDeltaPercent) ||
             parseIntOption(arg, "--color-contour-refresh-unknown-percent=", config.colorContourRefreshUnknownPercent) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
@@ -9072,6 +9075,7 @@ public:
             << (colorContourRefreshStats.asyncApplied ? 1 : 0) << ','
             << (colorContourRefreshStats.asyncDropped ? 1 : 0) << ','
             << (colorContourRefreshStats.asyncPending ? 1 : 0) << ','
+            << (colorContourRefreshStats.cooldownSkipped ? 1 : 0) << ','
             << colorContourRefreshStats.cacheAgeFrames << ','
             << std::setprecision(3) << colorContourRefreshStats.asyncWorkerMs
             << '\n';
@@ -9121,6 +9125,7 @@ private:
             << "color_contour_stereo_reuse_count,"
             << "color_contour_async_submitted,color_contour_async_applied,"
             << "color_contour_async_dropped,color_contour_async_pending,"
+            << "color_contour_refresh_cooldown_skipped,"
             << "color_contour_cache_age_frames,color_contour_async_worker_ms\n";
         std::cout << "Profile CSV: " << outputPath_ << '\n';
     }
@@ -11769,6 +11774,7 @@ void printUsage()
         << "  --d455-precision-min-far-depth-support-percent=10 (compat alias)\n"
         << "  --d455-precision-min-color-depth-support-percent=10 (compat alias)\n"
         << "  --color-contour-frame-interval=1\n"
+        << "  --color-contour-refresh-min-gap-frames=0\n"
         << "  --color-contour-refresh-on-motion\n"
         << "  --color-contour-refresh-motion-delta-percent=25\n"
         << "  --color-contour-refresh-on-unknown-spike\n"
@@ -11991,6 +11997,8 @@ int runReplayDirectory(
     std::vector<ColorContourRegion> cachedColorContourRegions;
     bool hasColorContourRegionCache = false;
     uint64_t cachedColorContourSourceFrameId = 0;
+    uint64_t lastColorContourRefreshRequestFrameId = 0;
+    bool hasLastColorContourRefreshRequestFrameId = false;
     cv::Mat cachedColorContourMotionSignature;
     bool refreshColorContourFromUnknownSpikeNextFrame = false;
     bool refreshColorContourFromFarLossNextFrame = false;
@@ -12082,14 +12090,27 @@ int runReplayDirectory(
         const bool refreshBecauseOfInterval =
             config.colorContourFrameInterval <= 1 ||
             (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
-        const bool refreshColorContourRegions =
+        bool refreshColorContourRegions =
             refreshBecauseOfStartup ||
             refreshColorContourFromUnknownSpikeNextFrame ||
             refreshColorContourFromFarLossNextFrame ||
             refreshBecauseOfMotion ||
             refreshBecauseOfInterval;
+        if (refreshColorContourRegions && !refreshBecauseOfStartup && config.colorContourRefreshMinGapFrames > 0)
+        {
+            const uint64_t minGap = static_cast<uint64_t>(config.colorContourRefreshMinGapFrames);
+            if (hasLastColorContourRefreshRequestFrameId &&
+                frameId >= lastColorContourRefreshRequestFrameId &&
+                frameId - lastColorContourRefreshRequestFrameId < minGap)
+            {
+                refreshColorContourRegions = false;
+                colorContourRefreshStats.cooldownSkipped = true;
+            }
+        }
         if (refreshColorContourRegions)
         {
+            lastColorContourRefreshRequestFrameId = frameId;
+            hasLastColorContourRefreshRequestFrameId = true;
             colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
             colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
             colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
@@ -12878,6 +12899,8 @@ int main(int argc, char** argv)
         std::vector<ColorContourRegion> cachedColorContourRegions;
         bool hasColorContourRegionCache = false;
         uint64_t cachedColorContourSourceFrameId = 0;
+        uint64_t lastColorContourRefreshRequestFrameId = 0;
+        bool hasLastColorContourRefreshRequestFrameId = false;
         cv::Mat cachedColorContourMotionSignature;
         bool refreshColorContourFromUnknownSpikeNextFrame = false;
         bool refreshColorContourFromFarLossNextFrame = false;
@@ -13004,14 +13027,27 @@ int main(int argc, char** argv)
             const bool refreshBecauseOfInterval =
                 config.colorContourFrameInterval <= 1 ||
                 (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
-            const bool refreshColorContourRegions =
+            bool refreshColorContourRegions =
                 refreshBecauseOfStartup ||
                 refreshColorContourFromUnknownSpikeNextFrame ||
                 refreshColorContourFromFarLossNextFrame ||
                 refreshBecauseOfMotion ||
                 refreshBecauseOfInterval;
+            if (refreshColorContourRegions && !refreshBecauseOfStartup && config.colorContourRefreshMinGapFrames > 0)
+            {
+                const uint64_t minGap = static_cast<uint64_t>(config.colorContourRefreshMinGapFrames);
+                if (hasLastColorContourRefreshRequestFrameId &&
+                    frameId >= lastColorContourRefreshRequestFrameId &&
+                    frameId - lastColorContourRefreshRequestFrameId < minGap)
+                {
+                    refreshColorContourRegions = false;
+                    colorContourRefreshStats.cooldownSkipped = true;
+                }
+            }
             if (refreshColorContourRegions)
             {
+                lastColorContourRefreshRequestFrameId = frameId;
+                hasLastColorContourRefreshRequestFrameId = true;
                 colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
                 colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
                 colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;

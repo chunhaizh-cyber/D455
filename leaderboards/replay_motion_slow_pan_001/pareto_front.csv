@@ -1,7 +1,7 @@
 slot,candidate_id,total_score,near_score,far_score,performance_score,unknown_p50,frame_ms_p95,run_id
-best_overall,candidate_0024,93.602,20.0,10.0,4.602,0.0,69.3079,slow_pan_far_object_candidate_0024
-best_far_retention,candidate_0024,93.602,20.0,10.0,4.602,0.0,69.3079,slow_pan_far_object_candidate_0024
+best_overall,candidate_0028,93.633,20.0,10.0,4.633,0.0,69.09909999999999,slow_pan_far_object_candidate_0028
+best_far_retention,candidate_0028,93.633,20.0,10.0,4.633,0.0,69.09909999999999,slow_pan_far_object_candidate_0028
 best_realtime,candidate_0013,92.854,20.0,7.0,6.854,0.0,54.2832,slow_pan_far_object_candidate_0013
-best_low_unknown,candidate_0024,93.602,20.0,10.0,4.602,0.0,69.3079,slow_pan_far_object_candidate_0024
-best_low_merge,candidate_0024,93.602,20.0,10.0,4.602,0.0,69.3079,slow_pan_far_object_candidate_0024
-best_low_split,candidate_0024,93.602,20.0,10.0,4.602,0.0,69.3079,slow_pan_far_object_candidate_0024
+best_low_unknown,candidate_0028,93.633,20.0,10.0,4.633,0.0,69.09909999999999,slow_pan_far_object_candidate_0028
+best_low_merge,candidate_0028,93.633,20.0,10.0,4.633,0.0,69.09909999999999,slow_pan_far_object_candidate_0028
+best_low_split,candidate_0028,93.633,20.0,10.0,4.633,0.0,69.09909999999999,slow_pan_far_object_candidate_0028

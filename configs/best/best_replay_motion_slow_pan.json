@@ -1,0 +1,48 @@
+{
+  "config_id": "best/replay_motion_slow_pan",
+  "source_candidate_id": "candidate_0028",
+  "parent": "candidate_0027",
+  "purpose": "Stage best for the real slow-pan replay bucket: coarse color ownership, async color-contour refresh, cached stereo transfer, and a refresh cooldown to avoid over-100ms frame spikes.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Keep slow-pan p95 below the 100ms gate while retaining far rough-distance evidence.",
+    "Avoid visible over-100ms refresh spikes on the current slow_pan_far_object replay.",
+    "Expose async worker, cache-age, and cooldown metrics for future motion-gate comparisons."
+  ],
+  "validation_evidence": [
+    "replay_motion_slow_pan_001 on slow_pan_far_object: candidate_0028 score 93.633, pass=true.",
+    "profile p95 69.0991ms, max 98.105ms, over_100ms_count 0, far_score 10.0.",
+    "cooldown_skipped_count 7, async_submitted_count 5, async_applied_count 5, positive worker p95 23.2298ms."
+  ],
+  "applicability": [
+    "deterministic real slow-pan replay bucket",
+    "coarse far-contour retention experiments where frame-time stability is more important than fine color-region granularity",
+    "motion-refresh regression checks before ROI-local refresh is implemented"
+  ],
+  "risk": [
+    "Not an overall best configuration.",
+    "Color segmentation is intentionally coarse and may miss small far contours.",
+    "hand_occlusion_reappear has not been captured or scored, so occlusion/reappearance behavior is unproven.",
+    "Cooldown can increase cache age during continuous motion."
+  ]
+}

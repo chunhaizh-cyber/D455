@@ -1,0 +1,35 @@
+{
+  "candidate_id": "candidate_0028",
+  "parent": "candidate_0027",
+  "purpose": "Coarse async slow-pan probe with refresh cooldown to suppress repeated motion-triggered refresh attempts.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Reduce repeated async submissions when motion delta stays near the trigger threshold.",
+    "Keep candidate_0027 lower max-frame behavior while reducing over-100ms spikes.",
+    "Expose cooldown skipped count for judging whether refresh throttling is active."
+  ],
+  "risk": [
+    "Longer cache age may increase visible lag during continuous motion.",
+    "Still inherits candidate_0024 coarse segmentation quality limits."
+  ]
+}

@@ -102,6 +102,20 @@ def percentile(values, percent):
     return clean[lo] * (1.0 - frac) + clean[hi] * frac
 
 
+def positive_percentile(values, percent):
+    clean = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            clean.append(parsed)
+    return percentile(clean, percent)
+
+
 def read_frame_metrics(path):
     if not path.exists():
         return []
@@ -218,9 +232,11 @@ def score_run(run_dir, config):
     color_async_submitted_count = sum(int(row_float(r, "color_contour_async_submitted") > 0) for r in timing_rows)
     color_async_applied_count = sum(int(row_float(r, "color_contour_async_applied") > 0) for r in timing_rows)
     color_async_dropped_count = sum(int(row_float(r, "color_contour_async_dropped") > 0) for r in timing_rows)
+    color_refresh_cooldown_skipped_count = sum(int(row_float(r, "color_contour_refresh_cooldown_skipped") > 0) for r in timing_rows)
     color_cache_age_p50 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 50)
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
+    color_async_worker_ms_positive_p95 = positive_percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
 
     coverage_min = float(hard_fail.get("cluster_coverage_percent_p50_min", 95.0))
     unknown_max = float(hard_fail.get("unknown_percent_p50_max", 15.0))
@@ -347,9 +363,11 @@ def score_run(run_dir, config):
             "color_contour_async_submitted_count": color_async_submitted_count,
             "color_contour_async_applied_count": color_async_applied_count,
             "color_contour_async_dropped_count": color_async_dropped_count,
+            "color_contour_refresh_cooldown_skipped_count": color_refresh_cooldown_skipped_count,
             "color_contour_cache_age_frames_p50": color_cache_age_p50,
             "color_contour_cache_age_frames_p95": color_cache_age_p95,
             "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,
+            "color_contour_async_worker_ms_positive_p95": color_async_worker_ms_positive_p95,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,

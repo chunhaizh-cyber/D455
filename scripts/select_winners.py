@@ -63,8 +63,9 @@ def main():
             "color_refresh_unknown_spike_count", "color_refresh_far_loss_count",
             "color_cache_reuse_count", "color_stereo_reuse_p50",
             "color_async_submitted_count", "color_async_applied_count",
-            "color_async_dropped_count", "color_cache_age_p95",
-            "color_async_worker_ms_p95", "run_id"
+            "color_async_dropped_count", "color_refresh_cooldown_skipped_count",
+            "color_cache_age_p95", "color_async_worker_ms_p95",
+            "color_async_worker_ms_positive_p95", "run_id"
         ])
         for s in scores:
             writer.writerow([
@@ -94,8 +95,10 @@ def main():
                 metric(s, "color_contour_async_submitted_count"),
                 metric(s, "color_contour_async_applied_count"),
                 metric(s, "color_contour_async_dropped_count"),
+                metric(s, "color_contour_refresh_cooldown_skipped_count"),
                 metric(s, "color_contour_cache_age_frames_p95"),
                 metric(s, "color_contour_async_worker_ms_p95"),
+                metric(s, "color_contour_async_worker_ms_positive_p95"),
                 s.get("run_id", ""),
             ])
 
