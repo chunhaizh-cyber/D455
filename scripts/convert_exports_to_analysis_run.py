@@ -352,7 +352,7 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "stereo_matched_cluster_count": stereo_valid,
         "stereo_failed_cluster_count": stereo_failed,
         "unknown_spike": int(unknown_percent > args.unknown_spike_percent),
-        "far_stereo_failed_event": int(stereo_failed > 0),
+        "far_stereo_failed_event": int(color_region_count > 0 and stereo_valid <= 0),
         "frame_time_over_budget": int(total_ms > args.frame_budget_ms) if total_ms else 0,
     })
     return row
@@ -439,7 +439,7 @@ def collect_events(frame_row):
             "cluster_id": "",
             "track_id": "",
             "related_cluster_id": "",
-            "message": "one or more final color regions had no valid stereo distance",
+            "message": "final color regions had no valid stereo distance",
             "value_before": "",
             "value_after": frame_row["stereo_failed_cluster_count"],
         })

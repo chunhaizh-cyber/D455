@@ -123,6 +123,17 @@ def read_json(path):
         return json.load(f)
 
 
+def row_float(row, key):
+    try:
+        return float(row.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def row_sum(row, *keys):
+    return sum(row_float(row, key) for key in keys)
+
+
 def event_count(events, event_type):
     return sum(1 for e in events if e.get("event_type") == event_type)
 
@@ -140,6 +151,13 @@ def score_run(run_dir, config):
     unknown_p50 = percentile([r.get("unknown_percent") for r in frame_rows], 50)
     frame_ms_p95 = percentile([r.get("total_frame_ms") for r in frame_rows], 95)
     far_cluster_p50 = percentile([r.get("far_cluster_count") for r in frame_rows], 50)
+    total_pixels_p50 = percentile([r.get("total_pixels") for r in frame_rows], 50)
+    far_retained_pixels_p50 = percentile([
+        row_sum(r, "approx_stereo_contour_pixels", "image_only_contour_pixels", "depth_hole_candidate_pixels")
+        for r in frame_rows
+    ], 50)
+    stereo_matched_p50 = percentile([r.get("stereo_matched_cluster_count") for r in frame_rows], 50)
+    stereo_failed_p50 = percentile([r.get("stereo_failed_cluster_count") for r in frame_rows], 50)
 
     coverage_min = float(hard_fail.get("cluster_coverage_percent_p50_min", 95.0))
     unknown_max = float(hard_fail.get("unknown_percent_p50_max", 15.0))
@@ -151,6 +169,11 @@ def score_run(run_dir, config):
     coverage_score = 0.0 if coverage_p50 is None else max(0.0, min(1.0, (coverage_p50 - coverage_min) / max(1.0, 100.0 - coverage_min)))
     unknown_score = 0.0 if unknown_p50 is None else max(0.0, min(1.0, (unknown_max - unknown_p50) / max(1.0, unknown_max)))
     perf_score = 0.0 if frame_ms_p95 is None else max(0.0, min(1.0, (frame_ms_max - frame_ms_p95) / max(1.0, frame_ms_max - realtime_ms)))
+    far_retained_ratio = 0.0
+    if total_pixels_p50 and far_retained_pixels_p50 is not None:
+        far_retained_ratio = max(0.0, far_retained_pixels_p50 / total_pixels_p50)
+    far_pixel_score = min(1.0, far_retained_ratio / 0.05)
+    stereo_presence_score = 1.0 if stereo_matched_p50 is not None and stereo_matched_p50 > 0 else 0.0
 
     merge_events = event_count(events, "cluster_merge")
     split_events = event_count(events, "cluster_split")
@@ -172,7 +195,8 @@ def score_run(run_dir, config):
     contour_score = max(0.0, contour_cap - 0.10 * contour_cap * contour_lost_events - 0.05 * contour_cap * merge_events - 0.025 * contour_cap * split_events)
     spatial_score = max(0.0, spatial_cap - 0.10 * spatial_cap * far_failed_events)
     temporal_score = max(0.0, temporal_cap - 0.10 * temporal_cap * contour_lost_events - (1.0 / 15.0) * temporal_cap * merge_events - (0.5 / 15.0) * temporal_cap * split_events)
-    far_score = max(0.0, far_cap - 0.20 * far_cap * far_failed_events - 0.10 * far_cap * contour_lost_events)
+    far_score = far_cap * (0.70 * far_pixel_score + 0.30 * stereo_presence_score)
+    far_score = max(0.0, far_score - 0.20 * far_cap * far_failed_events - 0.10 * far_cap * contour_lost_events)
     performance_score = performance_cap * perf_score
 
     diag_parts = [
@@ -240,6 +264,9 @@ def score_run(run_dir, config):
             "cluster_coverage_percent_p50": coverage_p50,
             "unknown_percent_p50": unknown_p50,
             "far_cluster_count_p50": far_cluster_p50,
+            "far_retained_pixels_p50": far_retained_pixels_p50,
+            "stereo_matched_cluster_count_p50": stereo_matched_p50,
+            "stereo_failed_cluster_count_p50": stereo_failed_p50,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,

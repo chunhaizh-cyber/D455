@@ -57,6 +57,10 @@ analysis_runs/<run_id>/notes.md
 
 小型 replay gate 的第一个通过候选是 `configs/candidates/round_001/candidate_0013.json`：在保留全画面 cluster map 的同时关闭重型 `color_segmentation` 和 `stereo_contour_distance`，三段固定 replay 均达到 `coverage=100%`、`unknown=0%`、p95 约 74-77ms 并通过 hard gate。它是速度基线，不是最终远距离粗距方案；后续应把双目粗距改成采样/低频路径，而不是每帧重开完整双目轮廓。
 
+`configs/candidates/round_001/candidate_0014.json` 是第一版低频粗距候选：新增 `--color-contour-frame-interval=N`，默认 `1` 保持每帧重算；当设置为 `120` 时，D455 会在首个刷新帧提取彩图轮廓并执行双目轮廓估距，后续帧复用缓存的 `ColorContourRegion`，从而在静态 replay 的评分帧保留 `ApproxStereoContour` 粗距信息，同时避免每帧付出完整 `gray_prepare_ms` 成本。这个方案只作为固定 replay / 低运动场景的速度桥接；相机移动或物体移动时缓存轮廓可能滞后，后续仍需要 ROI 跟踪或运动触发刷新。
+
+评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
+
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：
 
 ```powershell

@@ -158,6 +158,7 @@ struct SegmentationConfig
     int colorRefineMaxAreaDeltaPercent = 280;
     int nonPreciseColorOwnershipMinPercent = 10;
     int analysisExportEveryN = 0;
+    int colorContourFrameInterval = 1;
     int stereoContourMinDisparityTenthsPx = 5;
     int stereoContourMaxVerticalShiftPixels = 12;
     int stereoContourSearchMarginPixels = 48;
@@ -711,6 +712,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--d455-precision-min-far-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
             parseIntOption(arg, "--d455-precision-min-color-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
             parseIntOption(arg, "--analysis-export-every-n=", config.analysisExportEveryN) ||
+            parseIntOption(arg, "--color-contour-frame-interval=", config.colorContourFrameInterval) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
             parseIntOption(arg, "--stereo-contour-max-vertical-shift-px=", config.stereoContourMaxVerticalShiftPixels) ||
             parseIntOption(arg, "--stereo-contour-search-margin-px=", config.stereoContourSearchMarginPixels) ||
@@ -1273,6 +1275,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.colorRefineMaxAreaDeltaPercent = std::clamp(config.colorRefineMaxAreaDeltaPercent, 0, 1000);
     config.nonPreciseColorOwnershipMinPercent =
         std::clamp(config.nonPreciseColorOwnershipMinPercent, 1, 100);
+    config.colorContourFrameInterval = std::clamp(config.colorContourFrameInterval, 1, 600);
     config.stereoContourMinDisparityTenthsPx = std::clamp(config.stereoContourMinDisparityTenthsPx, 1, 200);
     config.stereoContourMaxVerticalShiftPixels = std::clamp(config.stereoContourMaxVerticalShiftPixels, 0, 120);
     config.stereoContourSearchMarginPixels = std::clamp(config.stereoContourSearchMarginPixels, 0, 240);
@@ -11377,6 +11380,7 @@ void printUsage()
         << "  --non-precise-color-ownership-min-percent=10\n"
         << "  --d455-precision-min-far-depth-support-percent=10 (compat alias)\n"
         << "  --d455-precision-min-color-depth-support-percent=10 (compat alias)\n"
+        << "  --color-contour-frame-interval=1\n"
         << "  --stereo-contour-min-disparity-tenths-px=5\n"
         << "  --stereo-contour-baseline-mm=95\n"
         << "  --mosaic-foreground-gate\n"
@@ -11589,6 +11593,8 @@ int runReplayDirectory(
     bool hasLastClusterMapFrame = false;
     FinalSegmentationFrame lastFinalSegmentationFrame;
     bool hasLastFinalSegmentationFrame = false;
+    std::vector<ColorContourRegion> cachedColorContourRegions;
+    bool hasColorContourRegionCache = false;
     rs2_intrinsics colorIntrinsics{};
 
     for (size_t replayIndex = 0; replayIndex < replayFrames.size(); ++replayIndex)
@@ -11636,26 +11642,39 @@ int runReplayDirectory(
             cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
         }
 
-        std::vector<ColorContourRegion> colorContourRegions =
-            extractColorContourRegions(colorBgr, config);
-        if (!colorContourRegions.empty() && config.stereoContourDistance)
+        std::vector<ColorContourRegion> colorContourRegions;
+        const bool refreshColorContourRegions =
+            !hasColorContourRegionCache ||
+            config.colorContourFrameInterval <= 1 ||
+            (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
+        if (refreshColorContourRegions)
         {
-            cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
-            cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
-            if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+            colorContourRegions = extractColorContourRegions(colorBgr, config);
+            if (!colorContourRegions.empty() && config.stereoContourDistance)
             {
-                cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
+                cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
+                if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                {
+                    cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                }
+                if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                {
+                    cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                }
+                estimateStereoContourDistances(
+                    colorContourRegions,
+                    leftIrForStereo,
+                    rightIrForStereo,
+                    colorIntrinsics,
+                    config);
             }
-            if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
-            {
-                cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
-            }
-            estimateStereoContourDistances(
-                colorContourRegions,
-                leftIrForStereo,
-                rightIrForStereo,
-                colorIntrinsics,
-                config);
+            cachedColorContourRegions = colorContourRegions;
+            hasColorContourRegionCache = true;
+        }
+        else
+        {
+            colorContourRegions = cachedColorContourRegions;
         }
         timingStats.grayPrepareMs = takeSectionMs();
 
@@ -12340,6 +12359,8 @@ int main(int argc, char** argv)
         bool hasLastClusterMapFrame = false;
         FinalSegmentationFrame lastFinalSegmentationFrame;
         bool hasLastFinalSegmentationFrame = false;
+        std::vector<ColorContourRegion> cachedColorContourRegions;
+        bool hasColorContourRegionCache = false;
         uint64_t frameId = 0;
         while (true)
         {
@@ -12422,36 +12443,49 @@ int main(int argc, char** argv)
                 cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
             }
 
-            std::vector<ColorContourRegion> colorContourRegions =
-                extractColorContourRegions(colorBgr, config);
-            if (!colorContourRegions.empty() && config.stereoContourDistance)
+            std::vector<ColorContourRegion> colorContourRegions;
+            const bool refreshColorContourRegions =
+                !hasColorContourRegionCache ||
+                config.colorContourFrameInterval <= 1 ||
+                (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
+            if (refreshColorContourRegions)
             {
-                cv::Mat leftIrForStereo;
-                cv::Mat rightIrForStereo;
-                const rs2::video_frame rawLeftIr = rawFrames.get_infrared_frame(1);
-                const rs2::video_frame rawRightIr = rawFrames.get_infrared_frame(2);
-                if (rawLeftIr)
+                colorContourRegions = extractColorContourRegions(colorBgr, config);
+                if (!colorContourRegions.empty() && config.stereoContourDistance)
                 {
-                    leftIrForStereo = videoFrameToGray8(rawLeftIr);
+                    cv::Mat leftIrForStereo;
+                    cv::Mat rightIrForStereo;
+                    const rs2::video_frame rawLeftIr = rawFrames.get_infrared_frame(1);
+                    const rs2::video_frame rawRightIr = rawFrames.get_infrared_frame(2);
+                    if (rawLeftIr)
+                    {
+                        leftIrForStereo = videoFrameToGray8(rawLeftIr);
+                    }
+                    if (rawRightIr)
+                    {
+                        rightIrForStereo = videoFrameToGray8(rawRightIr);
+                    }
+                    if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                    {
+                        cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    }
+                    if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                    {
+                        cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    }
+                    estimateStereoContourDistances(
+                        colorContourRegions,
+                        leftIrForStereo,
+                        rightIrForStereo,
+                        colorIntrinsics,
+                        config);
                 }
-                if (rawRightIr)
-                {
-                    rightIrForStereo = videoFrameToGray8(rawRightIr);
-                }
-                if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
-                {
-                    cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
-                }
-                if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
-                {
-                    cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
-                }
-                estimateStereoContourDistances(
-                    colorContourRegions,
-                    leftIrForStereo,
-                    rightIrForStereo,
-                    colorIntrinsics,
-                    config);
+                cachedColorContourRegions = colorContourRegions;
+                hasColorContourRegionCache = true;
+            }
+            else
+            {
+                colorContourRegions = cachedColorContourRegions;
             }
             timingStats.grayPrepareMs = takeSectionMs();
 

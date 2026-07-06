@@ -1,0 +1,23 @@
+{
+  "candidate_id": "candidate_0014",
+  "parent": "baseline/default",
+  "purpose": "Replay-speed candidate: keep color segmentation and stereo contour distance, but refresh color contour/stereo estimation only every 120 frames and reuse the cached contour ownership between refreshes.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120"
+  ],
+  "expected_effect": [
+    "Preserve cached ApproxStereoContour rough distance metadata after the first refresh frame.",
+    "Avoid running heavy color contour extraction and stereo matching on every scored replay frame.",
+    "Keep full-pixel fallback assignment through FarBackground remainder."
+  ],
+  "risk": [
+    "Cached color contours can lag when the camera or objects move.",
+    "This is suitable for deterministic static replay gates before a tracked/ROI-updated live strategy is added.",
+    "If the first refresh frame has poor stereo support, later cached frames inherit that weak estimate."
+  ]
+}
