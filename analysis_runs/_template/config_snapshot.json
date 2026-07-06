@@ -1,0 +1,13 @@
+{
+  "min_depth_mm": 250,
+  "max_depth_mm": 3500,
+  "far_max_depth_mm": 12000,
+  "depth_slice_mm": 450,
+  "realtime_30": true,
+  "quality_segmentation": true,
+  "color_segmentation": true,
+  "color_refine_depth_masks": true,
+  "stereo_contour_distance": true,
+  "non_precise_color_ownership_min_percent": 10,
+  "notes": ""
+}

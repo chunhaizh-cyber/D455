@@ -19,3 +19,8 @@ sam2/
 *.tlog
 *.vcxproj.user
 *.zip
+
+# Analysis runs are intentionally shareable. Large files under this tree are
+# routed by .gitattributes to Git LFS when LFS is enabled.
+!analysis_runs/
+!analysis_runs/**

@@ -33,9 +33,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <conio.h>
+#endif
+
 namespace
 {
-constexpr const char* kObservationDashboardWindow = "D455 observation dashboard 2x2";
+constexpr const char* kObservationDashboardWindow = "D455 observation dashboard five-panel";
 constexpr const char* kBoundaryDiagnosticsWindow = "D455 IR-D boundary diagnostics";
 constexpr const char* kIndoorPlaneWindow = "D455 indoor plane diagnostics";
 constexpr const char* kStableContourWindow = "D455 stable contour stability";
@@ -134,6 +138,28 @@ struct SegmentationConfig
     int clusterMapVisualMinAreaPixels = 700;
     int clusterMapVisualMorphKernelSize = 7;
     int clusterMapMaxVisualRegions = 24;
+    int mosaicMaxMaterialAreaPercent = 32;
+    int mosaicBorderRejectAreaPercent = 5;
+    int mosaicMinTrackObservations = 45;
+    int mosaicMinTrackScore = 45;
+    int mosaicNearMinTrackObservations = 3;
+    int mosaicNearMinTrackScore = 0;
+    int mosaicMaxTrackStaleFrames = 2;
+    int colorSegmentationMinAreaPixels = 700;
+    int colorSegmentationMorphKernelSize = 7;
+    int colorSegmentationMaxRegions = 32;
+    int colorSegmentationMaxRoiAreaPercent = 55;
+    int colorSegmentationBorderRejectAreaPercent = 28;
+    int colorSegmentationColorBins = 6;
+    int colorSegmentationMeanShiftSpatial = 9;
+    int colorSegmentationMeanShiftColor = 18;
+    int colorRefineMinOverlapPercent = 18;
+    int colorRefineMaxAreaDeltaPercent = 280;
+    int nonPreciseColorOwnershipMinPercent = 10;
+    int stereoContourMinDisparityTenthsPx = 5;
+    int stereoContourMaxVerticalShiftPixels = 12;
+    int stereoContourSearchMarginPixels = 48;
+    int stereoContourBaselineMm = 95;
     int processedViewScalePercent = 75;
     int overlapTrimMinSupportPercent = 3;
     int overlapTrimPaddingPixels = 6;
@@ -168,9 +194,15 @@ struct SegmentationConfig
     bool extraCandidatesInMosaic = false;
     bool overlapTrim = true;
     bool clusterMap = false;
+    bool mosaicForegroundGate = true;
+    bool qualitySegmentation = true;
+    bool colorSegmentation = true;
+    bool colorRefineDepthMasks = true;
+    bool stereoContourDistance = true;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
     std::string clusterMapExportPath;
+    std::string finalSegmentationExportPath;
 };
 
 struct ObservationMaterial
@@ -207,6 +239,32 @@ struct FarDistanceMaterial
     int rankNearFirst = 0;
     double contourArea = 0.0;
     std::vector<cv::Point> contour;
+};
+
+struct ColorContourRegion
+{
+    int id = 0;
+    cv::Rect roi;
+    cv::Point center;
+    int pixelCount = 0;
+    double contourArea = 0.0;
+    int estimatedDistanceMm = 0;
+    int distanceUncertaintyMm = 0;
+    int estimatedWidthMm = 0;
+    int estimatedHeightMm = 0;
+    double medianDisparityPx = 0.0;
+    int matchedStereoPoints = 0;
+    double contourConfidence = 0.0;
+    double distanceConfidence = 0.0;
+    std::vector<cv::Point> contour;
+};
+
+struct FinalSegmentationFrame
+{
+    cv::Mat idMap;
+    cv::Mat overlay;
+    std::vector<ObservationMaterial> depthMaterials;
+    std::vector<ColorContourRegion> colorRegions;
 };
 
 enum class ClusterSpatialMode
@@ -395,6 +453,8 @@ struct RgbDepthAccuracyConfig
 struct VideoRecordingConfig
 {
     bool enabled = false;
+    bool commandControl = true;
+    bool commandControlExplicit = false;
     int fps = 30;
     int everyN = 1;
     int scalePercent = 100;
@@ -625,6 +685,30 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--cluster-map-visual-min-area-px=", config.clusterMapVisualMinAreaPixels) ||
             parseIntOption(arg, "--cluster-map-visual-morph-kernel-px=", config.clusterMapVisualMorphKernelSize) ||
             parseIntOption(arg, "--cluster-map-max-visual-regions=", config.clusterMapMaxVisualRegions) ||
+            parseIntOption(arg, "--mosaic-max-material-area-percent=", config.mosaicMaxMaterialAreaPercent) ||
+            parseIntOption(arg, "--mosaic-border-reject-area-percent=", config.mosaicBorderRejectAreaPercent) ||
+            parseIntOption(arg, "--mosaic-min-track-observations=", config.mosaicMinTrackObservations) ||
+            parseIntOption(arg, "--mosaic-min-track-score=", config.mosaicMinTrackScore) ||
+            parseIntOption(arg, "--mosaic-near-min-track-observations=", config.mosaicNearMinTrackObservations) ||
+            parseIntOption(arg, "--mosaic-near-min-track-score=", config.mosaicNearMinTrackScore) ||
+            parseIntOption(arg, "--mosaic-max-track-stale-frames=", config.mosaicMaxTrackStaleFrames) ||
+            parseIntOption(arg, "--color-segmentation-min-area-px=", config.colorSegmentationMinAreaPixels) ||
+            parseIntOption(arg, "--color-segmentation-morph-kernel-px=", config.colorSegmentationMorphKernelSize) ||
+            parseIntOption(arg, "--color-segmentation-max-regions=", config.colorSegmentationMaxRegions) ||
+            parseIntOption(arg, "--color-segmentation-max-roi-area-percent=", config.colorSegmentationMaxRoiAreaPercent) ||
+            parseIntOption(arg, "--color-segmentation-border-reject-area-percent=", config.colorSegmentationBorderRejectAreaPercent) ||
+            parseIntOption(arg, "--color-segmentation-color-bins=", config.colorSegmentationColorBins) ||
+            parseIntOption(arg, "--color-segmentation-mean-shift-spatial=", config.colorSegmentationMeanShiftSpatial) ||
+            parseIntOption(arg, "--color-segmentation-mean-shift-color=", config.colorSegmentationMeanShiftColor) ||
+            parseIntOption(arg, "--color-refine-min-overlap-percent=", config.colorRefineMinOverlapPercent) ||
+            parseIntOption(arg, "--color-refine-max-area-delta-percent=", config.colorRefineMaxAreaDeltaPercent) ||
+            parseIntOption(arg, "--non-precise-color-ownership-min-percent=", config.nonPreciseColorOwnershipMinPercent) ||
+            parseIntOption(arg, "--d455-precision-min-far-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
+            parseIntOption(arg, "--d455-precision-min-color-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
+            parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
+            parseIntOption(arg, "--stereo-contour-max-vertical-shift-px=", config.stereoContourMaxVerticalShiftPixels) ||
+            parseIntOption(arg, "--stereo-contour-search-margin-px=", config.stereoContourSearchMarginPixels) ||
+            parseIntOption(arg, "--stereo-contour-baseline-mm=", config.stereoContourBaselineMm) ||
             parseIntOption(arg, "--processed-view-scale-percent=", config.processedViewScalePercent) ||
             parseIntOption(arg, "--overlap-trim-min-support-percent=", config.overlapTrimMinSupportPercent) ||
             parseIntOption(arg, "--overlap-trim-padding-px=", config.overlapTrimPaddingPixels) ||
@@ -887,6 +971,61 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.clusterMap = true;
             continue;
         }
+        if (arg == "--mosaic-foreground-gate")
+        {
+            config.mosaicForegroundGate = true;
+            continue;
+        }
+        if (arg == "--no-mosaic-foreground-gate")
+        {
+            config.mosaicForegroundGate = false;
+            continue;
+        }
+        if (arg == "--quality-segmentation")
+        {
+            config.qualitySegmentation = true;
+            continue;
+        }
+        if (arg == "--no-quality-segmentation")
+        {
+            config.qualitySegmentation = false;
+            continue;
+        }
+        if (arg == "--color-segmentation")
+        {
+            config.colorSegmentation = true;
+            continue;
+        }
+        if (arg == "--no-color-segmentation")
+        {
+            config.colorSegmentation = false;
+            continue;
+        }
+        if (arg == "--color-refine-depth-masks")
+        {
+            config.colorRefineDepthMasks = true;
+            continue;
+        }
+        if (arg == "--no-color-refine-depth-masks")
+        {
+            config.colorRefineDepthMasks = false;
+            continue;
+        }
+        if (arg == "--stereo-contour-distance")
+        {
+            config.stereoContourDistance = true;
+            continue;
+        }
+        if (arg == "--no-stereo-contour-distance")
+        {
+            config.stereoContourDistance = false;
+            continue;
+        }
+        if (parseStringOption(arg, "--final-segmentation-export=", config.finalSegmentationExportPath))
+        {
+            config.qualitySegmentation = true;
+            continue;
+        }
         if (arg == "--probe-only" || arg == "--help" || arg == "-h")
         {
             continue;
@@ -897,6 +1036,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
         }
         if (arg == "--record-video" ||
             arg == "--no-record-video" ||
+            arg == "--record-command-control" ||
+            arg == "--no-record-command-control" ||
             arg.rfind("--record-video=", 0) == 0 ||
             arg.rfind("--record-fps=", 0) == 0 ||
             arg.rfind("--record-every-n=", 0) == 0 ||
@@ -1096,6 +1237,30 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.clusterMapVisualMinAreaPixels = std::clamp(config.clusterMapVisualMinAreaPixels, 1, 200000);
     config.clusterMapVisualMorphKernelSize = std::clamp(config.clusterMapVisualMorphKernelSize | 1, 3, 31);
     config.clusterMapMaxVisualRegions = std::clamp(config.clusterMapMaxVisualRegions, 1, 200);
+    config.mosaicMaxMaterialAreaPercent = std::clamp(config.mosaicMaxMaterialAreaPercent, 1, 100);
+    config.mosaicBorderRejectAreaPercent = std::clamp(config.mosaicBorderRejectAreaPercent, 1, 100);
+    config.mosaicMinTrackObservations = std::clamp(config.mosaicMinTrackObservations, 1, 300);
+    config.mosaicMinTrackScore = std::clamp(config.mosaicMinTrackScore, 0, 100);
+    config.mosaicNearMinTrackObservations = std::clamp(config.mosaicNearMinTrackObservations, 1, 120);
+    config.mosaicNearMinTrackScore = std::clamp(config.mosaicNearMinTrackScore, 0, 100);
+    config.mosaicMaxTrackStaleFrames = std::clamp(config.mosaicMaxTrackStaleFrames, 0, 120);
+    config.colorSegmentationMinAreaPixels = std::clamp(config.colorSegmentationMinAreaPixels, 1, 200000);
+    config.colorSegmentationMorphKernelSize = std::clamp(config.colorSegmentationMorphKernelSize | 1, 3, 31);
+    config.colorSegmentationMaxRegions = std::clamp(config.colorSegmentationMaxRegions, 1, 200);
+    config.colorSegmentationMaxRoiAreaPercent = std::clamp(config.colorSegmentationMaxRoiAreaPercent, 1, 100);
+    config.colorSegmentationBorderRejectAreaPercent =
+        std::clamp(config.colorSegmentationBorderRejectAreaPercent, 1, 100);
+    config.colorSegmentationColorBins = std::clamp(config.colorSegmentationColorBins, 2, 12);
+    config.colorSegmentationMeanShiftSpatial = std::clamp(config.colorSegmentationMeanShiftSpatial, 0, 40);
+    config.colorSegmentationMeanShiftColor = std::clamp(config.colorSegmentationMeanShiftColor, 0, 80);
+    config.colorRefineMinOverlapPercent = std::clamp(config.colorRefineMinOverlapPercent, 1, 100);
+    config.colorRefineMaxAreaDeltaPercent = std::clamp(config.colorRefineMaxAreaDeltaPercent, 0, 1000);
+    config.nonPreciseColorOwnershipMinPercent =
+        std::clamp(config.nonPreciseColorOwnershipMinPercent, 1, 100);
+    config.stereoContourMinDisparityTenthsPx = std::clamp(config.stereoContourMinDisparityTenthsPx, 1, 200);
+    config.stereoContourMaxVerticalShiftPixels = std::clamp(config.stereoContourMaxVerticalShiftPixels, 0, 120);
+    config.stereoContourSearchMarginPixels = std::clamp(config.stereoContourSearchMarginPixels, 0, 240);
+    config.stereoContourBaselineMm = std::clamp(config.stereoContourBaselineMm, 1, 500);
     config.processedViewScalePercent = std::clamp(config.processedViewScalePercent, 25, 100);
     config.overlapTrimMinSupportPercent = std::clamp(config.overlapTrimMinSupportPercent, 1, 80);
     config.overlapTrimPaddingPixels = std::clamp(config.overlapTrimPaddingPixels, 0, 128);
@@ -1161,6 +1326,18 @@ VideoRecordingConfig parseVideoRecordingConfig(int argc, char** argv, bool defau
         if (parseStringOption(arg, "--record-video=", config.outputPath))
         {
             config.enabled = true;
+            continue;
+        }
+        if (arg == "--record-command-control")
+        {
+            config.commandControl = true;
+            config.commandControlExplicit = true;
+            continue;
+        }
+        if (arg == "--no-record-command-control")
+        {
+            config.commandControl = false;
+            config.commandControlExplicit = true;
             continue;
         }
         parseIntOption(arg, "--record-fps=", config.fps);
@@ -5442,6 +5619,748 @@ std::vector<ObservationMaterial> buildMosaicDisplayMaterials(
     return materials;
 }
 
+cv::Scalar clusterColorForId(int id);
+
+cv::Mat contourToMask(const std::vector<cv::Point>& contour, const cv::Size& frameSize)
+{
+    cv::Mat mask = cv::Mat::zeros(frameSize, CV_8UC1);
+    if (contour.size() >= 3)
+    {
+        const std::vector<std::vector<cv::Point>> contours{contour};
+        cv::drawContours(mask, contours, -1, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+    }
+    return mask;
+}
+
+bool overlapsExistingColorRegion(
+    const std::vector<ColorContourRegion>& regions,
+    const cv::Mat& candidateMask,
+    int candidatePixels,
+    const cv::Size& frameSize)
+{
+    if (candidateMask.empty() || candidatePixels <= 0)
+    {
+        return false;
+    }
+
+    for (const ColorContourRegion& region : regions)
+    {
+        const cv::Mat existingMask = contourToMask(region.contour, frameSize);
+        cv::Mat overlap;
+        cv::bitwise_and(candidateMask, existingMask, overlap);
+        const int overlapPixels = cv::countNonZero(overlap);
+        const int smallerArea = std::max(1, std::min(candidatePixels, region.pixelCount));
+        if (100.0 * static_cast<double>(overlapPixels) / static_cast<double>(smallerArea) >= 72.0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool appendColorContourRegionFromMask(
+    const cv::Mat& sourceMask,
+    const cv::Size& frameSize,
+    const SegmentationConfig& config,
+    std::vector<ColorContourRegion>& regions)
+{
+    if (sourceMask.empty() || cv::countNonZero(sourceMask) < config.colorSegmentationMinAreaPixels)
+    {
+        return false;
+    }
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(sourceMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    if (contours.empty())
+    {
+        return false;
+    }
+    const auto contourIt = std::max_element(
+        contours.begin(),
+        contours.end(),
+        [](const std::vector<cv::Point>& lhs, const std::vector<cv::Point>& rhs)
+        {
+            return std::abs(cv::contourArea(lhs)) < std::abs(cv::contourArea(rhs));
+        });
+    if (contourIt == contours.end() || contourIt->size() < 3)
+    {
+        return false;
+    }
+
+    std::vector<cv::Point> preciseContour;
+    const double epsilon = cv::arcLength(*contourIt, true) * config.contourApproxRatio;
+    if (epsilon >= 0.5)
+    {
+        cv::approxPolyDP(*contourIt, preciseContour, epsilon, true);
+    }
+    if (preciseContour.size() < 3)
+    {
+        preciseContour = *contourIt;
+    }
+
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    const cv::Rect roi = cv::boundingRect(preciseContour) & frameRect;
+    if (roi.empty())
+    {
+        return false;
+    }
+
+    const int frameArea = std::max(1, frameSize.width * frameSize.height);
+    const int maxRoiArea = frameArea * config.colorSegmentationMaxRoiAreaPercent / 100;
+    const int borderRejectArea = frameArea * config.colorSegmentationBorderRejectAreaPercent / 100;
+    if (roi.area() > maxRoiArea)
+    {
+        return false;
+    }
+
+    cv::Mat regionMask = contourToMask(preciseContour, frameSize);
+    const int pixelCount = cv::countNonZero(regionMask);
+    if (pixelCount < config.colorSegmentationMinAreaPixels)
+    {
+        return false;
+    }
+
+    const bool touchesBorder =
+        roi.x <= 1 ||
+        roi.y <= 1 ||
+        roi.x + roi.width >= frameSize.width - 1 ||
+        roi.y + roi.height >= frameSize.height - 1;
+    const bool spansMostFrame =
+        roi.width >= frameSize.width * 85 / 100 ||
+        roi.height >= frameSize.height * 85 / 100;
+    if (touchesBorder && spansMostFrame && pixelCount > borderRejectArea)
+    {
+        return false;
+    }
+    if (overlapsExistingColorRegion(regions, regionMask, pixelCount, frameSize))
+    {
+        return false;
+    }
+
+    const cv::Moments moments = cv::moments(regionMask, true);
+    ColorContourRegion region;
+    region.roi = roi;
+    region.center = std::abs(moments.m00) > 1e-6
+        ? cv::Point(
+            static_cast<int>(std::lround(moments.m10 / moments.m00)),
+            static_cast<int>(std::lround(moments.m01 / moments.m00)))
+        : cv::Point(roi.x + roi.width / 2, roi.y + roi.height / 2);
+    region.pixelCount = pixelCount;
+    region.contourArea = std::abs(cv::contourArea(preciseContour));
+    region.contour = std::move(preciseContour);
+    region.contourConfidence = std::clamp(
+        region.contourArea / static_cast<double>(std::max(1, frameArea / 20)),
+        0.10,
+        0.95);
+    regions.push_back(std::move(region));
+    return true;
+}
+
+void appendColorConnectedComponentRegions(
+    const cv::Mat& colorBgr,
+    const SegmentationConfig& config,
+    std::vector<ColorContourRegion>& regions)
+{
+    cv::Mat filtered = colorBgr;
+    if (config.colorSegmentationMeanShiftSpatial > 0 && config.colorSegmentationMeanShiftColor > 0)
+    {
+        cv::pyrMeanShiftFiltering(
+            colorBgr,
+            filtered,
+            static_cast<double>(config.colorSegmentationMeanShiftSpatial),
+            static_cast<double>(config.colorSegmentationMeanShiftColor));
+    }
+
+    cv::Mat lab;
+    cv::cvtColor(filtered, lab, cv::COLOR_BGR2Lab);
+    cv::Mat quantized(lab.size(), CV_32S);
+    std::map<int, int> labelCounts;
+    const int bins = std::max(2, config.colorSegmentationColorBins);
+    for (int y = 0; y < lab.rows; ++y)
+    {
+        const cv::Vec3b* labRow = lab.ptr<cv::Vec3b>(y);
+        int* labelRow = quantized.ptr<int>(y);
+        for (int x = 0; x < lab.cols; ++x)
+        {
+            const int lBin = std::min(bins - 1, labRow[x][0] * bins / 256);
+            const int aBin = std::min(bins - 1, labRow[x][1] * bins / 256);
+            const int bBin = std::min(bins - 1, labRow[x][2] * bins / 256);
+            const int label = (lBin * bins + aBin) * bins + bBin;
+            labelRow[x] = label;
+            ++labelCounts[label];
+        }
+    }
+
+    struct MaskCandidate
+    {
+        int area = 0;
+        cv::Mat mask;
+    };
+    std::vector<MaskCandidate> candidates;
+    const cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_ELLIPSE,
+        cv::Size(config.colorSegmentationMorphKernelSize, config.colorSegmentationMorphKernelSize));
+    for (const auto& [label, count] : labelCounts)
+    {
+        if (count < config.colorSegmentationMinAreaPixels)
+        {
+            continue;
+        }
+
+        cv::Mat labelMask;
+        cv::compare(quantized, cv::Scalar(label), labelMask, cv::CMP_EQ);
+        cv::morphologyEx(labelMask, labelMask, cv::MORPH_OPEN, cv::Mat());
+        cv::morphologyEx(labelMask, labelMask, cv::MORPH_CLOSE, kernel);
+
+        cv::Mat componentLabels;
+        cv::Mat stats;
+        cv::Mat centroids;
+        const int componentCount = cv::connectedComponentsWithStats(
+            labelMask,
+            componentLabels,
+            stats,
+            centroids,
+            8,
+            CV_32S);
+        for (int component = 1; component < componentCount; ++component)
+        {
+            const int area = stats.at<int>(component, cv::CC_STAT_AREA);
+            if (area < config.colorSegmentationMinAreaPixels)
+            {
+                continue;
+            }
+
+            cv::Mat componentMask;
+            cv::compare(componentLabels, cv::Scalar(component), componentMask, cv::CMP_EQ);
+            candidates.push_back(MaskCandidate{area, componentMask});
+        }
+    }
+
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const MaskCandidate& lhs, const MaskCandidate& rhs)
+        {
+            return lhs.area > rhs.area;
+        });
+    for (const MaskCandidate& candidate : candidates)
+    {
+        appendColorContourRegionFromMask(candidate.mask, colorBgr.size(), config, regions);
+    }
+}
+
+std::vector<ColorContourRegion> extractColorContourRegions(
+    const cv::Mat& colorBgr,
+    const SegmentationConfig& config)
+{
+    std::vector<ColorContourRegion> regions;
+    if (!config.qualitySegmentation || !config.colorSegmentation || colorBgr.empty())
+    {
+        return regions;
+    }
+
+    cv::Mat gray;
+    cv::cvtColor(colorBgr, gray, cv::COLOR_BGR2GRAY);
+    cv::Mat equalized;
+    cv::equalizeHist(gray, equalized);
+    cv::Mat blurred;
+    cv::GaussianBlur(equalized, blurred, cv::Size(3, 3), 0.0);
+    cv::Mat edges;
+    cv::Canny(blurred, edges, config.colorCannyLow, config.colorCannyHigh);
+
+    const int kernelSize = config.colorSegmentationMorphKernelSize | 1;
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernelSize, kernelSize));
+    cv::morphologyEx(edges, edges, cv::MORPH_CLOSE, kernel);
+    cv::dilate(edges, edges, kernel);
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(edges, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    std::sort(
+        contours.begin(),
+        contours.end(),
+        [](const std::vector<cv::Point>& lhs, const std::vector<cv::Point>& rhs)
+        {
+            return std::abs(cv::contourArea(lhs)) > std::abs(cv::contourArea(rhs));
+        });
+
+    for (const std::vector<cv::Point>& contour : contours)
+    {
+        if (contour.size() < 3)
+        {
+            continue;
+        }
+
+        const double contourArea = std::abs(cv::contourArea(contour));
+        if (contourArea < static_cast<double>(config.colorSegmentationMinAreaPixels))
+        {
+            continue;
+        }
+
+        const cv::Mat regionMask = contourToMask(contour, colorBgr.size());
+        appendColorContourRegionFromMask(regionMask, colorBgr.size(), config, regions);
+    }
+
+    appendColorConnectedComponentRegions(colorBgr, config, regions);
+    std::sort(
+        regions.begin(),
+        regions.end(),
+        [](const ColorContourRegion& lhs, const ColorContourRegion& rhs)
+        {
+            return lhs.pixelCount > rhs.pixelCount;
+        });
+    if (regions.size() > static_cast<size_t>(config.colorSegmentationMaxRegions))
+    {
+        regions.resize(static_cast<size_t>(config.colorSegmentationMaxRegions));
+    }
+    for (size_t index = 0; index < regions.size(); ++index)
+    {
+        regions[index].id = static_cast<int>(index + 1);
+    }
+    return regions;
+}
+
+double maskOverlapPercent(const cv::Mat& lhsMask, const cv::Mat& rhsMask, int denominatorPixels)
+{
+    if (lhsMask.empty() || rhsMask.empty() || lhsMask.size() != rhsMask.size() || denominatorPixels <= 0)
+    {
+        return 0.0;
+    }
+
+    cv::Mat intersection;
+    cv::bitwise_and(lhsMask, rhsMask, intersection);
+    return 100.0 * static_cast<double>(cv::countNonZero(intersection)) /
+        static_cast<double>(denominatorPixels);
+}
+
+std::vector<ObservationMaterial> refineDepthMaterialsWithColorContours(
+    const std::vector<ObservationMaterial>& depthMaterials,
+    const std::vector<ColorContourRegion>& colorRegions,
+    const cv::Mat& depth16,
+    float depthScale,
+    const rs2_intrinsics& intrinsics,
+    const SegmentationConfig& config,
+    uint64_t sourceFrameId)
+{
+    if (!config.qualitySegmentation || !config.colorRefineDepthMasks || colorRegions.empty())
+    {
+        return depthMaterials;
+    }
+
+    std::vector<ObservationMaterial> refined = depthMaterials;
+    const cv::Size frameSize = depth16.size();
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    for (ObservationMaterial& material : refined)
+    {
+        if (material.contour.size() < 3)
+        {
+            continue;
+        }
+
+        const cv::Mat depthMask = contourToMask(material.contour, frameSize);
+        const int depthArea = cv::countNonZero(depthMask);
+        if (depthArea <= 0)
+        {
+            continue;
+        }
+
+        const ColorContourRegion* bestRegion = nullptr;
+        double bestOverlapPercent = 0.0;
+        for (const ColorContourRegion& region : colorRegions)
+        {
+            if ((material.roi & region.roi).empty())
+            {
+                continue;
+            }
+            const cv::Mat colorMask = contourToMask(region.contour, frameSize);
+            const double overlapPercent = maskOverlapPercent(depthMask, colorMask, depthArea);
+            if (overlapPercent > bestOverlapPercent)
+            {
+                bestOverlapPercent = overlapPercent;
+                bestRegion = &region;
+            }
+        }
+
+        if (bestRegion == nullptr ||
+            bestOverlapPercent < static_cast<double>(config.colorRefineMinOverlapPercent))
+        {
+            continue;
+        }
+
+        const int colorArea = std::max(1, bestRegion->pixelCount);
+        const double areaDeltaPercent =
+            100.0 * std::abs(colorArea - depthArea) / static_cast<double>(std::max(1, depthArea));
+        if (areaDeltaPercent > static_cast<double>(config.colorRefineMaxAreaDeltaPercent))
+        {
+            continue;
+        }
+
+        const cv::Mat colorMask = contourToMask(bestRegion->contour, frameSize);
+        const cv::Rect roi = bestRegion->roi & frameRect;
+        if (roi.empty())
+        {
+            continue;
+        }
+
+        const LocalComponentMeasurement measurement = measureLocalComponent(
+            colorMask(roi),
+            roi,
+            depth16,
+            depthScale,
+            intrinsics,
+            colorArea);
+        if (!measurement.validDepth)
+        {
+            continue;
+        }
+
+        material.sourceFrameId = sourceFrameId;
+        material.roi = roi;
+        material.center = bestRegion->center;
+        material.pixelCount = colorArea;
+        material.depthMinMm = measurement.observedDepthMinMm;
+        material.depthMaxMm = measurement.observedDepthMaxMm;
+        material.meanDepthMm = measurement.meanDepthMm;
+        material.observedDepthMinMm = measurement.observedDepthMinMm;
+        material.observedDepthMaxMm = measurement.observedDepthMaxMm;
+        material.contourArea = bestRegion->contourArea;
+        material.contour = bestRegion->contour;
+        material.hasPointCloudBounds = measurement.hasPointCloudBounds;
+        material.minPointMeters = measurement.minPointMeters;
+        material.maxPointMeters = measurement.maxPointMeters;
+    }
+
+    return refined;
+}
+
+void estimateStereoContourDistances(
+    std::vector<ColorContourRegion>& regions,
+    const cv::Mat& leftIr,
+    const cv::Mat& rightIr,
+    const rs2_intrinsics& intrinsics,
+    const SegmentationConfig& config)
+{
+    if (!config.qualitySegmentation ||
+        !config.stereoContourDistance ||
+        leftIr.empty() ||
+        rightIr.empty() ||
+        intrinsics.fx <= 0.0f)
+    {
+        return;
+    }
+
+    cv::Mat leftGray = leftIr;
+    cv::Mat rightGray = rightIr;
+    if (leftGray.channels() != 1)
+    {
+        cv::cvtColor(leftGray, leftGray, cv::COLOR_BGR2GRAY);
+    }
+    if (rightGray.channels() != 1)
+    {
+        cv::cvtColor(rightGray, rightGray, cv::COLOR_BGR2GRAY);
+    }
+    if (leftGray.size() != rightGray.size())
+    {
+        cv::resize(rightGray, rightGray, leftGray.size(), 0.0, 0.0, cv::INTER_LINEAR);
+    }
+
+    cv::Mat leftEdges;
+    cv::Mat rightEdges;
+    cv::Canny(leftGray, leftEdges, config.infraredCannyLow, config.infraredCannyHigh);
+    cv::Canny(rightGray, rightEdges, config.infraredCannyLow, config.infraredCannyHigh);
+    const cv::Rect frameRect(0, 0, leftGray.cols, leftGray.rows);
+    const double minDisparityPx = config.stereoContourMinDisparityTenthsPx / 10.0;
+
+    for (ColorContourRegion& region : regions)
+    {
+        cv::Rect templateRoi = region.roi & frameRect;
+        if (templateRoi.width < 8 || templateRoi.height < 8)
+        {
+            continue;
+        }
+
+        const int margin = config.stereoContourSearchMarginPixels;
+        cv::Rect searchRoi(
+            std::max(0, templateRoi.x - margin),
+            std::max(0, templateRoi.y - config.stereoContourMaxVerticalShiftPixels),
+            std::min(frameRect.width, templateRoi.x + templateRoi.width + margin) - std::max(0, templateRoi.x - margin),
+            std::min(frameRect.height, templateRoi.y + templateRoi.height + config.stereoContourMaxVerticalShiftPixels) -
+                std::max(0, templateRoi.y - config.stereoContourMaxVerticalShiftPixels));
+        searchRoi &= frameRect;
+        if (searchRoi.width <= templateRoi.width || searchRoi.height <= templateRoi.height)
+        {
+            continue;
+        }
+
+        cv::Mat templ = leftEdges(templateRoi);
+        cv::Mat search = rightEdges(searchRoi);
+        if (cv::countNonZero(templ) < 12)
+        {
+            continue;
+        }
+
+        cv::Mat response;
+        cv::matchTemplate(search, templ, response, cv::TM_CCOEFF_NORMED);
+        double maxValue = 0.0;
+        cv::Point maxLocation;
+        cv::minMaxLoc(response, nullptr, &maxValue, nullptr, &maxLocation);
+        if (maxValue < 0.12)
+        {
+            continue;
+        }
+
+        const double matchedRightX = static_cast<double>(searchRoi.x + maxLocation.x);
+        const double disparityPx = static_cast<double>(templateRoi.x) - matchedRightX;
+        if (disparityPx < minDisparityPx)
+        {
+            continue;
+        }
+
+        const double distanceMm = static_cast<double>(intrinsics.fx) *
+            static_cast<double>(config.stereoContourBaselineMm) /
+            disparityPx;
+        if (!std::isfinite(distanceMm) || distanceMm <= 0.0)
+        {
+            continue;
+        }
+
+        region.medianDisparityPx = disparityPx;
+        region.estimatedDistanceMm = static_cast<int>(std::lround(distanceMm));
+        region.distanceUncertaintyMm = static_cast<int>(std::lround(
+            distanceMm * std::max(0.15, 1.0 - std::clamp(maxValue, 0.0, 0.95))));
+        region.estimatedWidthMm = static_cast<int>(std::lround(
+            distanceMm * static_cast<double>(region.roi.width) / std::max(1.0f, intrinsics.fx)));
+        region.estimatedHeightMm = static_cast<int>(std::lround(
+            distanceMm * static_cast<double>(region.roi.height) / std::max(1.0f, intrinsics.fy)));
+        region.matchedStereoPoints = cv::countNonZero(templ);
+        region.distanceConfidence = std::clamp(maxValue, 0.0, 0.95);
+    }
+}
+
+FinalSegmentationFrame buildFinalSegmentationFrame(
+    const cv::Mat& colorBgr,
+    const std::vector<ObservationMaterial>& depthMaterials,
+    const std::vector<ColorContourRegion>& colorRegions)
+{
+    FinalSegmentationFrame frame;
+    if (colorBgr.empty())
+    {
+        return frame;
+    }
+
+    frame.idMap = cv::Mat::zeros(colorBgr.size(), CV_16U);
+    frame.overlay = colorBgr.clone();
+    frame.depthMaterials = depthMaterials;
+    frame.colorRegions = colorRegions;
+    int nextId = 1;
+    for (const ObservationMaterial& material : depthMaterials)
+    {
+        const cv::Mat mask = contourToMask(material.contour, colorBgr.size());
+        frame.idMap.setTo(nextId, mask);
+        cv::Mat colorLayer(colorBgr.size(), CV_8UC3, clusterColorForId(nextId));
+        colorLayer.copyTo(frame.overlay, mask);
+        ++nextId;
+    }
+    for (const ColorContourRegion& region : colorRegions)
+    {
+        const cv::Mat mask = contourToMask(region.contour, colorBgr.size());
+        cv::Mat unassigned;
+        cv::compare(frame.idMap, 0, unassigned, cv::CMP_EQ);
+        cv::Mat addMask;
+        cv::bitwise_and(mask, unassigned, addMask);
+        if (cv::countNonZero(addMask) == 0)
+        {
+            continue;
+        }
+        frame.idMap.setTo(nextId, addMask);
+        cv::Mat colorLayer(colorBgr.size(), CV_8UC3, clusterColorForId(nextId));
+        colorLayer.copyTo(frame.overlay, addMask);
+        ++nextId;
+    }
+    cv::addWeighted(colorBgr, 0.45, frame.overlay, 0.55, 0.0, frame.overlay);
+    return frame;
+}
+
+bool materialHasD455PrecisionDepth(const ObservationMaterial& material, const SegmentationConfig& config)
+{
+    return
+        (material.meanDepthMm >= config.minDepthMm && material.meanDepthMm <= config.maxDepthMm) ||
+        (material.observedDepthMinMm >= config.minDepthMm && material.observedDepthMinMm <= config.maxDepthMm);
+}
+
+cv::Mat buildOutOfD455PrecisionColorContourView(
+    const cv::Size& frameSize,
+    const cv::Mat& depth16,
+    float depthScale,
+    const std::vector<ColorContourRegion>& colorRegions,
+    const SegmentationConfig& config)
+{
+    cv::Mat view(frameSize, CV_8UC3, cv::Scalar(0, 0, 0));
+    if (frameSize.empty() || colorRegions.empty())
+    {
+        return view;
+    }
+
+    cv::putText(
+        view,
+        "far + no-depth color ownership >= " +
+            std::to_string(config.nonPreciseColorOwnershipMinPercent) + "%",
+        cv::Point(12, 28),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.65,
+        cv::Scalar(255, 255, 255),
+        2,
+        cv::LINE_AA);
+    cv::putText(
+        view,
+        "bright=far depth, pale=no depth 2D owner",
+        cv::Point(12, 52),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.5,
+        cv::Scalar(210, 210, 210),
+        1,
+        cv::LINE_AA);
+
+    cv::Mat farDepthMask = cv::Mat::zeros(frameSize, CV_8UC1);
+    cv::Mat missingDepthMask = cv::Mat::zeros(frameSize, CV_8UC1);
+    if (!depth16.empty())
+    {
+        cv::Mat depthForMask = depth16;
+        if (depthForMask.size() != frameSize)
+        {
+            cv::resize(depthForMask, depthForMask, frameSize, 0.0, 0.0, cv::INTER_NEAREST);
+        }
+        cv::inRange(
+            depthForMask,
+            depthUnitsFromMm(config.maxDepthMm + 1, depthScale),
+            depthUnitsFromMm(config.farMaxDepthMm, depthScale),
+            farDepthMask);
+        cv::compare(depthForMask, 0, missingDepthMask, cv::CMP_EQ);
+    }
+
+    const int minDisplayPixels = std::max(16, config.colorSegmentationMinAreaPixels / 4);
+    for (const ColorContourRegion& region : colorRegions)
+    {
+        const cv::Mat colorMask = contourToMask(region.contour, frameSize);
+        if (colorMask.empty())
+        {
+            continue;
+        }
+
+        const int colorPixels = cv::countNonZero(colorMask);
+        cv::Mat farColorMask;
+        cv::bitwise_and(colorMask, farDepthMask, farColorMask);
+        const int farPixels = cv::countNonZero(farColorMask);
+        cv::Mat missingColorMask;
+        cv::bitwise_and(colorMask, missingDepthMask, missingColorMask);
+        const int missingPixels = cv::countNonZero(missingColorMask);
+        cv::Mat nonPreciseColorMask;
+        cv::bitwise_or(farColorMask, missingColorMask, nonPreciseColorMask);
+        const int nonPrecisePixels = farPixels + missingPixels;
+        const int nonPreciseOwnershipPercent = colorPixels <= 0
+            ? 0
+            : static_cast<int>(std::lround(100.0 * nonPrecisePixels / static_cast<double>(colorPixels)));
+        if (nonPreciseOwnershipPercent < config.nonPreciseColorOwnershipMinPercent)
+        {
+            continue;
+        }
+
+        if (nonPrecisePixels < minDisplayPixels)
+        {
+            continue;
+        }
+
+        const cv::Scalar clusterColor = clusterColorForId(region.id);
+        cv::Mat farLayer(frameSize, CV_8UC3, clusterColor);
+        farLayer.copyTo(view, farColorMask);
+
+        cv::Scalar missingColor(
+            0.45 * clusterColor[0] + 80.0,
+            0.45 * clusterColor[1] + 80.0,
+            0.45 * clusterColor[2] + 80.0);
+        cv::Mat missingLayer(frameSize, CV_8UC3, missingColor);
+        missingLayer.copyTo(view, missingColorMask);
+
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(nonPreciseColorMask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        if (!contours.empty())
+        {
+            cv::drawContours(view, contours, -1, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        }
+    }
+
+    return view;
+}
+
+bool isLikelyBackgroundForMosaic(
+    const ObservationMaterial& material,
+    const cv::Size& frameSize,
+    const SegmentationConfig& config)
+{
+    const int frameArea = std::max(1, frameSize.width * frameSize.height);
+    const int materialArea = std::max(
+        material.pixelCount,
+        static_cast<int>(std::lround(std::abs(material.contourArea))));
+    const double areaPercent = 100.0 * static_cast<double>(materialArea) / static_cast<double>(frameArea);
+    const bool nearForeground =
+        (material.observedDepthMinMm > 0 && material.observedDepthMinMm <= config.foregroundKeepDepthMm) ||
+        (material.meanDepthMm > 0 && material.meanDepthMm <= config.foregroundKeepDepthMm);
+    if (nearForeground && areaPercent <= static_cast<double>(config.foregroundMaxAreaPercent))
+    {
+        return false;
+    }
+
+    if (areaPercent > static_cast<double>(config.mosaicMaxMaterialAreaPercent))
+    {
+        return true;
+    }
+
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    const cv::Rect roi = material.roi.empty()
+        ? (material.contour.size() >= 3 ? cv::boundingRect(material.contour) & frameRect : cv::Rect())
+        : (material.roi & frameRect);
+    if (roi.empty())
+    {
+        return false;
+    }
+
+    const bool touchesLeft = roi.x <= 1;
+    const bool touchesTop = roi.y <= 1;
+    const bool touchesRight = roi.x + roi.width >= frameSize.width - 1;
+    const bool touchesBottom = roi.y + roi.height >= frameSize.height - 1;
+    const bool touchesBorder = touchesLeft || touchesTop || touchesRight || touchesBottom;
+    if (touchesBorder && areaPercent > static_cast<double>(config.mosaicBorderRejectAreaPercent))
+    {
+        return true;
+    }
+
+    const bool spansWide = roi.width >= frameSize.width * 80 / 100;
+    const bool spansTall = roi.height >= frameSize.height * 80 / 100;
+    return (spansWide || spansTall) &&
+        areaPercent > static_cast<double>(config.mosaicBorderRejectAreaPercent);
+}
+
+std::vector<ObservationMaterial> filterMosaicForegroundMaterials(
+    const std::vector<ObservationMaterial>& materials,
+    const cv::Size& frameSize,
+    const SegmentationConfig& config)
+{
+    if (!config.mosaicForegroundGate)
+    {
+        return materials;
+    }
+
+    std::vector<ObservationMaterial> filtered;
+    filtered.reserve(materials.size());
+    for (const ObservationMaterial& material : materials)
+    {
+        if (!isLikelyBackgroundForMosaic(material, frameSize, config))
+        {
+            filtered.push_back(material);
+        }
+    }
+    return filtered;
+}
+
 void drawNearPlaneOverlay(
     cv::Mat& view,
     const std::vector<ObservationMaterial>& nearPlaneMaterials)
@@ -5581,6 +6500,8 @@ cv::Mat buildOutsideStableContourColorImage(
 }
 
 std::string defaultClusterMapExportBasePath();
+
+std::string defaultFinalSegmentationExportBasePath();
 
 std::filesystem::path resolveProjectOutputPath(
     const std::filesystem::path& requestedPath,
@@ -6037,6 +6958,124 @@ void writeClusterMapExport(
         << metadataPath.string() << '\n';
 }
 
+std::filesystem::path finalSegmentationExportBasePath(const SegmentationConfig& config)
+{
+    std::filesystem::path requested = config.finalSegmentationExportPath.empty()
+        ? std::filesystem::path(defaultFinalSegmentationExportBasePath())
+        : std::filesystem::path(config.finalSegmentationExportPath);
+    std::filesystem::path output = resolveProjectOutputPath(requested, "");
+    const std::string extension = output.extension().string();
+    if (extension == ".json" || extension == ".png" || extension == ".bin" || extension == ".csv")
+    {
+        output.replace_extension();
+    }
+    return output;
+}
+
+void writeFinalSegmentationExport(
+    const FinalSegmentationFrame& frame,
+    const SegmentationConfig& config)
+{
+    if (frame.idMap.empty())
+    {
+        return;
+    }
+
+    const std::filesystem::path base = finalSegmentationExportBasePath(config);
+    if (base.has_parent_path())
+    {
+        std::filesystem::create_directories(base.parent_path());
+    }
+
+    const std::filesystem::path idPath =
+        base.parent_path() / (base.filename().string() + "_ids.png");
+    const std::filesystem::path overlayPath =
+        base.parent_path() / (base.filename().string() + "_overlay.png");
+    const std::filesystem::path metadataPath =
+        base.parent_path() / (base.filename().string() + "_metadata.json");
+
+    cv::imwrite(idPath.string(), frame.idMap);
+    if (!frame.overlay.empty())
+    {
+        cv::imwrite(overlayPath.string(), frame.overlay);
+    }
+
+    std::ofstream metadata(metadataPath, std::ios::out | std::ios::trunc);
+    if (!metadata.is_open())
+    {
+        throw std::runtime_error("Failed to open final segmentation metadata file: " + metadataPath.string());
+    }
+
+    cv::Mat assignedMask;
+    cv::compare(frame.idMap, 0, assignedMask, cv::CMP_GT);
+    const int assignedPixelCount = cv::countNonZero(assignedMask);
+    int stereoDistanceValidCount = 0;
+    for (const ColorContourRegion& region : frame.colorRegions)
+    {
+        if (region.estimatedDistanceMm > 0)
+        {
+            ++stereoDistanceValidCount;
+        }
+    }
+
+    metadata << "{\n";
+    metadata << "  \"image_size\": [" << frame.idMap.cols << ", " << frame.idMap.rows << "],\n";
+    metadata << "  \"assigned_pixel_count\": " << assignedPixelCount << ",\n";
+    metadata << "  \"depth_material_count\": " << frame.depthMaterials.size() << ",\n";
+    metadata << "  \"color_region_count\": " << frame.colorRegions.size() << ",\n";
+    metadata << "  \"stereo_distance_valid_count\": " << stereoDistanceValidCount << ",\n";
+    metadata << "  \"depth_materials\": [\n";
+    for (size_t index = 0; index < frame.depthMaterials.size(); ++index)
+    {
+        const ObservationMaterial& material = frame.depthMaterials[index];
+        const int sizeXmm = material.hasPointCloudBounds
+            ? static_cast<int>(std::lround((material.maxPointMeters.x - material.minPointMeters.x) * 1000.0f))
+            : 0;
+        const int sizeYmm = material.hasPointCloudBounds
+            ? static_cast<int>(std::lround((material.maxPointMeters.y - material.minPointMeters.y) * 1000.0f))
+            : 0;
+        const int sizeZmm = material.hasPointCloudBounds
+            ? static_cast<int>(std::lround((material.maxPointMeters.z - material.minPointMeters.z) * 1000.0f))
+            : 0;
+        metadata << "    {\"id\": " << (index + 1)
+            << ", \"pixel_count\": " << material.pixelCount
+            << ", \"bbox_2d\": [" << material.roi.x << ", " << material.roi.y << ", "
+            << material.roi.width << ", " << material.roi.height << "]"
+            << ", \"center_2d\": [" << material.center.x << ", " << material.center.y << "]"
+            << ", \"depth_mean_mm\": " << material.meanDepthMm
+            << ", \"depth_min_mm\": " << material.observedDepthMinMm
+            << ", \"depth_max_mm\": " << material.observedDepthMaxMm
+            << ", \"size_3d_mm\": [" << sizeXmm << ", " << sizeYmm << ", " << sizeZmm << "]"
+            << "}" << (index + 1 == frame.depthMaterials.size() ? "\n" : ",\n");
+    }
+    metadata << "  ],\n";
+    metadata << "  \"color_regions\": [\n";
+    for (size_t index = 0; index < frame.colorRegions.size(); ++index)
+    {
+        const ColorContourRegion& region = frame.colorRegions[index];
+        metadata << "    {\"id\": " << region.id
+            << ", \"pixel_count\": " << region.pixelCount
+            << ", \"bbox_2d\": [" << region.roi.x << ", " << region.roi.y << ", "
+            << region.roi.width << ", " << region.roi.height << "]"
+            << ", \"center_2d\": [" << region.center.x << ", " << region.center.y << "]"
+            << ", \"estimated_distance_mm\": " << region.estimatedDistanceMm
+            << ", \"distance_uncertainty_mm\": " << region.distanceUncertaintyMm
+            << ", \"estimated_size_mm\": [" << region.estimatedWidthMm << ", " << region.estimatedHeightMm << "]"
+            << ", \"median_disparity_px\": " << std::fixed << std::setprecision(3) << region.medianDisparityPx
+            << ", \"matched_stereo_points\": " << region.matchedStereoPoints
+            << ", \"contour_confidence\": " << std::setprecision(3) << region.contourConfidence
+            << ", \"distance_confidence\": " << std::setprecision(3) << region.distanceConfidence
+            << "}" << (index + 1 == frame.colorRegions.size() ? "\n" : ",\n");
+    }
+    metadata << "  ]\n";
+    metadata << "}\n";
+    metadata.close();
+
+    std::cout << "Final segmentation export saved: "
+        << idPath.string() << " ; "
+        << metadataPath.string() << '\n';
+}
+
 std::string timestampForFilename()
 {
     const auto now = std::chrono::system_clock::now();
@@ -6136,6 +7175,15 @@ std::string defaultClusterMapExportBasePath()
         projectRootForOutput() /
         "recordings" /
         ("cluster_map_" + timestampForFilename());
+    return path.string();
+}
+
+std::string defaultFinalSegmentationExportBasePath()
+{
+    const std::filesystem::path path =
+        projectRootForOutput() /
+        "recordings" /
+        ("final_segmentation_" + timestampForFilename());
     return path.string();
 }
 
@@ -6593,6 +7641,11 @@ cv::Mat buildTiledFrame(const std::vector<cv::Mat>& views, int columns = 2)
     return frame;
 }
 
+int dashboardColumnCount(int panelCount)
+{
+    return panelCount > 4 ? 3 : 2;
+}
+
 cv::Rect computeStereoOverlapCrop(const cv::Mat& depth16, const SegmentationConfig& config, float depthScale)
 {
     if (!config.overlapTrim || depth16.empty())
@@ -6791,6 +7844,46 @@ public:
         ++writtenFrames_;
     }
 
+    void start()
+    {
+        if (config_.enabled)
+        {
+            std::cout << "Recording already armed";
+            if (writer_.isOpened())
+            {
+                std::cout << ": " << outputPath_;
+            }
+            std::cout << '\n';
+            return;
+        }
+        config_.enabled = true;
+        submittedFrames_ = 0;
+        std::cout << "Recording command: start. File will open on next rendered frame.\n";
+    }
+
+    void stop()
+    {
+        if (!config_.enabled && !writer_.isOpened())
+        {
+            std::cout << "Recording already stopped.\n";
+            return;
+        }
+        close();
+        config_.enabled = false;
+        submittedFrames_ = 0;
+        std::cout << "Recording command: stop.\n";
+    }
+
+    bool isEnabled() const
+    {
+        return config_.enabled;
+    }
+
+    bool isOpened() const
+    {
+        return writer_.isOpened();
+    }
+
     void close()
     {
         if (writer_.isOpened())
@@ -6798,17 +7891,31 @@ public:
             writer_.release();
             std::cout << "Recording saved: " << outputPath_
                 << " frames=" << writtenFrames_ << '\n';
+            writtenFrames_ = 0;
         }
     }
 
 private:
+    std::filesystem::path nextOutputPath()
+    {
+        std::filesystem::path requested = config_.outputPath.empty()
+            ? std::filesystem::path(defaultRecordingPath())
+            : std::filesystem::path(config_.outputPath);
+        if (!config_.outputPath.empty() && openCount_ > 0)
+        {
+            const std::string extension = requested.has_extension()
+                ? requested.extension().string()
+                : std::string(".avi");
+            requested.replace_extension();
+            requested = requested.parent_path() /
+                (requested.filename().string() + "_" + timestampForFilename() + extension);
+        }
+        return resolveProjectOutputPath(requested, ".avi");
+    }
+
     void open(const cv::Size& frameSize)
     {
-        const std::filesystem::path output = resolveProjectOutputPath(
-            config_.outputPath.empty()
-                ? std::filesystem::path(defaultRecordingPath())
-                : std::filesystem::path(config_.outputPath),
-            ".avi");
+        const std::filesystem::path output = nextOutputPath();
         if (output.has_parent_path())
         {
             std::filesystem::create_directories(output.parent_path());
@@ -6816,6 +7923,7 @@ private:
 
         frameSize_ = frameSize;
         outputPath_ = output.string();
+        writtenFrames_ = 0;
         std::string backendName;
         bool opened = writer_.open(
             outputPath_,
@@ -6880,6 +7988,7 @@ private:
             << " every=" << config_.everyN
             << " scale=" << config_.scalePercent << "%"
             << " size=" << frameSize_.width << "x" << frameSize_.height << '\n';
+        ++openCount_;
     }
 
     VideoRecordingConfig config_;
@@ -6888,7 +7997,70 @@ private:
     std::string outputPath_;
     int64_t submittedFrames_ = 0;
     int64_t writtenFrames_ = 0;
+    int openCount_ = 0;
 };
+
+enum class RuntimeCommand
+{
+    None,
+    StartRecording,
+    StopRecording,
+    Quit
+};
+
+RuntimeCommand runtimeCommandFromKey(int key)
+{
+    if (key < 0)
+    {
+        return RuntimeCommand::None;
+    }
+    const int normalizedKey = key & 0xff;
+    if (normalizedKey == 27 || normalizedKey == 'q' || normalizedKey == 'Q')
+    {
+        return RuntimeCommand::Quit;
+    }
+    if (normalizedKey == 'r' || normalizedKey == 'R')
+    {
+        return RuntimeCommand::StartRecording;
+    }
+    if (normalizedKey == 's' || normalizedKey == 'S')
+    {
+        return RuntimeCommand::StopRecording;
+    }
+    return RuntimeCommand::None;
+}
+
+RuntimeCommand pollConsoleRuntimeCommand()
+{
+#ifdef _WIN32
+    while (_kbhit())
+    {
+        const int key = _getch();
+        RuntimeCommand command = runtimeCommandFromKey(key);
+        if (command != RuntimeCommand::None)
+        {
+            return command;
+        }
+    }
+#endif
+    return RuntimeCommand::None;
+}
+
+void applyRuntimeCommand(RuntimeCommand command, VideoRecorder& videoRecorder)
+{
+    switch (command)
+    {
+    case RuntimeCommand::StartRecording:
+        videoRecorder.start();
+        break;
+    case RuntimeCommand::StopRecording:
+        videoRecorder.stop();
+        break;
+    case RuntimeCommand::None:
+    case RuntimeCommand::Quit:
+        break;
+    }
+}
 
 std::vector<cv::Point> shiftedContourForRoi(
     const std::vector<cv::Point>& contour,
@@ -8388,6 +9560,58 @@ double contourStabilityScore(const StableContourTrackAggregate& aggregate, int s
         depthScore * 0.10;
 }
 
+std::vector<ObservationMaterial> filterMosaicTrackQuality(
+    const std::vector<ObservationMaterial>& materials,
+    const std::map<uint64_t, StableContourTrackAggregate>& trackAggregates,
+    int frameIndex,
+    const SegmentationConfig& config)
+{
+    if (!config.mosaicForegroundGate)
+    {
+        return materials;
+    }
+
+    std::vector<ObservationMaterial> filtered;
+    filtered.reserve(materials.size());
+    for (const ObservationMaterial& material : materials)
+    {
+        const auto aggregateIt = trackAggregates.find(material.observationId);
+        if (aggregateIt == trackAggregates.end())
+        {
+            continue;
+        }
+
+        const StableContourTrackAggregate& aggregate = aggregateIt->second;
+        const bool nearForeground =
+            (material.observedDepthMinMm > 0 && material.observedDepthMinMm <= config.foregroundKeepDepthMm) ||
+            (material.meanDepthMm > 0 && material.meanDepthMm <= config.foregroundKeepDepthMm);
+        const int minObservations = nearForeground
+            ? config.mosaicNearMinTrackObservations
+            : config.mosaicMinTrackObservations;
+        const int minScore = nearForeground
+            ? config.mosaicNearMinTrackScore
+            : config.mosaicMinTrackScore;
+
+        if (aggregate.observations < minObservations)
+        {
+            continue;
+        }
+        if (frameIndex - aggregate.lastFrame > config.mosaicMaxTrackStaleFrames)
+        {
+            continue;
+        }
+
+        const double score = contourStabilityScore(aggregate, std::max(1, frameIndex));
+        if (score < static_cast<double>(minScore))
+        {
+            continue;
+        }
+
+        filtered.push_back(material);
+    }
+    return filtered;
+}
+
 void printStableContourAggregate(
     const std::map<uint64_t, StableContourTrackAggregate>& tracks,
     int sampleFrames,
@@ -9318,14 +10542,25 @@ int runStableContourTest(
         videoRecorder.write(stableContourView);
 
         bool exitRequested = false;
+        RuntimeCommand runtimeCommand = RuntimeCommand::None;
         if (showWindow)
         {
             cv::imshow(kStableContourWindow, stableContourView);
             const int key = cv::waitKey(1);
-            if (key == 27 || key == 'q' || key == 'Q')
+            runtimeCommand = runtimeCommandFromKey(key);
+        }
+        if (recordingConfig.commandControl)
+        {
+            const RuntimeCommand consoleCommand = pollConsoleRuntimeCommand();
+            if (consoleCommand != RuntimeCommand::None)
             {
-                exitRequested = true;
+                runtimeCommand = consoleCommand;
             }
+            applyRuntimeCommand(runtimeCommand, videoRecorder);
+        }
+        if (runtimeCommand == RuntimeCommand::Quit)
+        {
+            exitRequested = true;
         }
 
         ++collectedFrames;
@@ -9840,8 +11075,8 @@ int runDepthStabilityTest(
 void printUsage()
 {
     std::cout
-        << "D455 2x2 observation-material dashboard demo\n"
-        << "Keys: q or Esc exits.\n"
+        << "D455 five-panel observation-material dashboard demo\n"
+        << "Keys: r starts recording, s stops recording, q or Esc exits.\n"
         << "Options:\n"
         << "  --probe-only\n"
         << "  --depth-stability-test\n"
@@ -9871,6 +11106,8 @@ void printUsage()
         << "  --record-video\n"
         << "  --record-video=recordings\\d455_record.avi\n"
         << "  --no-record-video\n"
+        << "  --record-command-control\n"
+        << "  --no-record-command-control\n"
         << "  --record-fps=30\n"
         << "  --record-every-n=1\n"
         << "  --record-scale-percent=100\n"
@@ -9939,6 +11176,37 @@ void printUsage()
         << "  --cluster-map-visual-min-area-px=700\n"
         << "  --cluster-map-visual-morph-kernel-px=7\n"
         << "  --cluster-map-max-visual-regions=24\n"
+        << "  --quality-segmentation\n"
+        << "  --no-quality-segmentation\n"
+        << "  --color-segmentation\n"
+        << "  --no-color-segmentation\n"
+        << "  --color-refine-depth-masks\n"
+        << "  --no-color-refine-depth-masks\n"
+        << "  --stereo-contour-distance\n"
+        << "  --no-stereo-contour-distance\n"
+        << "  --final-segmentation-export=recordings\\final_segmentation_sample\n"
+        << "  --color-segmentation-min-area-px=700\n"
+        << "  --color-segmentation-max-roi-area-percent=55\n"
+        << "  --color-segmentation-border-reject-area-percent=28\n"
+        << "  --color-segmentation-color-bins=6\n"
+        << "  --color-segmentation-mean-shift-spatial=9\n"
+        << "  --color-segmentation-mean-shift-color=18\n"
+        << "  --color-refine-min-overlap-percent=18\n"
+        << "  --color-refine-max-area-delta-percent=280\n"
+        << "  --non-precise-color-ownership-min-percent=10\n"
+        << "  --d455-precision-min-far-depth-support-percent=10 (compat alias)\n"
+        << "  --d455-precision-min-color-depth-support-percent=10 (compat alias)\n"
+        << "  --stereo-contour-min-disparity-tenths-px=5\n"
+        << "  --stereo-contour-baseline-mm=95\n"
+        << "  --mosaic-foreground-gate\n"
+        << "  --no-mosaic-foreground-gate\n"
+        << "  --mosaic-max-material-area-percent=32\n"
+        << "  --mosaic-border-reject-area-percent=5\n"
+        << "  --mosaic-min-track-observations=45\n"
+        << "  --mosaic-min-track-score=45\n"
+        << "  --mosaic-near-min-track-observations=3\n"
+        << "  --mosaic-near-min-track-score=0\n"
+        << "  --mosaic-max-track-stale-frames=2\n"
         << "  --extra-candidates-in-mosaic\n"
         << "  --no-extra-candidates-in-mosaic\n"
         << "  --processed-view-scale-percent=75\n"
@@ -10139,6 +11407,10 @@ int main(int argc, char** argv)
         rsConfig.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
         rsConfig.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
         rsConfig.enable_stream(RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 30);
+        if (config.qualitySegmentation && config.stereoContourDistance)
+        {
+            rsConfig.enable_stream(RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 30);
+        }
         if (poseConfig.enabled && poseAccelStreamEnabled)
         {
             rsConfig.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
@@ -10277,6 +11549,10 @@ int main(int argc, char** argv)
             hasOptionPrefix(argc, argv, "--record-video=");
         VideoRecordingConfig recordingConfig =
             parseVideoRecordingConfig(argc, argv, acceptanceConfig.enabled || explicitRecordingOption);
+        if (!displayEnabled && !recordingConfig.commandControlExplicit)
+        {
+            recordingConfig.commandControl = false;
+        }
         if (acceptanceConfig.enabled)
         {
             if (acceptanceConfig.recordVideo && recordingConfig.enabled)
@@ -10304,9 +11580,20 @@ int main(int argc, char** argv)
             }
         }
 
+        int nonPreciseOwnershipTrackbar =
+            std::clamp(config.nonPreciseColorOwnershipMinPercent, 1, 100);
         if (displayEnabled)
         {
             cv::namedWindow(kObservationDashboardWindow, cv::WINDOW_AUTOSIZE);
+            cv::createTrackbar(
+                "Color owner %",
+                kObservationDashboardWindow,
+                nullptr,
+                100);
+            cv::setTrackbarPos(
+                "Color owner %",
+                kObservationDashboardWindow,
+                nonPreciseOwnershipTrackbar);
             if (config.boundaryDiagnostics)
             {
                 cv::namedWindow(kBoundaryDiagnosticsWindow, cv::WINDOW_AUTOSIZE);
@@ -10327,9 +11614,16 @@ int main(int argc, char** argv)
         bool hasLockedOutputCrop = false;
         cv::Rect lockedOutputCrop;
         cv::Size lockedOutputPanelSize;
-        const bool needsViews = displayEnabled || recordingConfig.enabled;
+        const bool needsViews = displayEnabled || recordingConfig.enabled || recordingConfig.commandControl;
 
         VideoRecorder videoRecorder(recordingConfig);
+        if (recordingConfig.commandControl)
+        {
+            std::cout << "Runtime recording commands: press r to start, s to stop, q/Esc to exit."
+                << " fps=" << recordingConfig.fps
+                << " every=" << recordingConfig.everyN
+                << " scale=" << recordingConfig.scalePercent << "%\n";
+        }
         AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled, motionConfig.enabled);
         ProfileCsvWriter profileCsv(profileCsvConfig);
         PoseReader poseReader(poseConfig, poseAccelStreamEnabled, poseGyroStreamEnabled);
@@ -10337,6 +11631,8 @@ int main(int argc, char** argv)
         ClusterMapFrame lastClusterMapFrame;
         cv::Mat lastClusterMapColor;
         bool hasLastClusterMapFrame = false;
+        FinalSegmentationFrame lastFinalSegmentationFrame;
+        bool hasLastFinalSegmentationFrame = false;
         uint64_t frameId = 0;
         while (true)
         {
@@ -10386,6 +11682,14 @@ int main(int argc, char** argv)
             {
                 cv::resize(depth16, depth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
             }
+            if (displayEnabled)
+            {
+                nonPreciseOwnershipTrackbar = cv::getTrackbarPos(
+                    "Color owner %",
+                    kObservationDashboardWindow);
+                config.nonPreciseColorOwnershipMinPercent =
+                    std::clamp(nonPreciseOwnershipTrackbar, 1, 100);
+            }
             timingStats.frameConvertMs = takeSectionMs();
 
             motionDiagnostics.update(colorBgr, poseReader.state());
@@ -10409,6 +11713,38 @@ int main(int argc, char** argv)
             if (segmentationGray.size() != colorBgr.size())
             {
                 cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+            }
+
+            std::vector<ColorContourRegion> colorContourRegions =
+                extractColorContourRegions(colorBgr, config);
+            if (!colorContourRegions.empty() && config.stereoContourDistance)
+            {
+                cv::Mat leftIrForStereo;
+                cv::Mat rightIrForStereo;
+                const rs2::video_frame rawLeftIr = rawFrames.get_infrared_frame(1);
+                const rs2::video_frame rawRightIr = rawFrames.get_infrared_frame(2);
+                if (rawLeftIr)
+                {
+                    leftIrForStereo = videoFrameToGray8(rawLeftIr);
+                }
+                if (rawRightIr)
+                {
+                    rightIrForStereo = videoFrameToGray8(rawRightIr);
+                }
+                if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                {
+                    cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                }
+                if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                {
+                    cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                }
+                estimateStereoContourDistances(
+                    colorContourRegions,
+                    leftIrForStereo,
+                    rightIrForStereo,
+                    colorIntrinsics,
+                    config);
             }
             timingStats.grayPrepareMs = takeSectionMs();
 
@@ -10435,6 +11771,14 @@ int main(int argc, char** argv)
                     colorIntrinsics,
                     frameId,
                     nullptr);
+            candidateMaterials = refineDepthMaterialsWithColorContours(
+                candidateMaterials,
+                colorContourRegions,
+                depth16,
+                depthScale,
+                colorIntrinsics,
+                config,
+                frameId);
             timingStats.extractMs = takeSectionMs();
             std::vector<FarDistanceMaterial> farDistanceMaterials;
             if (config.farDistanceIntervals && (needsViews || acceptanceConfig.enabled || config.clusterMap))
@@ -10473,6 +11817,13 @@ int main(int argc, char** argv)
                 }
             }
             timingStats.pclMs = takeSectionMs();
+
+            if (config.qualitySegmentation)
+            {
+                lastFinalSegmentationFrame =
+                    buildFinalSegmentationFrame(colorBgr, candidateMaterials, colorContourRegions);
+                hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
+            }
 
             int anchorPointsOnCandidates = 0;
             std::vector<ObservationMaterial> anchorSupportedCandidates =
@@ -10597,6 +11948,7 @@ int main(int argc, char** argv)
             cv::Mat segmentedView;
             cv::Mat mosaicView;
             cv::Mat outsideColorView;
+            cv::Mat contourSegmentationView;
             cv::Mat boundaryDiagnosticsView;
             cv::Mat indoorPlaneDiagnosticsView;
             if (needsViews)
@@ -10663,6 +12015,13 @@ int main(int argc, char** argv)
                     drawNearPlaneOverlay(mosaicView, nearPlaneMaterials);
                 }
                 outsideColorView = buildOutsideStableContourColorImage(colorBgr, displayStableMask);
+                contourSegmentationView =
+                    buildOutOfD455PrecisionColorContourView(
+                        colorBgr.size(),
+                        depth16,
+                        depthScale,
+                        colorContourRegions,
+                        config);
                 timingStats.renderMs += takeSectionMs();
 
                 if (config.boundaryDiagnostics)
@@ -10738,7 +12097,7 @@ int main(int argc, char** argv)
                 : scaledPanelSize(colorBgr.size(), config);
             std::vector<cv::Mat> dashboardViews =
                 postProcessViewsForDashboard(
-                    std::vector<cv::Mat>{rawView, segmentedView, mosaicView, outsideColorView},
+                    std::vector<cv::Mat>{rawView, segmentedView, mosaicView, outsideColorView, contourSegmentationView},
                     outputCrop,
                     outputPanelSize,
                     config);
@@ -10754,7 +12113,7 @@ int main(int argc, char** argv)
             }
             if (displayEnabled)
             {
-                dashboardView = buildTiledFrame(dashboardViews, 2);
+                dashboardView = buildTiledFrame(dashboardViews, dashboardColumnCount(static_cast<int>(dashboardViews.size())));
                 cv::imshow(kObservationDashboardWindow, dashboardView);
                 if (config.boundaryDiagnostics)
                 {
@@ -10766,9 +12125,23 @@ int main(int argc, char** argv)
                 }
                 key = cv::waitKey(1);
             }
+            RuntimeCommand runtimeCommand = runtimeCommandFromKey(key);
+            if (!recordingConfig.commandControl && runtimeCommand != RuntimeCommand::Quit)
+            {
+                runtimeCommand = RuntimeCommand::None;
+            }
+            if (recordingConfig.commandControl)
+            {
+                const RuntimeCommand consoleCommand = pollConsoleRuntimeCommand();
+                if (consoleCommand != RuntimeCommand::None)
+                {
+                    runtimeCommand = consoleCommand;
+                }
+                applyRuntimeCommand(runtimeCommand, videoRecorder);
+            }
             timingStats.displayMs = takeSectionMs();
 
-            if (recordingConfig.enabled)
+            if (videoRecorder.isEnabled())
             {
                 std::vector<cv::Mat> recordingViews = dashboardViews;
                 if (config.boundaryDiagnostics)
@@ -10779,7 +12152,8 @@ int main(int argc, char** argv)
                 {
                     recordingViews.push_back(indoorPlaneDiagnosticsView);
                 }
-                videoRecorder.write(buildTiledFrame(recordingViews, 2));
+                videoRecorder.write(
+                    buildTiledFrame(recordingViews, dashboardColumnCount(static_cast<int>(recordingViews.size()))));
             }
             timingStats.recordMs = takeSectionMs();
 
@@ -10820,7 +12194,7 @@ int main(int argc, char** argv)
                     motionDiagnostics.state());
             }
 
-            if (displayEnabled && (key == 27 || key == 'q' || key == 'Q'))
+            if (runtimeCommand == RuntimeCommand::Quit)
             {
                 break;
             }
@@ -10837,6 +12211,10 @@ int main(int argc, char** argv)
         if (config.clusterMap && hasLastClusterMapFrame)
         {
             writeClusterMapExport(lastClusterMapFrame, lastClusterMapColor, config);
+        }
+        if (!config.finalSegmentationExportPath.empty() && hasLastFinalSegmentationFrame)
+        {
+            writeFinalSegmentationExport(lastFinalSegmentationFrame, config);
         }
         videoRecorder.close();
         pipeline.stop();

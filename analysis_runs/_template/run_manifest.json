@@ -1,0 +1,26 @@
+{
+  "run_id": "YYYYMMDD_HHMMSS_case01",
+  "case_name": "short_case_name",
+  "purpose": "What this run is intended to validate.",
+  "git_commit": "",
+  "config_hash": "",
+  "branch": "",
+  "build_type": "Release",
+  "evaluation_mode": "live_camera",
+  "command_line": ".\\x64\\Release\\D455.exe --cluster-map --acceptance-baseline --max-frames=600",
+  "frame_count": 0,
+  "camera": {
+    "model": "Intel RealSense D455",
+    "serial": "",
+    "fps": 30,
+    "color_resolution": [640, 480],
+    "depth_resolution": [640, 480],
+    "ir_left_resolution": [640, 480],
+    "ir_right_resolution": [640, 480]
+  },
+  "scene": {
+    "tags": ["indoor"],
+    "description": "",
+    "expected": []
+  }
+}

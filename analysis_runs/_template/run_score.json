@@ -1,0 +1,17 @@
+{
+  "run_id": "YYYYMMDD_HHMMSS_case01",
+  "pass": false,
+  "total_score": 0.0,
+  "scores": {
+    "pixel_clustering": 0.0,
+    "contour_quality": 0.0,
+    "spatial_quality": 0.0,
+    "temporal_stability": 0.0,
+    "far_retention": 0.0,
+    "performance": 0.0,
+    "diagnostic_completeness": 0.0
+  },
+  "hard_fail_reasons": [],
+  "top_failures": [],
+  "recommended_next_actions": []
+}

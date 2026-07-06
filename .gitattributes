@@ -1,0 +1,10 @@
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.avi filter=lfs diff=lfs merge=lfs -text
+*.bag filter=lfs diff=lfs merge=lfs -text
+*.raw filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.depth filter=lfs diff=lfs merge=lfs -text
+*.npy filter=lfs diff=lfs merge=lfs -text
+
+analysis_runs/**/sample_frames/*.png filter=lfs diff=lfs merge=lfs -text
+analysis_runs/**/videos/* filter=lfs diff=lfs merge=lfs -text

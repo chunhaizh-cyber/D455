@@ -20,6 +20,29 @@
 
 每次调整算法、显示、性能、验证或排查方向时，都必须同步更新本 README，说明本次改进方向、影响的观察/显示链路、默认行为变化、主要开关参数和验证方式。README 应作为当前方案边界和后续调参入口，不能只在代码或对话中保留改进意图。
 
+## 云端分析协议
+
+仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，运行索引见 `docs/RUN_INDEX.md`。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
+
+```text
+analysis_runs/<run_id>/run_manifest.json
+analysis_runs/<run_id>/config_snapshot.json
+analysis_runs/<run_id>/frame_metrics.csv
+analysis_runs/<run_id>/cluster_metrics.jsonl
+analysis_runs/<run_id>/events.csv
+analysis_runs/<run_id>/notes.md
+```
+
+新建运行目录时可以复制 `analysis_runs/_template`，或用脚本自动写入当前 branch/commit：
+
+```powershell
+.\tools\New-AnalysisRun.ps1 -RunId 20260703_153000_case01 -CaseName indoor_far_objects -Purpose "P5 full-pixel clustering check" -Scene "近处桌面物体，远处柜子和墙面"
+```
+
+小文件直接进 Git；`*.mp4`、`*.avi`、`*.bag`、`*.raw`、`*.bin`、`*.depth`、`*.npy`、`analysis_runs/**/sample_frames/*.png` 和 `analysis_runs/**/videos/*` 已在 `.gitattributes` 中声明为 Git LFS。同步完成后在 `docs/RUN_INDEX.md` 追加一行，并告知 `branch / commit / run_id / 重点问题`。
+
+工程效果评判 v0.1 的总目标是把“全像面像素归簇、近场高精度空间信息、远场保留 2D 轮廓并返回粗距、超出深度精度范围不丢存在轮廓”拆成可度量字段。第一版优先落地 `cluster_coverage_percent`、`unknown_percent`、mode 像素分布、每 cluster 的 `mode / bbox / contour / depth / stereo / confidence` 和 `events.csv`；分析输出占位文件为 `run_score.json`、`run_summary.md`、`failure_report.md`。
+
 ## 下一阶段工程化路线
 
 当前项目已经进入工程化、可验证、可复现实验阶段。后续优先级不再是继续把所有能力塞进 `D455.cpp`，而是先建立可拆分、可回放、可量化的实验骨架：
@@ -131,18 +154,33 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 .\x64\Release\D455.exe --processed-view-scale-percent=100 --no-overlap-trim
 ```
 
+视频 `recordings\d455_record_20260703_181435.avi` 的抽帧检查显示，左下稳定拼接非黑比例在约 23% 到 63% 间跳变，主要由贴边大背景块、大面积稳定材料和短时碎块进入拼接引起。曾增加 `mosaic foreground gate` 作为左下拼接过滤实验，但 `recordings\d455_record_20260703_192619.avi` 显示该方向会让启动阶段左下过黑。当前显示路线改为五画面：第三格恢复原稳定轮廓拼接路径，不再叠加 `mosaic foreground gate` / track 质量门控；第五格改为“非精度区域彩图归属”诊断图。第五格只把彩图轮廓中两类非近场精度像素画到黑底：一类是 `depth > maxDepthMm` 且仍在 `farMaxDepthMm` 内的远距深度像素，可用于区间远近；另一类是 `depth == 0` 的无深度像素，只按彩图轮廓判断属于哪个 cluster，不把它当成远处或超出有效距离。室内画面通常不应理解为全部超出 D455 距离范围，更多是有效 depth 像素不完整、黑色材质/遮挡/反射/角度导致当前深度支撑不足。需要继续排查旧门控参数时仍可保留这些开关作为实验参数，但默认观察重点应放在第三格原路径和第五格“远距/无深度彩图归属”之间的互补关系：
+
+```powershell
+.\x64\Release\D455.exe --no-mosaic-foreground-gate
+.\x64\Release\D455.exe --mosaic-max-material-area-percent=45 --mosaic-border-reject-area-percent=8
+.\x64\Release\D455.exe --mosaic-min-track-observations=20 --mosaic-min-track-score=30 --mosaic-max-track-stale-frames=5
+.\x64\Release\D455.exe --mosaic-near-min-track-observations=1 --mosaic-near-min-track-score=0
+```
+
 实时模式默认直接用稳定轮廓掩码拼接彩图，以降低相机移动时的显示滞后。需要诊断 RGB 边缘能否补齐稳定轮廓时，可以显式启用严格 RGB 轮廓补齐：只在稳定轮廓的小邻域里用彩图生成候选补齐轮廓；如果候选和原稳定轮廓的 IoU、面积变化、中心偏移都在阈值内，且候选不会进入其他稳定轮廓的隔离带，左下/右下两格才采用彩图补齐后的轮廓，否则继续使用原稳定轮廓。未知背景不会被强行分配给任何前景轮廓，也不会为了补齐而把两个轮廓融合：
 
 ```powershell
 .\x64\Release\D455.exe --color-contour-completion
 ```
 
-主窗口模式默认不录制，优先保持实时窗口低延迟。需要保存当前 2x2 同步画面时，显式传入 `--record-video` 或 `--record-video=...`；默认路径为 `D:\D455\recordings\d455_record_时间戳.avi`：
+主窗口现在使用五画面布局，录制视频也保存同一布局。顺序为：1 原始彩图，2 稳定/候选诊断，3 原路径稳定轮廓彩图拼接，4 稳定轮廓外区域彩图，5 非精度区域彩图归属图。第五格不是完整分割图，也不是单纯远距图；它用于观察彩图轮廓里没有进入 D455 近场高精度深度路径的区域。显示时亮色表示有深度值但超出 `maxDepthMm` 的远距区间像素，浅色表示 `depth == 0` 的无深度像素；浅色区域只说明 2D 彩图轮廓归属，不说明远近。默认阈值是 `--non-precise-color-ownership-min-percent=10`，即一个彩图轮廓中“远距深度像素 + 无深度像素”的占比达到 10% 才显示到第五格。显示窗口模式会在主窗口上创建 `Color owner %` 滑条，可运行时手动调节这个阈值；`--no-display` 模式仍使用命令行参数。旧参数 `--d455-precision-min-far-depth-support-percent` 和 `--d455-precision-min-color-depth-support-percent` 保留为兼容别名。超过四个画面时窗口自动使用 3 列布局，避免第五格把窗口拉得过高。
+
+主窗口模式默认不录制，优先保持实时窗口低延迟。需要保存当前五画面同步画面时，可以在启动时显式传入 `--record-video` 或 `--record-video=...`，也可以在运行后让命令窗口或 OpenCV 窗口获得焦点并按 `r` 开始录制、按 `s` 停止录制、按 `q` 或 `Esc` 退出。运行时按 `r` 打开的默认路径为 `D:\D455\recordings\d455_record_时间戳.avi`；如果启动时给了固定 `--record-video=...`，后续重复开始录制会自动给新文件追加时间戳，避免覆盖上一段：
 
 ```powershell
 .\x64\Release\D455.exe --record-video
 .\x64\Release\D455.exe --record-video=recordings\d455_stable_contours.avi --record-fps=30
+.\x64\Release\D455.exe --record-command-control
+.\x64\Release\D455.exe --no-record-command-control
 ```
+
+默认只有显示窗口模式启用运行时录制命令；`--no-display` 批处理默认不启用，以免为了等待命令而额外生成 2x2 画面。确实需要无显示模式下从命令窗口按键开始/停止录制时，显式传入 `--record-command-control`。
 
 性能分析时可以关闭窗口显示和验收录制，只保留 CSV 指标；验收 CSV 会追加各阶段耗时字段，方便区分算法、渲染、显示和录制开销。需要只定位速度瓶颈时，优先用独立的 `--profile-csv`，它不要求启用 P0 验收，也不会自动录像；输出字段包含 `total_ms`、`processing_ms`、`capture_wait_align_ms`、`depth_post_ms`、`boundary_ms`、`extract_ms`、`pcl_ms`、`tracker_ms`、`render_ms`、`display_ms`、`record_ms` 以及候选/稳定轮廓计数。注意 `capture_wait_align_ms` 包含等待相机帧和 RealSense 对齐时间，不等同于纯算法处理耗时；判断 30fps 处理瓶颈时重点看 `processing_ms` 和各算法分段：
 
@@ -169,6 +207,28 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 ```
 
 注意：P5 原型只解决“每个像素有归属”和“深度精度分层标注”。右红外 IR2 + 双目轮廓偏差粗距属于后续 P6，不应把当前 `ImageOnlyContour` 当成已有距离估计。
+
+质量优先分割在原深度稳定流程之后追加彩图轮廓辅助层，默认开启，但不删除原有 depth slice、稳定点、cue selection 和 tracker。流程是：先按原路径生成深度候选，再用 RGB 彩图做不依赖有效深度的轮廓分割；彩图层同时使用 Canny 外轮廓和 Lab 颜色量化连通块，先做均值漂移平滑，再按颜色分箱取连通区域，避免只剩少量细边线。若彩图轮廓和深度候选有足够重叠，就用彩图轮廓掩码替换深度候选的 2D 轮廓，同时保留该掩码内的 D455 深度统计。彩图辅助层会拒绝 bbox 过大或贴边且横跨画面的区域，避免把人体、窗帘、墙面粘成一个跨画面大掩码；靠边但不横跨画面的近处主体默认允许进入候选。如果启用右红外，程序会用左右红外轮廓/边缘模板的 x 位移估算粗略距离和不确定度，并按 `距离 * bbox像素 / 焦距像素` 输出粗略宽高。该粗距和粗尺寸只用于远近排序和尺寸估计参考，不是精确深度。需要导出最终一帧分割图时指定 `--final-segmentation-export`，会生成 `*_ids.png`、`*_overlay.png` 和 `*_metadata.json`，metadata 中包含 `assigned_pixel_count`、`stereo_distance_valid_count`、彩图区域 `estimated_size_mm` 和深度材料 `size_3d_mm`：
+
+```powershell
+.\x64\Release\D455.exe --final-segmentation-export=recordings\final_segmentation_sample --no-display --max-frames=120
+.\x64\Release\D455.exe --quality-segmentation --color-refine-depth-masks --stereo-contour-distance
+.\x64\Release\D455.exe --color-segmentation-min-area-px=500 --color-refine-min-overlap-percent=15
+.\x64\Release\D455.exe --color-segmentation-max-roi-area-percent=55 --color-segmentation-border-reject-area-percent=28
+.\x64\Release\D455.exe --color-segmentation-color-bins=6 --color-segmentation-mean-shift-spatial=9 --color-segmentation-mean-shift-color=18
+.\x64\Release\D455.exe --no-color-refine-depth-masks
+.\x64\Release\D455.exe --no-stereo-contour-distance
+```
+
+当前质量优先分割的边界口径：
+
+| 层 | 输入 | 输出 | 说明 |
+| --- | --- | --- | --- |
+| 原深度链 | D455 depth + 红外/深度边界 + 稳定点 | 深度候选材料 | 原流程保留，仍是近场精确 3D 的主依据 |
+| 彩图轮廓层 | RGB Canny + morphology + contour | 全画面 2D 轮廓候选 | 不依赖有效深度，避免远处/无效深度区域直接被入口过滤 |
+| 掩码优化层 | 深度候选与彩图轮廓重叠 | 用彩图轮廓修正后的深度候选 | 只有重叠率和面积变化在阈值内才替换，避免彩图误分割污染深度结果 |
+| 双目粗距层 | 左右红外边缘模板位移 | `estimated_distance_mm` / `distance_uncertainty_mm` | 只给粗略远近和尺寸估计，不进入精确 3D 判断 |
+| 最终分割图 | 修正后深度候选 + 未覆盖彩图轮廓 | id map + overlay + metadata | 用于检查一帧最终分割归属 |
 
 实时运行默认启用 `--realtime-30`，目标是把主处理链压到 33ms 以内，避免相机移动时旧帧积压。实时档默认跳过 RealSense 深度后处理、使用轻量右上格、用 450mm 深度切片和略稀疏的稳定点采样，并关闭每帧 PCL 聚类、灰度/红外切分和灰度边局部深度确认切分；稳定输出仍需要稳定深度点和历史 tracker 确认。需要回到质量优先全链，或在现场噪声较高时恢复深度后处理：
 
