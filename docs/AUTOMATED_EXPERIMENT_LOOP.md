@@ -87,12 +87,10 @@ python scripts\run_batch.py --candidates configs\candidates\round_001 --cases ev
 Capture the first fixed cases directly from D455 before running measured optimization:
 
 ```powershell
-.\x64\Release\D455.exe --capture-replay-dir=datasets\near_single_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
-.\x64\Release\D455.exe --capture-replay-dir=datasets\far_cabinet --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
-.\x64\Release\D455.exe --capture-replay-dir=datasets\depth_hole_black_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\tools\Capture-ReplayCases.ps1 -Frames 120 -Warmup 30
 ```
 
-After capture, edit each `case_manifest.json` with scene notes and expected behavior. Do not treat uncategorized live captures as benchmark truth.
+The capture helper pauses before each case, writes replay frames under `datasets/<case_id>/`, captures both IR streams by passing `--quality-segmentation --stereo-contour-distance`, and validates each case with `validate_replay_dataset.py`. After capture, edit each `case_manifest.json` with scene notes and expected behavior. Do not treat uncategorized live captures as benchmark truth. `datasets/` is local real input data and is ignored by Git by default; syncing datasets needs a separate explicit decision.
 
 Run the first measured replay round as a small gate, not as the full 60-run grid:
 

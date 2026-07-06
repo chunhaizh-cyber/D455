@@ -2,11 +2,13 @@
 
 Status: deterministic replay input can now be captured from a connected D455.
 
-New command:
+Recommended capture command:
 
 ```powershell
-.\x64\Release\D455.exe --capture-replay-dir=datasets\near_single_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\tools\Capture-ReplayCases.ps1 -Frames 120 -Warmup 30
 ```
+
+The helper captures `near_single_object`, `far_cabinet`, and `depth_hole_black_object` by default. It pauses before each case so the scene can be arranged, passes `--quality-segmentation --stereo-contour-distance` to capture both IR streams, and runs `scripts\validate_replay_dataset.py` after each capture.
 
 The capture writes:
 
@@ -21,6 +23,6 @@ Important boundary: this only creates the fixed replay input format. A captured 
 Recommended next run:
 
 ```powershell
-python scripts\run_batch.py --candidates configs\candidates\round_001 --cases eval\cases.yaml --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
+python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right
+python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
 ```
-
