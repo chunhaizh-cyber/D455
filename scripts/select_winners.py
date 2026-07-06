@@ -20,6 +20,24 @@ def metric(score, name, default=""):
     return score.get("metrics", {}).get(name, default)
 
 
+def is_passed(score):
+    return bool(score.get("pass"))
+
+
+def write_no_pass_candidate(writer, slot):
+    writer.writerow([
+        slot,
+        "no_pass_candidate",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", default="analysis_runs")
@@ -30,6 +48,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     scores = list(iter_scores(args.runs))
     scores.sort(key=lambda s: s.get("total_score", 0), reverse=True)
+    passed_scores = [s for s in scores if is_passed(s)]
 
     leaderboard = out / "leaderboard.csv"
     with leaderboard.open("w", encoding="utf-8", newline="") as f:
@@ -71,9 +90,10 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["slot", "candidate_id", "total_score", "near_score", "far_score", "performance_score", "unknown_p50", "frame_ms_p95", "run_id"])
         for slot, key in slots:
-            if not scores:
+            if not passed_scores:
+                write_no_pass_candidate(writer, slot)
                 continue
-            best = max(scores, key=key)
+            best = max(passed_scores, key=key)
             writer.writerow([
                 slot,
                 best.get("candidate_id") or "",
@@ -88,6 +108,7 @@ def main():
 
     print(f"wrote {leaderboard}")
     print(f"wrote {pareto}")
+    print(f"passed runs available for winner selection: {len(passed_scores)}/{len(scores)}")
 
 
 if __name__ == "__main__":

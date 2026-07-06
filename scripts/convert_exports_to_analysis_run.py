@@ -403,30 +403,74 @@ def load_candidate_config(path):
     return read_json(Path(path))
 
 
+def manifest_is_template_or_incomplete(manifest, args):
+    if not manifest:
+        return True
+    if manifest.get("run_id") == "YYYYMMDD_HHMMSS_case01":
+        return True
+    if manifest.get("evaluation_mode") == "live_camera" and not manifest.get("converted_from"):
+        return True
+    if args.candidate_id and not manifest.get("candidate_id"):
+        return True
+    if args.case_id and not manifest.get("case_id"):
+        return True
+    if not manifest.get("converted_from"):
+        return True
+    return False
+
+
+def config_is_template_or_incomplete(config, candidate_config):
+    if not config:
+        return True
+    if config.get("source") == "convert_exports_to_analysis_run.py":
+        return False
+    if candidate_config and not config.get("candidate_config"):
+        return True
+    if not config.get("inputs"):
+        return True
+    template_markers = {"feature_profile", "feature_heavy_interval", "notes"}
+    return any(key in config for key in template_markers)
+
+
+def build_manifest(run_dir, args, candidate_config, inputs, existing=None):
+    manifest = dict(existing or {})
+    manifest.update({
+        "run_id": args.run_id or manifest.get("run_id") or run_dir.name,
+        "candidate_id": args.candidate_id or manifest.get("candidate_id") or candidate_config.get("candidate_id"),
+        "case_id": args.case_id or manifest.get("case_id"),
+        "purpose": args.purpose or manifest.get("purpose"),
+        "git_commit": git_value(["git", "rev-parse", "--short", "HEAD"]),
+        "branch": git_value(["git", "branch", "--show-current"]),
+        "evaluation_mode": "converted_export",
+        "command_line": args.command_line or manifest.get("command_line", ""),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "converted_from": {name: str(path) for name, path in inputs.items() if path},
+    })
+    return manifest
+
+
+def build_config_snapshot(candidate_config, inputs, existing=None):
+    config = {
+        "source": "convert_exports_to_analysis_run.py",
+        "candidate_config": candidate_config,
+        "inputs": {name: str(path) for name, path in inputs.items() if path},
+    }
+    if existing:
+        config["previous_config_snapshot"] = existing
+    return config
+
+
 def write_manifest_and_config(run_dir, args, candidate_config, inputs):
     manifest_path = run_dir / "run_manifest.json"
-    if not manifest_path.exists():
-        manifest = {
-            "run_id": args.run_id or run_dir.name,
-            "candidate_id": args.candidate_id or candidate_config.get("candidate_id"),
-            "case_id": args.case_id,
-            "purpose": args.purpose,
-            "git_commit": git_value(["git", "rev-parse", "--short", "HEAD"]),
-            "branch": git_value(["git", "branch", "--show-current"]),
-            "evaluation_mode": "converted_export",
-            "command_line": args.command_line,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "converted_from": {name: str(path) for name, path in inputs.items() if path},
-        }
+    existing_manifest = read_json(manifest_path)
+    if args.update_manifest or manifest_is_template_or_incomplete(existing_manifest, args):
+        manifest = build_manifest(run_dir, args, candidate_config, inputs, existing_manifest)
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     config_path = run_dir / "config_snapshot.json"
-    if not config_path.exists():
-        config = {
-            "source": "convert_exports_to_analysis_run.py",
-            "candidate_config": candidate_config,
-            "inputs": {name: str(path) for name, path in inputs.items() if path},
-        }
+    existing_config = read_json(config_path)
+    if args.overwrite_config_snapshot or config_is_template_or_incomplete(existing_config, candidate_config):
+        config = build_config_snapshot(candidate_config, inputs, existing_config)
         config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     notes_path = run_dir / "notes.md"
@@ -452,6 +496,8 @@ def main():
     parser.add_argument("--case-id", default="")
     parser.add_argument("--purpose", default="Converted D455 export smoke analysis run.")
     parser.add_argument("--command-line", default="")
+    parser.add_argument("--update-manifest", action="store_true")
+    parser.add_argument("--overwrite-config-snapshot", action="store_true")
     parser.add_argument("--unknown-spike-percent", type=float, default=15.0)
     parser.add_argument("--frame-budget-ms", type=float, default=33.3)
     args = parser.parse_args()

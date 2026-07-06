@@ -51,6 +51,8 @@ analysis_runs/<run_id>/notes.md
 
 自动优化 Round 001 已先落地为配置候选和干跑计划：候选位于 `configs/candidates/round_001/`，计划位于 `.codex_handoff/round_001_plan/command_plan.csv`，交接记录为 `.codex_handoff/round_001.md`。这一轮只确认候选生成和命令规划可复现，不宣称画面分割质量提升；真正的下一步是补齐 `datasets/` 确定性回放输入或实现可复跑 replay，然后由 `run_score.json` 和排行榜决定是否保留候选。当前候选生成脚本会从 `eval/search_space.yaml` 的 `arg` 字段读取真实 D455 命令行参数，基线配置不再携带尚未实现的 `--feature-profile=*` 开关。
 
+当前转换器仍是“最终帧/单帧桥”：它把最后一次 `cluster_map` / `final_segmentation` 导出和 timing CSV 最后一行转换成最小标准包，只适合验证导出、转换、评分、排行榜链路是否接通，不适合据此选择真正赢家。转换模板目录时，`scripts/convert_exports_to_analysis_run.py` 会更新模板或缺字段的 `run_manifest.json` / `config_snapshot.json`；需要强制更新时可加 `--update-manifest` 或 `--overwrite-config-snapshot`。`scripts/select_winners.py` 和 `scripts/make_codex_handoff.py` 现在只从 `pass=true` 的 run 中选择 winner/pareto/current best；如果没有合格 run，会写出 `no_pass_candidate`，避免失败配置被自动优化误选。
+
 ## 下一阶段工程化路线
 
 当前项目已经进入工程化、可验证、可复现实验阶段。后续优先级不再是继续把所有能力塞进 `D455.cpp`，而是先建立可拆分、可回放、可量化的实验骨架：

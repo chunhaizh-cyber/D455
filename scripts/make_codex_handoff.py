@@ -13,6 +13,10 @@ def read_leaderboard(path):
         return list(csv.DictReader(f))
 
 
+def row_passed(row):
+    return row.get("pass") in ("1", "True", "true")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--leaderboard", default="leaderboards/leaderboard.csv")
@@ -22,7 +26,8 @@ def main():
 
     rows = read_leaderboard(args.leaderboard)
     rows_sorted = sorted(rows, key=lambda r: float(r.get("total_score") or 0), reverse=True)
-    best = rows_sorted[0] if rows_sorted else {}
+    passed_sorted = [row for row in rows_sorted if row_passed(row)]
+    best = passed_sorted[0] if passed_sorted else {}
     round_id = datetime.now().strftime("round_%Y%m%d_%H%M%S")
     out = Path(args.out or f".codex_handoff/{round_id}.md")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +46,7 @@ def main():
         "4. Keep p95 frame time under the configured budget.",
         "",
         "## Current Best",
-        f"- candidate_id: {best.get('candidate_id', '')}",
+        f"- candidate_id: {best.get('candidate_id', 'no_pass_candidate') if best else 'no_pass_candidate'}",
         f"- run_id: {best.get('run_id', '')}",
         f"- total_score: {best.get('total_score', '')}",
         f"- far_score: {best.get('far_score', '')}",

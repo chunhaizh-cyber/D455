@@ -51,6 +51,10 @@ python scripts/make_codex_handoff.py --leaderboard leaderboards/leaderboard.csv 
 
 Round 001 has been initialized this way: 12 candidates were generated under `configs/candidates/round_001/`, and a 60-command dry-run plan was written to `.codex_handoff/round_001_plan/command_plan.csv`. This round has no winner because there is no deterministic replay dataset and no real `run_score.json` evidence yet.
 
+The export converter is currently a final-frame bridge, not a full frame-series metrics producer. It reads the last timing row and one final `cluster_map` / `final_segmentation` metadata pair, so p50/p95 scores from converted smoke runs are only smoke-test signals. Use them to verify wiring, not to select true winners. Real winner selection requires deterministic replay plus multi-frame metrics.
+
+When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
+
 ## Gates
 
 Hard fail conditions come from `eval/score_weights.yaml` and `docs/EVALUATION_FEATURES.md`.
@@ -64,6 +68,8 @@ near_score_delta >= -1.0
 far_score_delta >= -1.0
 total_frame_ms_p95 <= baseline * 1.25
 ```
+
+Leaderboards may include both passing and failing runs for diagnosis. Winner-like outputs must be pass-gated: `select_winners.py` writes `pareto_front.csv` from `pass=true` runs only, and writes `no_pass_candidate` for each slot when no passing run exists. `make_codex_handoff.py` follows the same rule for its current-best section.
 
 ## Data Splits
 
