@@ -6,6 +6,8 @@ splits:
   validation:
     - near_adjacent_objects
     - depth_hole_black_object
+    - slow_pan_far_object
+    - hand_occlusion_reappear
   test:
     - unseen_room_far_objects
     - unseen_reflective_scene
@@ -46,6 +48,26 @@ cases:
     expected:
       image_only_allowed: true
       contour_lost_max: 3
+
+  - case_id: slow_pan_far_object
+    replay: datasets/slow_pan_far_object
+    frames: 600
+    tags: [motion, slow_pan, far, contour_cache_staleness]
+    weight: 2.0
+    expected:
+      far_retention_required: true
+      cached_contour_lag_risk: true
+      motion_refresh_required: true
+
+  - case_id: hand_occlusion_reappear
+    replay: datasets/hand_occlusion_reappear
+    frames: 600
+    tags: [motion, occlusion, reappear, contour_cache_staleness]
+    weight: 2.0
+    expected:
+      contour_recovery_required: true
+      far_retention_required: true
+      cached_contour_lag_risk: true
 
   - case_id: wall_table_background
     replay: datasets/wall_table_background

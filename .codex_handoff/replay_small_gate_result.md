@@ -70,3 +70,63 @@ Measured result after the scoring fix:
 | depth_hole_black_object | candidate_0014 | 92.238 | true | 78.4038 | 67248 | 19 | 10.0 |
 
 Winner selection over `analysis_runs/replay_small_gate_far_scoring_fix` ranks all three `candidate_0014` runs above `candidate_0013`, so the automatic loop now prefers the low-frequency cached rough-distance path over turning the feature off.
+
+## Static Matrix 001
+
+Run root: `analysis_runs/replay_small_matrix_static_001`
+
+Compared:
+
+- `baseline/default`
+- `candidate_0001`
+- `candidate_0002`
+- `candidate_0013`
+- `candidate_0014`
+
+Cases:
+
+- `near_single_object`
+- `far_cabinet`
+- `depth_hole_black_object`
+
+Result:
+
+- 6/15 passed hard gate.
+- `baseline/default`, `candidate_0001`, and `candidate_0002` all failed `total_frame_ms_p95 > 100`.
+- `candidate_0014` had the best average static score, but p95 was close to the 100 ms hard limit.
+- `candidate_0013` remains the faster speed baseline, but has lower far-retention score because it lacks stereo matched clusters.
+
+| candidate | pass | avg_score | avg_p95_ms | avg_far_retention |
+|---|---:|---:|---:|---:|
+| baseline_default | 0/3 | 89.000 | 342.980 | 10.0 |
+| candidate_0001 | 0/3 | 89.000 | 358.328 | 10.0 |
+| candidate_0002 | 0/3 | 89.000 | 329.679 | 10.0 |
+| candidate_0013 | 3/3 | 90.093 | 72.697 | 7.0 |
+| candidate_0014 | 3/3 | 90.232 | 91.782 | 10.0 |
+
+Minimum leaderboard artifacts are committed under `leaderboards/replay_small_matrix_static_001/`; full analysis outputs remain local.
+
+## Candidate 0015
+
+`candidate_0015` extends `candidate_0014` with stale-cache refresh triggers:
+
+- `--color-contour-refresh-on-motion`
+- `--color-contour-refresh-on-unknown-spike`
+- `--color-contour-refresh-on-far-loss`
+
+New contracts in `eval/cases.yaml`:
+
+- `slow_pan_far_object`
+- `hand_occlusion_reappear`
+
+Current status: implemented but not validated, because the motion-sensitive replay datasets do not exist yet. Do not promote `candidate_0015` until these cases are captured or otherwise generated and scored.
+
+Static smoke with `analysis_runs/replay_small_gate_candidate_0015_static_smoke3`:
+
+| case_id | score | pass | frame_ms_p95 | hard_fail |
+|---|---:|---|---:|---|
+| near_single_object | 89.000 | false | 101.2208 | `total_frame_ms_p95 > 100` |
+| far_cabinet | 89.000 | false | 104.2593 | `total_frame_ms_p95 > 100` |
+| depth_hole_black_object | 89.291 | true | 98.0575 | none |
+
+Conclusion: keep the trigger implementation and candidate file, but do not promote `candidate_0015`. The static overhead is still too close to the hard gate; motion-sensitive replay must drive the next optimization.

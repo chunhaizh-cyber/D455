@@ -1,0 +1,28 @@
+{
+  "candidate_id": "candidate_0015",
+  "parent": "candidate_0014",
+  "purpose": "Motion-sensitive cached contour candidate: keep the static replay cache interval, but refresh color contour/stereo estimates when visual motion, unknown spike, or far stereo loss suggests the cache is stale.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=25",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=5",
+    "--color-contour-refresh-on-far-loss"
+  ],
+  "expected_effect": [
+    "Match candidate_0014 cost on static frames.",
+    "Refresh cached color/stereo contours when motion-sensitive replay indicates stale ownership.",
+    "Reduce contour lag risk before promoting cached stereo rough distance into live-motion use."
+  ],
+  "risk": [
+    "Motion-triggered refresh can reintroduce heavy gray_prepare_ms spikes.",
+    "The current motion trigger is image-difference based and uses a conservative 25% change threshold until dedicated motion replay cases exist.",
+    "Unknown-spike refresh is a next-frame recovery path and may not fire when full-frame FarBackground fallback keeps unknown at zero."
+  ]
+}

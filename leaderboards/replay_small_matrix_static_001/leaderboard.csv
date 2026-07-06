@@ -1,0 +1,16 @@
+candidate_id,case_id,total_score,pass,cluster_coverage_p50,unknown_p50,near_score,far_score,temporal_score,frame_ms_p95,merge_events,split_events,contour_lost_events,run_id
+candidate_0014,near_single_object,90.877,1,100.0,0.0,20.0,10.0,15.0,87.4831,0,0,0,near_single_object_candidate_0014
+candidate_0013,near_single_object,90.219,1,100.0,0.0,20.0,7.0,15.0,71.86090000000002,0,0,0,near_single_object_candidate_0013
+candidate_0013,far_cabinet,90.116,1,100.0,0.0,20.0,7.0,15.0,72.54459999999999,0,0,0,far_cabinet_candidate_0013
+candidate_0014,depth_hole_black_object,89.977,1,100.0,0.0,20.0,10.0,15.0,93.483,0,0,0,depth_hole_black_object_candidate_0014
+candidate_0013,depth_hole_black_object,89.945,1,100.0,0.0,20.0,7.0,15.0,73.6869,0,0,0,depth_hole_black_object_candidate_0013
+candidate_0014,far_cabinet,89.843,1,100.0,0.0,20.0,10.0,15.0,94.3793,0,0,0,far_cabinet_candidate_0014
+baseline_default,depth_hole_black_object,89.0,0,100.0,0.0,20.0,10.0,15.0,365.0549,0,0,0,depth_hole_black_object_baseline_default
+candidate_0001,depth_hole_black_object,89.0,0,100.0,0.0,20.0,10.0,15.0,339.1076,0,0,0,depth_hole_black_object_candidate_0001
+candidate_0002,depth_hole_black_object,89.0,0,100.0,0.0,20.0,10.0,15.0,370.00579999999997,0,0,0,depth_hole_black_object_candidate_0002
+baseline_default,far_cabinet,89.0,0,100.0,0.0,20.0,10.0,15.0,409.11199999999997,0,0,0,far_cabinet_baseline_default
+candidate_0001,far_cabinet,89.0,0,100.0,0.0,20.0,10.0,15.0,468.0775,0,0,0,far_cabinet_candidate_0001
+candidate_0002,far_cabinet,89.0,0,100.0,0.0,20.0,10.0,15.0,385.6544,0,0,0,far_cabinet_candidate_0002
+baseline_default,near_single_object,89.0,0,100.0,0.0,20.0,10.0,15.0,254.7744,0,0,0,near_single_object_baseline_default
+candidate_0001,near_single_object,89.0,0,100.0,0.0,20.0,10.0,15.0,267.7989,0,0,0,near_single_object_candidate_0001
+candidate_0002,near_single_object,89.0,0,100.0,0.0,20.0,10.0,15.0,233.37570000000002,0,0,0,near_single_object_candidate_0002

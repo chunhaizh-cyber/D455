@@ -1,0 +1,29 @@
+{
+  "config_id": "best/replay_static_far_distance",
+  "source_candidate_id": "candidate_0014",
+  "parent": "baseline/default",
+  "purpose": "Stage best for deterministic/static replay gates that need retained color-contour ownership and cached stereo rough distance without per-frame color/stereo cost.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120"
+  ],
+  "expected_effect": [
+    "Retain full-frame cluster assignment through FarBackground fallback.",
+    "Keep low-frequency cached ApproxStereoContour rough-distance evidence for static replay cases.",
+    "Avoid running heavy color contour extraction and stereo matching on every scored replay frame."
+  ],
+  "applicability": [
+    "deterministic/static replay gate",
+    "low-motion scenes where cached color contours remain aligned",
+    "small-matrix automatic optimization comparisons"
+  ],
+  "risk": [
+    "Not a live-motion final strategy.",
+    "Cached contours can lag during camera motion, object motion, hand occlusion, or reappearance.",
+    "Motion-sensitive replay cases must pass before this can be promoted beyond the static replay bucket."
+  ]
+}
