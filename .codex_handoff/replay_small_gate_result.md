@@ -175,24 +175,25 @@ First real `slow_pan_far_object` replay smoke showed the expected trigger but fa
 
 If 0020 still fails, the next likely bottleneck is color segmentation itself. `candidate_0021` disables mean-shift color filtering with `--color-segmentation-mean-shift-spatial=0` and `--color-segmentation-mean-shift-color=0` while keeping cached stereo reuse.
 
+`--async-color-contour-refresh` is now the first multi-threaded refresh path. It keeps the main loop on the existing cache, runs color contour extraction on a background worker, then applies the latest completed result with cached stereo transfer. `candidate_0025` enables this path on top of `candidate_0017`; profile and leaderboard now expose async submitted/applied/dropped counts, cache age, and worker time.
+
 ## Slow Pan Motion Smoke 001
 
 `datasets/slow_pan_far_object` was captured locally from a real slow camera pan: 180 color/depth16/left-IR/right-IR frames, finalized with `reviewed=true`. The review video is local at `recordings/slow_pan_far_object_color_20260706_1549.mp4`; raw dataset and video are not committed.
 
 Run: `analysis_runs/replay_motion_slow_pan_001`, `--max-frames-override=180`, `--analysis-export-every-n=30`, `--ignore-first-n-frames=30`.
 
-Result summary:
+Result summary after switching performance p95 to the full `profile.csv` stream instead of export-sampled `frame_metrics.csv`:
 
-| candidate | pass | p95 ms | refresh | motion refresh | stereo reuse p50 | far score | note |
-|---|---:|---:|---:|---:|---:|---:|---|
-| candidate_0013 | true | 82.3498 | 5 | 0 | 0 | 7.0 | speed baseline, no stereo contour distance |
-| candidate_0017 | false | 502.4370 | 2 | 1 | 9 | 10.0 | motion trigger works, sync stereo/color refresh stalls |
-| candidate_0020 | false | 482.0038 | 2 | 1 | 32 | 10.0 | cached stereo transfer works, color extraction still stalls |
-| candidate_0021 | false | 201.0834 | 2 | 1 | 32 | 10.0 | disabling mean-shift helps but not enough |
-| candidate_0022 | false | 163.6032 | 2 | 1 | 12 | 10.0 | coarser global refresh still fails |
-| candidate_0023 | false | 113.9948 | 2 | 1 | 8 | 10.0 | aggressive global lower-bound probe, still fails |
-| candidate_0024 | false | 111.5720 | 2 | 1 | 4 | 10.0 | closest failing probe; too coarse for final quality |
+| candidate | pass | profile p95 ms | max ms | >100ms frames | sampled p95 ms | async applied | far score | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0013 | true | 54.2832 | 82.686 | 0 | 82.3498 | 0 | 7.0 | fastest, but no stereo contour distance |
+| candidate_0024 | true | 69.3079 | 115.311 | 1 | 111.5720 | 0 | 10.0 | current slow-pan profile-p95 leader; still has a visible spike risk |
+| candidate_0017 | true | 82.2889 | 506.911 | 6 | 502.4370 | 0 | 10.0 | motion trigger works, sync refresh creates large spikes |
+| candidate_0020 | true | 86.2305 | 489.235 | 5 | 482.0038 | 0 | 10.0 | cached stereo transfer works, color extraction still spikes |
+| candidate_0025 | true | 93.4440 | 119.407 | 3 | 119.1408 | 5 | 10.0 | first async path; valid but not better than 0024 yet |
+| candidate_0015 | false | 426.8040 | 470.235 | 14 | 464.6214 | 0 | 10.0 | motion refresh baseline remains unusable |
 
-Conclusion: motion refresh detection is real, but full-frame color contour refresh is not viable under the 100 ms p95 gate even after stereo reuse and aggressive global coarsening. The next implementation should be ROI-local refresh or split-frame/asynchronous refresh; do not promote 0020-0024 as best.
+Conclusion: motion refresh detection is real. The first async path removes the 400-500ms synchronous refresh stall, but background full-frame extraction still competes with the main loop and produces 3 over-budget frames on this replay. Do not promote `candidate_0025` as motion best yet. `candidate_0024` is the current slow-pan profile-p95 leader, but its 115ms max frame means the next implementation should target jitter directly with ROI-local refresh, worker throttling, or split-frame work rather than only improving p95.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

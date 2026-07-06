@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -28,9 +29,12 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -207,6 +211,7 @@ struct SegmentationConfig
     bool colorRefineDepthMasks = true;
     bool stereoContourDistance = true;
     bool stereoContourReuseCachedOnRefresh = false;
+    bool asyncColorContourRefresh = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
@@ -415,6 +420,12 @@ struct ColorContourRefreshStats
     int regionCount = 0;
     int stereoValidCount = 0;
     int stereoReuseCount = 0;
+    bool asyncSubmitted = false;
+    bool asyncApplied = false;
+    bool asyncDropped = false;
+    bool asyncPending = false;
+    int cacheAgeFrames = 0;
+    double asyncWorkerMs = 0.0;
 };
 
 struct PoseState
@@ -1064,6 +1075,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-stereo-contour-reuse-cached-on-refresh")
         {
             config.stereoContourReuseCachedOnRefresh = false;
+            continue;
+        }
+        if (arg == "--async-color-contour-refresh")
+        {
+            config.asyncColorContourRefresh = true;
+            continue;
+        }
+        if (arg == "--no-async-color-contour-refresh")
+        {
+            config.asyncColorContourRefresh = false;
             continue;
         }
         if (arg == "--color-contour-refresh-on-motion")
@@ -6184,6 +6205,132 @@ int reuseCachedStereoDistances(
     return reused;
 }
 
+struct AsyncColorContourRefreshTask
+{
+    uint64_t frameId = 0;
+    cv::Mat colorBgr;
+    cv::Mat motionSignature;
+    SegmentationConfig config;
+};
+
+struct AsyncColorContourRefreshResult
+{
+    uint64_t frameId = 0;
+    std::vector<ColorContourRegion> regions;
+    cv::Mat motionSignature;
+    double workerMs = 0.0;
+};
+
+class AsyncColorContourRefreshWorker
+{
+public:
+    AsyncColorContourRefreshWorker()
+        : thread_([this]() { run(); })
+    {
+    }
+
+    ~AsyncColorContourRefreshWorker()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        condition_.notify_one();
+        if (thread_.joinable())
+        {
+            thread_.join();
+        }
+    }
+
+    bool submitLatest(
+        uint64_t frameId,
+        const cv::Mat& colorBgr,
+        const cv::Mat& motionSignature,
+        const SegmentationConfig& config)
+    {
+        AsyncColorContourRefreshTask task;
+        task.frameId = frameId;
+        task.colorBgr = colorBgr.clone();
+        task.motionSignature = motionSignature.clone();
+        task.config = config;
+
+        bool droppedPending = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            droppedPending = hasPendingTask_;
+            pendingTask_ = std::move(task);
+            hasPendingTask_ = true;
+        }
+        condition_.notify_one();
+        return droppedPending;
+    }
+
+    bool takeResult(AsyncColorContourRefreshResult& result)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!hasResult_)
+        {
+            return false;
+        }
+        result = std::move(result_);
+        result_ = AsyncColorContourRefreshResult{};
+        hasResult_ = false;
+        return true;
+    }
+
+    bool hasPendingWork() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return hasPendingTask_ || busy_;
+    }
+
+private:
+    void run()
+    {
+        while (true)
+        {
+            AsyncColorContourRefreshTask task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this]() { return stop_ || hasPendingTask_; });
+                if (stop_ && !hasPendingTask_)
+                {
+                    return;
+                }
+                task = std::move(pendingTask_);
+                pendingTask_ = AsyncColorContourRefreshTask{};
+                hasPendingTask_ = false;
+                busy_ = true;
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            AsyncColorContourRefreshResult result;
+            result.frameId = task.frameId;
+            result.motionSignature = task.motionSignature;
+            result.regions = extractColorContourRegions(task.colorBgr, task.config);
+            result.workerMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                result_ = std::move(result);
+                hasResult_ = true;
+                busy_ = false;
+            }
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::thread thread_;
+    bool stop_ = false;
+    bool busy_ = false;
+    bool hasPendingTask_ = false;
+    bool hasResult_ = false;
+    AsyncColorContourRefreshTask pendingTask_;
+    AsyncColorContourRefreshResult result_;
+};
+
 cv::Mat makeColorContourMotionSignature(const cv::Mat& colorBgr)
 {
     if (colorBgr.empty())
@@ -8894,7 +9041,13 @@ public:
             << std::setprecision(3) << colorContourRefreshStats.motionDeltaPercent << ','
             << colorContourRefreshStats.regionCount << ','
             << colorContourRefreshStats.stereoValidCount << ','
-            << colorContourRefreshStats.stereoReuseCount
+            << colorContourRefreshStats.stereoReuseCount << ','
+            << (colorContourRefreshStats.asyncSubmitted ? 1 : 0) << ','
+            << (colorContourRefreshStats.asyncApplied ? 1 : 0) << ','
+            << (colorContourRefreshStats.asyncDropped ? 1 : 0) << ','
+            << (colorContourRefreshStats.asyncPending ? 1 : 0) << ','
+            << colorContourRefreshStats.cacheAgeFrames << ','
+            << std::setprecision(3) << colorContourRefreshStats.asyncWorkerMs
             << '\n';
     }
 
@@ -8939,7 +9092,10 @@ private:
             << "color_contour_refresh_motion,color_contour_refresh_unknown_spike,"
             << "color_contour_refresh_far_loss,color_contour_motion_delta_percent,"
             << "color_contour_region_count,color_contour_stereo_valid_count,"
-            << "color_contour_stereo_reuse_count\n";
+            << "color_contour_stereo_reuse_count,"
+            << "color_contour_async_submitted,color_contour_async_applied,"
+            << "color_contour_async_dropped,color_contour_async_pending,"
+            << "color_contour_cache_age_frames,color_contour_async_worker_ms\n";
         std::cout << "Profile CSV: " << outputPath_ << '\n';
     }
 
@@ -11570,6 +11726,8 @@ void printUsage()
         << "  --no-stereo-contour-distance\n"
         << "  --stereo-contour-reuse-cached-on-refresh\n"
         << "  --no-stereo-contour-reuse-cached-on-refresh\n"
+        << "  --async-color-contour-refresh\n"
+        << "  --no-async-color-contour-refresh\n"
         << "  --final-segmentation-export=recordings\\final_segmentation_sample\n"
         << "  --color-segmentation-min-area-px=700\n"
         << "  --color-segmentation-max-roi-area-percent=55\n"
@@ -11804,10 +11962,16 @@ int runReplayDirectory(
     bool hasLastFinalSegmentationFrame = false;
     std::vector<ColorContourRegion> cachedColorContourRegions;
     bool hasColorContourRegionCache = false;
+    uint64_t cachedColorContourSourceFrameId = 0;
     cv::Mat cachedColorContourMotionSignature;
     bool refreshColorContourFromUnknownSpikeNextFrame = false;
     bool refreshColorContourFromFarLossNextFrame = false;
     rs2_intrinsics colorIntrinsics{};
+    std::unique_ptr<AsyncColorContourRefreshWorker> asyncColorContourWorker;
+    if (config.asyncColorContourRefresh)
+    {
+        asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>();
+    }
 
     for (size_t replayIndex = 0; replayIndex < replayFrames.size(); ++replayIndex)
     {
@@ -11856,6 +12020,22 @@ int runReplayDirectory(
 
         std::vector<ColorContourRegion> colorContourRegions;
         ColorContourRefreshStats colorContourRefreshStats;
+        if (asyncColorContourWorker)
+        {
+            AsyncColorContourRefreshResult asyncResult;
+            if (asyncColorContourWorker->takeResult(asyncResult))
+            {
+                colorContourRefreshStats.refreshed = true;
+                colorContourRefreshStats.asyncApplied = true;
+                colorContourRefreshStats.asyncWorkerMs = asyncResult.workerMs;
+                colorContourRefreshStats.stereoReuseCount =
+                    reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
+                cachedColorContourRegions = std::move(asyncResult.regions);
+                cachedColorContourMotionSignature = asyncResult.motionSignature;
+                cachedColorContourSourceFrameId = asyncResult.frameId;
+                hasColorContourRegionCache = true;
+            }
+        }
         cv::Mat currentColorContourMotionSignature;
         bool refreshBecauseOfMotion = false;
         if (config.colorContourRefreshOnMotion)
@@ -11881,51 +12061,76 @@ int runReplayDirectory(
             refreshBecauseOfInterval;
         if (refreshColorContourRegions)
         {
-            colorContourRefreshStats.refreshed = true;
             colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
             colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
             colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
             colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
             colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
-            colorContourRegions = extractColorContourRegions(colorBgr, config);
-            const bool reuseCachedStereoThisRefresh =
-                config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
-            if (reuseCachedStereoThisRefresh)
+            if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
             {
+                if (!asyncColorContourWorker->hasPendingWork())
+                {
+                    cv::Mat submitSignature = currentColorContourMotionSignature.empty()
+                        ? makeColorContourMotionSignature(segmentationGray)
+                        : currentColorContourMotionSignature;
+                    colorContourRefreshStats.asyncSubmitted = true;
+                    colorContourRefreshStats.asyncDropped = asyncColorContourWorker->submitLatest(
+                        frameId,
+                        colorBgr,
+                        submitSignature,
+                        config);
+                }
+                colorContourRegions = cachedColorContourRegions;
+                colorContourRefreshStats.cacheReused = true;
                 colorContourRefreshStats.stereoReuseCount =
-                    reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
+                    countStereoDistanceValidRegions(colorContourRegions);
+                refreshColorContourFromUnknownSpikeNextFrame = false;
+                refreshColorContourFromFarLossNextFrame = false;
             }
-            if (!reuseCachedStereoThisRefresh &&
-                !colorContourRegions.empty() &&
-                config.stereoContourDistance)
+            else
             {
-                cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
-                cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
-                if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                colorContourRefreshStats.refreshed = true;
+                colorContourRegions = extractColorContourRegions(colorBgr, config);
+                const bool reuseCachedStereoThisRefresh =
+                    config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
+                if (reuseCachedStereoThisRefresh)
                 {
-                    cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    colorContourRefreshStats.stereoReuseCount =
+                        reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
                 }
-                if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                if (!reuseCachedStereoThisRefresh &&
+                    !colorContourRegions.empty() &&
+                    config.stereoContourDistance)
                 {
-                    cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
+                    cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
+                    if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                    {
+                        cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    }
+                    if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                    {
+                        cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                    }
+                    estimateStereoContourDistances(
+                        colorContourRegions,
+                        leftIrForStereo,
+                        rightIrForStereo,
+                        colorIntrinsics,
+                        config);
                 }
-                estimateStereoContourDistances(
-                    colorContourRegions,
-                    leftIrForStereo,
-                    rightIrForStereo,
-                    colorIntrinsics,
-                    config);
+                cachedColorContourRegions = colorContourRegions;
+                cachedColorContourSourceFrameId = frameId;
+                if (config.colorContourRefreshOnMotion)
+                {
+                    cachedColorContourMotionSignature = currentColorContourMotionSignature.empty()
+                        ? makeColorContourMotionSignature(segmentationGray)
+                        : currentColorContourMotionSignature;
+                }
+                hasColorContourRegionCache = true;
+                refreshColorContourFromUnknownSpikeNextFrame = false;
+                refreshColorContourFromFarLossNextFrame = false;
             }
-            cachedColorContourRegions = colorContourRegions;
-            if (config.colorContourRefreshOnMotion)
-            {
-                cachedColorContourMotionSignature = currentColorContourMotionSignature.empty()
-                    ? makeColorContourMotionSignature(segmentationGray)
-                    : currentColorContourMotionSignature;
-            }
-            hasColorContourRegionCache = true;
-            refreshColorContourFromUnknownSpikeNextFrame = false;
-            refreshColorContourFromFarLossNextFrame = false;
         }
         else
         {
@@ -11935,6 +12140,15 @@ int runReplayDirectory(
         }
         colorContourRefreshStats.regionCount = static_cast<int>(colorContourRegions.size());
         colorContourRefreshStats.stereoValidCount = countStereoDistanceValidRegions(colorContourRegions);
+        if (asyncColorContourWorker)
+        {
+            colorContourRefreshStats.asyncPending = asyncColorContourWorker->hasPendingWork();
+        }
+        if (hasColorContourRegionCache && frameId >= cachedColorContourSourceFrameId)
+        {
+            colorContourRefreshStats.cacheAgeFrames =
+                static_cast<int>(frameId - cachedColorContourSourceFrameId);
+        }
         timingStats.grayPrepareMs = takeSectionMs();
 
         RgbDepthAnchorStats frameAnchorStats;
@@ -12634,9 +12848,15 @@ int main(int argc, char** argv)
         bool hasLastFinalSegmentationFrame = false;
         std::vector<ColorContourRegion> cachedColorContourRegions;
         bool hasColorContourRegionCache = false;
+        uint64_t cachedColorContourSourceFrameId = 0;
         cv::Mat cachedColorContourMotionSignature;
         bool refreshColorContourFromUnknownSpikeNextFrame = false;
         bool refreshColorContourFromFarLossNextFrame = false;
+        std::unique_ptr<AsyncColorContourRefreshWorker> asyncColorContourWorker;
+        if (config.asyncColorContourRefresh)
+        {
+            asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>();
+        }
         uint64_t frameId = 0;
         while (true)
         {
@@ -12721,6 +12941,22 @@ int main(int argc, char** argv)
 
             std::vector<ColorContourRegion> colorContourRegions;
             ColorContourRefreshStats colorContourRefreshStats;
+            if (asyncColorContourWorker)
+            {
+                AsyncColorContourRefreshResult asyncResult;
+                if (asyncColorContourWorker->takeResult(asyncResult))
+                {
+                    colorContourRefreshStats.refreshed = true;
+                    colorContourRefreshStats.asyncApplied = true;
+                    colorContourRefreshStats.asyncWorkerMs = asyncResult.workerMs;
+                    colorContourRefreshStats.stereoReuseCount =
+                        reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
+                    cachedColorContourRegions = std::move(asyncResult.regions);
+                    cachedColorContourMotionSignature = asyncResult.motionSignature;
+                    cachedColorContourSourceFrameId = asyncResult.frameId;
+                    hasColorContourRegionCache = true;
+                }
+            }
             cv::Mat currentColorContourMotionSignature;
             bool refreshBecauseOfMotion = false;
             if (config.colorContourRefreshOnMotion)
@@ -12746,61 +12982,86 @@ int main(int argc, char** argv)
                 refreshBecauseOfInterval;
             if (refreshColorContourRegions)
             {
-                colorContourRefreshStats.refreshed = true;
                 colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
                 colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
                 colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
                 colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
                 colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
-                colorContourRegions = extractColorContourRegions(colorBgr, config);
-                const bool reuseCachedStereoThisRefresh =
-                    config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
-                if (reuseCachedStereoThisRefresh)
+                if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
                 {
+                    if (!asyncColorContourWorker->hasPendingWork())
+                    {
+                        cv::Mat submitSignature = currentColorContourMotionSignature.empty()
+                            ? makeColorContourMotionSignature(segmentationGray)
+                            : currentColorContourMotionSignature;
+                        colorContourRefreshStats.asyncSubmitted = true;
+                        colorContourRefreshStats.asyncDropped = asyncColorContourWorker->submitLatest(
+                            frameId,
+                            colorBgr,
+                            submitSignature,
+                            config);
+                    }
+                    colorContourRegions = cachedColorContourRegions;
+                    colorContourRefreshStats.cacheReused = true;
                     colorContourRefreshStats.stereoReuseCount =
-                        reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
+                        countStereoDistanceValidRegions(colorContourRegions);
+                    refreshColorContourFromUnknownSpikeNextFrame = false;
+                    refreshColorContourFromFarLossNextFrame = false;
                 }
-                if (!reuseCachedStereoThisRefresh &&
-                    !colorContourRegions.empty() &&
-                    config.stereoContourDistance)
+                else
                 {
-                    cv::Mat leftIrForStereo;
-                    cv::Mat rightIrForStereo;
-                    const rs2::video_frame rawLeftIr = rawFrames.get_infrared_frame(1);
-                    const rs2::video_frame rawRightIr = rawFrames.get_infrared_frame(2);
-                    if (rawLeftIr)
+                    colorContourRefreshStats.refreshed = true;
+                    colorContourRegions = extractColorContourRegions(colorBgr, config);
+                    const bool reuseCachedStereoThisRefresh =
+                        config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
+                    if (reuseCachedStereoThisRefresh)
                     {
-                        leftIrForStereo = videoFrameToGray8(rawLeftIr);
+                        colorContourRefreshStats.stereoReuseCount =
+                            reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
                     }
-                    if (rawRightIr)
+                    if (!reuseCachedStereoThisRefresh &&
+                        !colorContourRegions.empty() &&
+                        config.stereoContourDistance)
                     {
-                        rightIrForStereo = videoFrameToGray8(rawRightIr);
+                        cv::Mat leftIrForStereo;
+                        cv::Mat rightIrForStereo;
+                        const rs2::video_frame rawLeftIr = rawFrames.get_infrared_frame(1);
+                        const rs2::video_frame rawRightIr = rawFrames.get_infrared_frame(2);
+                        if (rawLeftIr)
+                        {
+                            leftIrForStereo = videoFrameToGray8(rawLeftIr);
+                        }
+                        if (rawRightIr)
+                        {
+                            rightIrForStereo = videoFrameToGray8(rawRightIr);
+                        }
+                        if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                        {
+                            cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                        }
+                        if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+                        {
+                            cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                        }
+                        estimateStereoContourDistances(
+                            colorContourRegions,
+                            leftIrForStereo,
+                            rightIrForStereo,
+                            colorIntrinsics,
+                            config);
                     }
-                    if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+                    cachedColorContourRegions = colorContourRegions;
+                    cachedColorContourSourceFrameId = frameId;
+                    if (config.colorContourRefreshOnMotion)
                     {
-                        cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+                        cachedColorContourMotionSignature = currentColorContourMotionSignature.empty()
+                            ? makeColorContourMotionSignature(segmentationGray)
+                            : currentColorContourMotionSignature;
                     }
-                    if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
-                    {
-                        cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
-                    }
-                    estimateStereoContourDistances(
-                        colorContourRegions,
-                        leftIrForStereo,
-                        rightIrForStereo,
-                        colorIntrinsics,
-                        config);
+                    hasColorContourRegionCache = true;
+                    refreshColorContourFromUnknownSpikeNextFrame = false;
+                    refreshColorContourFromFarLossNextFrame = false;
                 }
-                cachedColorContourRegions = colorContourRegions;
-                if (config.colorContourRefreshOnMotion)
-                {
-                    cachedColorContourMotionSignature = currentColorContourMotionSignature.empty()
-                        ? makeColorContourMotionSignature(segmentationGray)
-                        : currentColorContourMotionSignature;
-                }
-                hasColorContourRegionCache = true;
-                refreshColorContourFromUnknownSpikeNextFrame = false;
-                refreshColorContourFromFarLossNextFrame = false;
             }
             else
             {
@@ -12810,6 +13071,15 @@ int main(int argc, char** argv)
             }
             colorContourRefreshStats.regionCount = static_cast<int>(colorContourRegions.size());
             colorContourRefreshStats.stereoValidCount = countStereoDistanceValidRegions(colorContourRegions);
+            if (asyncColorContourWorker)
+            {
+                colorContourRefreshStats.asyncPending = asyncColorContourWorker->hasPendingWork();
+            }
+            if (hasColorContourRegionCache && frameId >= cachedColorContourSourceFrameId)
+            {
+                colorContourRefreshStats.cacheAgeFrames =
+                    static_cast<int>(frameId - cachedColorContourSourceFrameId);
+            }
             timingStats.grayPrepareMs = takeSectionMs();
 
             RgbDepthAnchorStats frameAnchorStats;

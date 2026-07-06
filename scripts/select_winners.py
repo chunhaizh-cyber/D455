@@ -56,10 +56,15 @@ def main():
         writer.writerow([
             "candidate_id", "case_id", "total_score", "pass",
             "cluster_coverage_p50", "unknown_p50", "near_score", "far_score",
-            "temporal_score", "frame_ms_p95", "merge_events", "split_events",
+            "temporal_score", "frame_ms_p95", "frame_ms_max",
+            "frame_over_100ms_count", "sampled_frame_ms_p95", "timing_source",
+            "merge_events", "split_events",
             "contour_lost_events", "color_refresh_count", "color_refresh_motion_count",
             "color_refresh_unknown_spike_count", "color_refresh_far_loss_count",
-            "color_cache_reuse_count", "color_stereo_reuse_p50", "run_id"
+            "color_cache_reuse_count", "color_stereo_reuse_p50",
+            "color_async_submitted_count", "color_async_applied_count",
+            "color_async_dropped_count", "color_cache_age_p95",
+            "color_async_worker_ms_p95", "run_id"
         ])
         for s in scores:
             writer.writerow([
@@ -73,6 +78,10 @@ def main():
                 s.get("scores", {}).get("far_retention", ""),
                 s.get("scores", {}).get("temporal_stability", ""),
                 metric(s, "total_frame_ms_p95"),
+                metric(s, "total_frame_ms_max"),
+                metric(s, "frame_time_over_hard_budget_count"),
+                metric(s, "sampled_total_frame_ms_p95"),
+                metric(s, "scored_timing_source"),
                 metric(s, "merge_event_count"),
                 metric(s, "split_event_count"),
                 metric(s, "contour_lost_event_count"),
@@ -82,6 +91,11 @@ def main():
                 metric(s, "color_contour_refresh_far_loss_count"),
                 metric(s, "color_contour_cache_reuse_count"),
                 metric(s, "color_contour_stereo_reuse_count_p50"),
+                metric(s, "color_contour_async_submitted_count"),
+                metric(s, "color_contour_async_applied_count"),
+                metric(s, "color_contour_async_dropped_count"),
+                metric(s, "color_contour_cache_age_frames_p95"),
+                metric(s, "color_contour_async_worker_ms_p95"),
                 s.get("run_id", ""),
             ])
 

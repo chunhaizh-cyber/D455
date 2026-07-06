@@ -109,6 +109,13 @@ def read_frame_metrics(path):
         return list(csv.DictReader(f))
 
 
+def read_profile_metrics(path):
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        return list(csv.DictReader(f))
+
+
 def read_events(path):
     if not path.exists():
         return []
@@ -134,6 +141,43 @@ def row_sum(row, *keys):
     return sum(row_float(row, key) for key in keys)
 
 
+def first_present(row, *keys):
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def filter_profile_rows(profile_rows, frame_rows):
+    if not profile_rows:
+        return []
+    min_frame_id = None
+    frame_ids = []
+    for row in frame_rows:
+        value = first_present(row, "frame_id", "frame_index")
+        if value in (None, ""):
+            continue
+        try:
+            frame_ids.append(int(float(value)))
+        except (TypeError, ValueError):
+            continue
+    if frame_ids:
+        min_frame_id = min(frame_ids)
+    if min_frame_id is None:
+        return profile_rows
+    filtered = []
+    for row in profile_rows:
+        value = first_present(row, "frame_index", "frame_id")
+        try:
+            frame_id = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if frame_id >= min_frame_id:
+            filtered.append(row)
+    return filtered
+
+
 def event_count(events, event_type):
     return sum(1 for e in events if e.get("event_type") == event_type)
 
@@ -141,6 +185,8 @@ def event_count(events, event_type):
 def score_run(run_dir, config):
     manifest = read_json(run_dir / "run_manifest.json")
     frame_rows = read_frame_metrics(run_dir / "frame_metrics.csv")
+    profile_rows = filter_profile_rows(read_profile_metrics(run_dir / "profile.csv"), frame_rows)
+    timing_rows = profile_rows or frame_rows
     events = read_events(run_dir / "events.csv")
     cluster_metrics_exists = (run_dir / "cluster_metrics.jsonl").exists()
     caps = score_caps(config)
@@ -149,7 +195,12 @@ def score_run(run_dir, config):
 
     coverage_p50 = percentile([r.get("cluster_coverage_percent") for r in frame_rows], 50)
     unknown_p50 = percentile([r.get("unknown_percent") for r in frame_rows], 50)
-    frame_ms_p95 = percentile([r.get("total_frame_ms") for r in frame_rows], 95)
+    sampled_frame_ms_p95 = percentile([r.get("total_frame_ms") for r in frame_rows], 95)
+    timing_ms_values = [
+        first_present(r, "total_ms", "total_frame_ms")
+        for r in timing_rows
+    ]
+    frame_ms_p95 = percentile(timing_ms_values, 95)
     far_cluster_p50 = percentile([r.get("far_cluster_count") for r in frame_rows], 50)
     total_pixels_p50 = percentile([r.get("total_pixels") for r in frame_rows], 50)
     far_retained_pixels_p50 = percentile([
@@ -158,12 +209,18 @@ def score_run(run_dir, config):
     ], 50)
     stereo_matched_p50 = percentile([r.get("stereo_matched_cluster_count") for r in frame_rows], 50)
     stereo_failed_p50 = percentile([r.get("stereo_failed_cluster_count") for r in frame_rows], 50)
-    color_refresh_count = sum(int(row_float(r, "color_contour_refreshed") > 0) for r in frame_rows)
-    color_cache_reuse_count = sum(int(row_float(r, "color_contour_cache_reused") > 0) for r in frame_rows)
-    color_refresh_motion_count = sum(int(row_float(r, "color_contour_refresh_motion") > 0) for r in frame_rows)
-    color_refresh_unknown_count = sum(int(row_float(r, "color_contour_refresh_unknown_spike") > 0) for r in frame_rows)
-    color_refresh_far_loss_count = sum(int(row_float(r, "color_contour_refresh_far_loss") > 0) for r in frame_rows)
-    color_stereo_reuse_p50 = percentile([r.get("color_contour_stereo_reuse_count") for r in frame_rows], 50)
+    color_refresh_count = sum(int(row_float(r, "color_contour_refreshed") > 0) for r in timing_rows)
+    color_cache_reuse_count = sum(int(row_float(r, "color_contour_cache_reused") > 0) for r in timing_rows)
+    color_refresh_motion_count = sum(int(row_float(r, "color_contour_refresh_motion") > 0) for r in timing_rows)
+    color_refresh_unknown_count = sum(int(row_float(r, "color_contour_refresh_unknown_spike") > 0) for r in timing_rows)
+    color_refresh_far_loss_count = sum(int(row_float(r, "color_contour_refresh_far_loss") > 0) for r in timing_rows)
+    color_stereo_reuse_p50 = percentile([r.get("color_contour_stereo_reuse_count") for r in timing_rows], 50)
+    color_async_submitted_count = sum(int(row_float(r, "color_contour_async_submitted") > 0) for r in timing_rows)
+    color_async_applied_count = sum(int(row_float(r, "color_contour_async_applied") > 0) for r in timing_rows)
+    color_async_dropped_count = sum(int(row_float(r, "color_contour_async_dropped") > 0) for r in timing_rows)
+    color_cache_age_p50 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 50)
+    color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
+    color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
 
     coverage_min = float(hard_fail.get("cluster_coverage_percent_p50_min", 95.0))
     unknown_max = float(hard_fail.get("unknown_percent_p50_max", 15.0))
@@ -171,6 +228,14 @@ def score_run(run_dir, config):
     realtime_ms = float(performance_budget.get("realtime_30fps_ms", 33.3))
     soft_budget_ms = float(performance_budget.get("soft_budget_ms", 66.6))
     contour_lost_max = int(hard_fail.get("contour_lost_event_max", 30))
+    timing_ms_clean = []
+    for value in timing_ms_values:
+        try:
+            timing_ms_clean.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    frame_ms_max_observed = max(timing_ms_clean) if timing_ms_clean else None
+    frame_over_budget_count = sum(1 for value in timing_ms_clean if value > frame_ms_max)
 
     coverage_score = 0.0 if coverage_p50 is None else max(0.0, min(1.0, (coverage_p50 - coverage_min) / max(1.0, 100.0 - coverage_min)))
     unknown_score = 0.0 if unknown_p50 is None else max(0.0, min(1.0, (unknown_max - unknown_p50) / max(1.0, unknown_max)))
@@ -279,11 +344,22 @@ def score_run(run_dir, config):
             "color_contour_refresh_unknown_spike_count": color_refresh_unknown_count,
             "color_contour_refresh_far_loss_count": color_refresh_far_loss_count,
             "color_contour_stereo_reuse_count_p50": color_stereo_reuse_p50,
+            "color_contour_async_submitted_count": color_async_submitted_count,
+            "color_contour_async_applied_count": color_async_applied_count,
+            "color_contour_async_dropped_count": color_async_dropped_count,
+            "color_contour_cache_age_frames_p50": color_cache_age_p50,
+            "color_contour_cache_age_frames_p95": color_cache_age_p95,
+            "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,
             "far_stereo_failed_event_count": far_failed_events,
             "total_frame_ms_p95": frame_ms_p95,
+            "sampled_total_frame_ms_p95": sampled_frame_ms_p95,
+            "total_frame_ms_max": frame_ms_max_observed,
+            "frame_time_over_hard_budget_count": frame_over_budget_count,
+            "profile_frame_count": len(profile_rows),
+            "scored_timing_source": "profile.csv" if profile_rows else "frame_metrics.csv",
         },
         "hard_fail_reasons": hard_fail_reasons,
         "top_failures": top_failures,

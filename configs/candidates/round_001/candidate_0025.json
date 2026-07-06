@@ -1,0 +1,29 @@
+{
+  "candidate_id": "candidate_0025",
+  "parent": "candidate_0017",
+  "purpose": "Async motion-refresh candidate: keep candidate_0017 color quality, run color contour refresh on a background worker, and reuse cached stereo distance when applying refreshed contours.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Avoid blocking the main frame on full color contour refresh after the startup cache exists.",
+    "Preserve candidate_0017 static-refresh quality instead of reducing global color granularity.",
+    "Expose cache age, async worker time, submitted/applied/drop counts in profile and leaderboard."
+  ],
+  "risk": [
+    "Color contour ownership may lag by several frames while the worker is running.",
+    "If camera motion continues, stale async results may need stronger dropping or ROI-local refresh."
+  ]
+}
