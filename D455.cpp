@@ -399,6 +399,21 @@ struct FrameTimingStats
     double recordMs = 0.0;
 };
 
+struct ColorContourRefreshStats
+{
+    bool refreshed = false;
+    bool cacheReused = false;
+    bool reasonStartup = false;
+    bool reasonInterval = false;
+    bool reasonMotion = false;
+    bool reasonUnknownSpike = false;
+    bool reasonFarLoss = false;
+    double motionDeltaPercent = 0.0;
+    int regionCount = 0;
+    int stereoValidCount = 0;
+    int stereoReuseCount = 0;
+};
+
 struct PoseState
 {
     bool enabled = false;
@@ -8753,7 +8768,8 @@ public:
         int farCandidateCount,
         int anchorCount,
         int anchorPointsOnCandidates,
-        const FrameTimingStats& timingStats)
+        const FrameTimingStats& timingStats,
+        const ColorContourRefreshStats& colorContourRefreshStats)
     {
         if (!config_.enabled)
         {
@@ -8794,7 +8810,18 @@ public:
             << stableCount << ','
             << farCandidateCount << ','
             << anchorCount << ','
-            << anchorPointsOnCandidates
+            << anchorPointsOnCandidates << ','
+            << (colorContourRefreshStats.refreshed ? 1 : 0) << ','
+            << (colorContourRefreshStats.cacheReused ? 1 : 0) << ','
+            << (colorContourRefreshStats.reasonStartup ? 1 : 0) << ','
+            << (colorContourRefreshStats.reasonInterval ? 1 : 0) << ','
+            << (colorContourRefreshStats.reasonMotion ? 1 : 0) << ','
+            << (colorContourRefreshStats.reasonUnknownSpike ? 1 : 0) << ','
+            << (colorContourRefreshStats.reasonFarLoss ? 1 : 0) << ','
+            << std::setprecision(3) << colorContourRefreshStats.motionDeltaPercent << ','
+            << colorContourRefreshStats.regionCount << ','
+            << colorContourRefreshStats.stereoValidCount << ','
+            << colorContourRefreshStats.stereoReuseCount
             << '\n';
     }
 
@@ -8833,7 +8860,13 @@ private:
             << "extract_ms,far_extract_ms,pcl_ms,calibrate_ms,cue_ms,tracker_ms,support_ms,"
             << "render_ms,completion_ms,diagnostics_ms,display_ms,record_ms,"
             << "candidate_count,anchor_supported_count,stable_count,far_candidate_count,"
-            << "anchor_count,anchor_points_on_candidates\n";
+            << "anchor_count,anchor_points_on_candidates,"
+            << "color_contour_refreshed,color_contour_cache_reused,"
+            << "color_contour_refresh_startup,color_contour_refresh_interval,"
+            << "color_contour_refresh_motion,color_contour_refresh_unknown_spike,"
+            << "color_contour_refresh_far_loss,color_contour_motion_delta_percent,"
+            << "color_contour_region_count,color_contour_stereo_valid_count,"
+            << "color_contour_stereo_reuse_count\n";
         std::cout << "Profile CSV: " << outputPath_ << '\n';
     }
 
@@ -11695,7 +11728,8 @@ int runReplayDirectory(
     std::vector<ColorContourRegion> cachedColorContourRegions;
     bool hasColorContourRegionCache = false;
     cv::Mat cachedColorContourMotionSignature;
-    bool forceColorContourRefreshNextFrame = false;
+    bool refreshColorContourFromUnknownSpikeNextFrame = false;
+    bool refreshColorContourFromFarLossNextFrame = false;
     rs2_intrinsics colorIntrinsics{};
 
     for (size_t replayIndex = 0; replayIndex < replayFrames.size(); ++replayIndex)
@@ -11744,26 +11778,38 @@ int runReplayDirectory(
         }
 
         std::vector<ColorContourRegion> colorContourRegions;
+        ColorContourRefreshStats colorContourRefreshStats;
         cv::Mat currentColorContourMotionSignature;
         bool refreshBecauseOfMotion = false;
         if (config.colorContourRefreshOnMotion)
         {
             currentColorContourMotionSignature = makeColorContourMotionSignature(segmentationGray);
-            const double motionDeltaPercent = colorContourMotionDeltaPercent(
+            colorContourRefreshStats.motionDeltaPercent = colorContourMotionDeltaPercent(
                 currentColorContourMotionSignature,
                 cachedColorContourMotionSignature);
             refreshBecauseOfMotion =
                 hasColorContourRegionCache &&
-                motionDeltaPercent >= static_cast<double>(config.colorContourRefreshMotionDeltaPercent);
+                colorContourRefreshStats.motionDeltaPercent >=
+                    static_cast<double>(config.colorContourRefreshMotionDeltaPercent);
         }
-        const bool refreshColorContourRegions =
-            !hasColorContourRegionCache ||
-            forceColorContourRefreshNextFrame ||
-            refreshBecauseOfMotion ||
+        const bool refreshBecauseOfStartup = !hasColorContourRegionCache;
+        const bool refreshBecauseOfInterval =
             config.colorContourFrameInterval <= 1 ||
             (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
+        const bool refreshColorContourRegions =
+            refreshBecauseOfStartup ||
+            refreshColorContourFromUnknownSpikeNextFrame ||
+            refreshColorContourFromFarLossNextFrame ||
+            refreshBecauseOfMotion ||
+            refreshBecauseOfInterval;
         if (refreshColorContourRegions)
         {
+            colorContourRefreshStats.refreshed = true;
+            colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
+            colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
+            colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
+            colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
+            colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
             colorContourRegions = extractColorContourRegions(colorBgr, config);
             if (!colorContourRegions.empty() && config.stereoContourDistance)
             {
@@ -11792,12 +11838,17 @@ int runReplayDirectory(
                     : currentColorContourMotionSignature;
             }
             hasColorContourRegionCache = true;
-            forceColorContourRefreshNextFrame = false;
+            refreshColorContourFromUnknownSpikeNextFrame = false;
+            refreshColorContourFromFarLossNextFrame = false;
         }
         else
         {
+            colorContourRefreshStats.cacheReused = true;
             colorContourRegions = cachedColorContourRegions;
+            colorContourRefreshStats.stereoReuseCount = countStereoDistanceValidRegions(colorContourRegions);
         }
+        colorContourRefreshStats.regionCount = static_cast<int>(colorContourRegions.size());
+        colorContourRefreshStats.stereoValidCount = countStereoDistanceValidRegions(colorContourRegions);
         timingStats.grayPrepareMs = takeSectionMs();
 
         RgbDepthAnchorStats frameAnchorStats;
@@ -12003,13 +12054,13 @@ int runReplayDirectory(
             hasLastClusterMapFrame &&
             lastClusterMapFrame.unknownPercent >= static_cast<double>(config.colorContourRefreshUnknownPercent))
         {
-            forceColorContourRefreshNextFrame = true;
+            refreshColorContourFromUnknownSpikeNextFrame = true;
         }
         if (config.colorContourRefreshOnFarLoss &&
             !colorContourRegions.empty() &&
             countStereoDistanceValidRegions(colorContourRegions) <= 0)
         {
-            forceColorContourRefreshNextFrame = true;
+            refreshColorContourFromFarLossNextFrame = true;
         }
 
         if (config.analysisExportEveryN > 0 &&
@@ -12044,7 +12095,8 @@ int runReplayDirectory(
             static_cast<int>(farDistanceMaterials.size()),
             cv::countNonZero(anchorMask),
             anchorPointsOnCandidates,
-            timingStats);
+            timingStats,
+            colorContourRefreshStats);
     }
 
     profileCsv.close();
@@ -12497,7 +12549,8 @@ int main(int argc, char** argv)
         std::vector<ColorContourRegion> cachedColorContourRegions;
         bool hasColorContourRegionCache = false;
         cv::Mat cachedColorContourMotionSignature;
-        bool forceColorContourRefreshNextFrame = false;
+        bool refreshColorContourFromUnknownSpikeNextFrame = false;
+        bool refreshColorContourFromFarLossNextFrame = false;
         uint64_t frameId = 0;
         while (true)
         {
@@ -12581,26 +12634,38 @@ int main(int argc, char** argv)
             }
 
             std::vector<ColorContourRegion> colorContourRegions;
+            ColorContourRefreshStats colorContourRefreshStats;
             cv::Mat currentColorContourMotionSignature;
             bool refreshBecauseOfMotion = false;
             if (config.colorContourRefreshOnMotion)
             {
                 currentColorContourMotionSignature = makeColorContourMotionSignature(segmentationGray);
-                const double motionDeltaPercent = colorContourMotionDeltaPercent(
+                colorContourRefreshStats.motionDeltaPercent = colorContourMotionDeltaPercent(
                     currentColorContourMotionSignature,
                     cachedColorContourMotionSignature);
                 refreshBecauseOfMotion =
                     hasColorContourRegionCache &&
-                    motionDeltaPercent >= static_cast<double>(config.colorContourRefreshMotionDeltaPercent);
+                    colorContourRefreshStats.motionDeltaPercent >=
+                        static_cast<double>(config.colorContourRefreshMotionDeltaPercent);
             }
-            const bool refreshColorContourRegions =
-                !hasColorContourRegionCache ||
-                forceColorContourRefreshNextFrame ||
-                refreshBecauseOfMotion ||
+            const bool refreshBecauseOfStartup = !hasColorContourRegionCache;
+            const bool refreshBecauseOfInterval =
                 config.colorContourFrameInterval <= 1 ||
                 (frameId % static_cast<uint64_t>(config.colorContourFrameInterval) == 0);
+            const bool refreshColorContourRegions =
+                refreshBecauseOfStartup ||
+                refreshColorContourFromUnknownSpikeNextFrame ||
+                refreshColorContourFromFarLossNextFrame ||
+                refreshBecauseOfMotion ||
+                refreshBecauseOfInterval;
             if (refreshColorContourRegions)
             {
+                colorContourRefreshStats.refreshed = true;
+                colorContourRefreshStats.reasonStartup = refreshBecauseOfStartup;
+                colorContourRefreshStats.reasonInterval = refreshBecauseOfInterval && !refreshBecauseOfStartup;
+                colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
+                colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
+                colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
                 colorContourRegions = extractColorContourRegions(colorBgr, config);
                 if (!colorContourRegions.empty() && config.stereoContourDistance)
                 {
@@ -12639,12 +12704,17 @@ int main(int argc, char** argv)
                         : currentColorContourMotionSignature;
                 }
                 hasColorContourRegionCache = true;
-                forceColorContourRefreshNextFrame = false;
+                refreshColorContourFromUnknownSpikeNextFrame = false;
+                refreshColorContourFromFarLossNextFrame = false;
             }
             else
             {
+                colorContourRefreshStats.cacheReused = true;
                 colorContourRegions = cachedColorContourRegions;
+                colorContourRefreshStats.stereoReuseCount = countStereoDistanceValidRegions(colorContourRegions);
             }
+            colorContourRefreshStats.regionCount = static_cast<int>(colorContourRegions.size());
+            colorContourRefreshStats.stereoValidCount = countStereoDistanceValidRegions(colorContourRegions);
             timingStats.grayPrepareMs = takeSectionMs();
 
             RgbDepthAnchorStats frameAnchorStats;
@@ -12847,13 +12917,13 @@ int main(int argc, char** argv)
                 hasLastClusterMapFrame &&
                 lastClusterMapFrame.unknownPercent >= static_cast<double>(config.colorContourRefreshUnknownPercent))
             {
-                forceColorContourRefreshNextFrame = true;
+                refreshColorContourFromUnknownSpikeNextFrame = true;
             }
             if (config.colorContourRefreshOnFarLoss &&
                 !colorContourRegions.empty() &&
                 countStereoDistanceValidRegions(colorContourRegions) <= 0)
             {
-                forceColorContourRefreshNextFrame = true;
+                refreshColorContourFromFarLossNextFrame = true;
             }
             if (config.analysisExportEveryN > 0 &&
                 frameId % static_cast<uint64_t>(config.analysisExportEveryN) == 0)
@@ -13099,7 +13169,8 @@ int main(int argc, char** argv)
                 static_cast<int>(farDistanceMaterials.size()),
                 cv::countNonZero(anchorMask),
                 anchorPointsOnCandidates,
-                timingStats);
+                timingStats,
+                colorContourRefreshStats);
             if (acceptanceConfig.enabled)
             {
                 const cv::Mat stableMask = stableMaskForFrame.empty()

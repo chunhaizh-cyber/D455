@@ -1,0 +1,26 @@
+{
+  "candidate_id": "candidate_0016",
+  "parent": "candidate_0015",
+  "purpose": "Motion-refresh variant: reduce static overhead by using a longer cache interval, a higher motion threshold, and far-loss refresh only.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=180",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=35",
+    "--no-color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-on-far-loss"
+  ],
+  "expected_effect": [
+    "Preserve cached stereo rough distance while reducing refresh frequency.",
+    "Avoid unknown-spike refresh because FarBackground fallback often keeps unknown near zero.",
+    "Use far-loss as the main semantic recovery trigger."
+  ],
+  "risk": [
+    "May refresh too late during slow motion.",
+    "Needs slow_pan_far_object and hand_occlusion_reappear replay cases before promotion."
+  ]
+}

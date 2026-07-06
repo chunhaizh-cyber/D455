@@ -158,6 +158,12 @@ def score_run(run_dir, config):
     ], 50)
     stereo_matched_p50 = percentile([r.get("stereo_matched_cluster_count") for r in frame_rows], 50)
     stereo_failed_p50 = percentile([r.get("stereo_failed_cluster_count") for r in frame_rows], 50)
+    color_refresh_count = sum(int(row_float(r, "color_contour_refreshed") > 0) for r in frame_rows)
+    color_cache_reuse_count = sum(int(row_float(r, "color_contour_cache_reused") > 0) for r in frame_rows)
+    color_refresh_motion_count = sum(int(row_float(r, "color_contour_refresh_motion") > 0) for r in frame_rows)
+    color_refresh_unknown_count = sum(int(row_float(r, "color_contour_refresh_unknown_spike") > 0) for r in frame_rows)
+    color_refresh_far_loss_count = sum(int(row_float(r, "color_contour_refresh_far_loss") > 0) for r in frame_rows)
+    color_stereo_reuse_p50 = percentile([r.get("color_contour_stereo_reuse_count") for r in frame_rows], 50)
 
     coverage_min = float(hard_fail.get("cluster_coverage_percent_p50_min", 95.0))
     unknown_max = float(hard_fail.get("unknown_percent_p50_max", 15.0))
@@ -267,6 +273,12 @@ def score_run(run_dir, config):
             "far_retained_pixels_p50": far_retained_pixels_p50,
             "stereo_matched_cluster_count_p50": stereo_matched_p50,
             "stereo_failed_cluster_count_p50": stereo_failed_p50,
+            "color_contour_refresh_count": color_refresh_count,
+            "color_contour_cache_reuse_count": color_cache_reuse_count,
+            "color_contour_refresh_motion_count": color_refresh_motion_count,
+            "color_contour_refresh_unknown_spike_count": color_refresh_unknown_count,
+            "color_contour_refresh_far_loss_count": color_refresh_far_loss_count,
+            "color_contour_stereo_reuse_count_p50": color_stereo_reuse_p50,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,

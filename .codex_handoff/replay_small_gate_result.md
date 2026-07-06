@@ -130,3 +130,41 @@ Static smoke with `analysis_runs/replay_small_gate_candidate_0015_static_smoke3`
 | depth_hole_black_object | 89.291 | true | 98.0575 | none |
 
 Conclusion: keep the trigger implementation and candidate file, but do not promote `candidate_0015`. The static overhead is still too close to the hard gate; motion-sensitive replay must drive the next optimization.
+
+## Refresh Metrics And Conservative Variants
+
+D455 now appends color-contour cache diagnostics to `profile.csv`:
+
+- `color_contour_refreshed`
+- `color_contour_cache_reused`
+- `color_contour_refresh_startup`
+- `color_contour_refresh_interval`
+- `color_contour_refresh_motion`
+- `color_contour_refresh_unknown_spike`
+- `color_contour_refresh_far_loss`
+- `color_contour_motion_delta_percent`
+- `color_contour_region_count`
+- `color_contour_stereo_valid_count`
+- `color_contour_stereo_reuse_count`
+
+The converter carries these into `frame_metrics.csv`, writes `color_contour_refresh` rows into `events.csv`, and `score_run.py` summarizes refresh/cache/reuse counts in `run_score.json`.
+
+New variants:
+
+- `candidate_0016`: interval 180, motion threshold 35%, far-loss refresh only, unknown-spike refresh disabled.
+- `candidate_0017`: interval 120, motion threshold 40%, far-loss refresh enabled, unknown-spike threshold 12%.
+
+Static smoke with `analysis_runs/replay_static_refresh_variants_001`:
+
+| candidate | case_id | score | pass | frame_ms_p95 | refresh_count | cache_reuse_count | motion | unknown_spike | far_loss | stereo_reuse_p50 |
+|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| candidate_0016 | near_single_object | 89.100 | true | 99.3312 | 0 | 3 | 0 | 0 | 0 | 18 |
+| candidate_0016 | far_cabinet | 89.192 | true | 98.7208 | 0 | 3 | 0 | 0 | 0 | 20 |
+| candidate_0016 | depth_hole_black_object | 89.953 | true | 93.6439 | 0 | 3 | 0 | 0 | 0 | 19 |
+| candidate_0017 | near_single_object | 91.109 | true | 85.9329 | 0 | 3 | 0 | 0 | 0 | 18 |
+| candidate_0017 | far_cabinet | 92.367 | true | 77.5449 | 0 | 3 | 0 | 0 | 0 | 20 |
+| candidate_0017 | depth_hole_black_object | 92.342 | true | 77.7103 | 0 | 3 | 0 | 0 | 0 | 19 |
+
+Minimum leaderboard artifacts are committed under `leaderboards/replay_static_refresh_variants_001/`; full analysis outputs remain local. `candidate_0017` is the current static refresh-variant winner, but scored frames only reused cached color contours. This validates lower static overhead, not motion refresh correctness.
+
+Current blocker remains unchanged: `datasets/slow_pan_far_object` and `datasets/hand_occlusion_reappear` are not present locally yet, so no real motion gate score has been produced.

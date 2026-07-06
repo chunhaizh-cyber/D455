@@ -1,0 +1,7 @@
+slot,candidate_id,total_score,near_score,far_score,performance_score,unknown_p50,frame_ms_p95,run_id
+best_overall,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_far_retention,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_realtime,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_low_unknown,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_low_merge,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_low_split,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017

@@ -52,6 +52,17 @@ FRAME_FIELDS = [
     "lost_track_count",
     "stereo_matched_cluster_count",
     "stereo_failed_cluster_count",
+    "color_contour_refreshed",
+    "color_contour_cache_reused",
+    "color_contour_refresh_startup",
+    "color_contour_refresh_interval",
+    "color_contour_refresh_motion",
+    "color_contour_refresh_unknown_spike",
+    "color_contour_refresh_far_loss",
+    "color_contour_motion_delta_percent",
+    "color_contour_region_count",
+    "color_contour_stereo_valid_count",
+    "color_contour_stereo_reuse_count",
     "unknown_spike",
     "merge_event",
     "split_event",
@@ -351,6 +362,23 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "stable_track_count": as_int(profile_row.get("stable_count")),
         "stereo_matched_cluster_count": stereo_valid,
         "stereo_failed_cluster_count": stereo_failed,
+        "color_contour_refreshed": as_int(profile_row.get("color_contour_refreshed")),
+        "color_contour_cache_reused": as_int(profile_row.get("color_contour_cache_reused")),
+        "color_contour_refresh_startup": as_int(profile_row.get("color_contour_refresh_startup")),
+        "color_contour_refresh_interval": as_int(profile_row.get("color_contour_refresh_interval")),
+        "color_contour_refresh_motion": as_int(profile_row.get("color_contour_refresh_motion")),
+        "color_contour_refresh_unknown_spike": as_int(profile_row.get("color_contour_refresh_unknown_spike")),
+        "color_contour_refresh_far_loss": as_int(profile_row.get("color_contour_refresh_far_loss")),
+        "color_contour_motion_delta_percent": round(
+            as_float(profile_row.get("color_contour_motion_delta_percent")),
+            3,
+        ),
+        "color_contour_region_count": as_int(profile_row.get("color_contour_region_count"), color_region_count),
+        "color_contour_stereo_valid_count": as_int(
+            profile_row.get("color_contour_stereo_valid_count"),
+            stereo_valid,
+        ),
+        "color_contour_stereo_reuse_count": as_int(profile_row.get("color_contour_stereo_reuse_count")),
         "unknown_spike": int(unknown_percent > args.unknown_spike_percent),
         "far_stereo_failed_event": int(color_region_count > 0 and stereo_valid <= 0),
         "frame_time_over_budget": int(total_ms > args.frame_budget_ms) if total_ms else 0,
@@ -442,6 +470,28 @@ def collect_events(frame_row):
             "message": "final color regions had no valid stereo distance",
             "value_before": "",
             "value_after": frame_row["stereo_failed_cluster_count"],
+        })
+    if frame_row.get("color_contour_refreshed"):
+        reasons = []
+        for key, label in [
+            ("color_contour_refresh_startup", "startup"),
+            ("color_contour_refresh_interval", "interval"),
+            ("color_contour_refresh_motion", "motion"),
+            ("color_contour_refresh_unknown_spike", "unknown_spike"),
+            ("color_contour_refresh_far_loss", "far_loss"),
+        ]:
+            if frame_row.get(key):
+                reasons.append(label)
+        events.append({
+            "frame_id": frame_id,
+            "event_type": "color_contour_refresh",
+            "severity": "info",
+            "cluster_id": "",
+            "track_id": "",
+            "related_cluster_id": "",
+            "message": "color contour cache refreshed: " + ("+".join(reasons) if reasons else "unspecified"),
+            "value_before": frame_row.get("color_contour_motion_delta_percent", ""),
+            "value_after": frame_row.get("color_contour_region_count", ""),
         })
     if frame_row["frame_time_over_budget"]:
         events.append({

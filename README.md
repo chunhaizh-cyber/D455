@@ -63,6 +63,12 @@ analysis_runs/<run_id>/notes.md
 
 `configs/candidates/round_001/candidate_0015.json` 是运动敏感缓存候选：在 `--color-contour-frame-interval=120` 基础上增加 `--color-contour-refresh-on-motion`、`--color-contour-refresh-on-unknown-spike` 和 `--color-contour-refresh-on-far-loss`。视觉运动触发使用下采样灰度差分，当前阈值为保守的 `--color-contour-refresh-motion-delta-percent=25`；unknown spike 和 far stereo loss 是下一帧恢复触发。静态 smoke 中 0015 仍有 2/3 case 因 p95 略超 100ms 未通过，因此它只代表已实现的待测策略，不进入 best。`eval/cases.yaml` 已新增 `slow_pan_far_object` 与 `hand_occlusion_reappear` 合同，用来专门暴露缓存轮廓滞后、遮挡后重现和粗距延迟更新问题；在这些数据集录入并通过验证前，`candidate_0015` 不代表已优于 `candidate_0014`。
 
+缓存刷新现在会进入可度量输出：D455 在 `profile.csv` 追加 `color_contour_refreshed`、`color_contour_cache_reused`、`color_contour_refresh_motion`、`color_contour_refresh_unknown_spike`、`color_contour_refresh_far_loss`、`color_contour_motion_delta_percent` 和 stereo reuse 相关字段；converter 会把它们写入 `frame_metrics.csv`，并在刷新帧写 `events.csv` 的 `color_contour_refresh` 事件。`run_score.json` 也汇总 refresh/cache/reuse 计数，后续 motion gate 不再只靠 p95 和 far_score 间接推断触发策略是否有效。
+
+`candidate_0016` / `candidate_0017` 是 `candidate_0015` 的保守变体：0016 使用 `--color-contour-frame-interval=180`、motion 阈值 35%、关闭 unknown-spike refresh，仅保留 far-loss 恢复；0017 保持 120 帧间隔，但把 motion 阈值提高到 40%、unknown 阈值提高到 12%。它们用于 motion-sensitive replay gate 的下一轮对照，不应在 `slow_pan_far_object` 和 `hand_occlusion_reappear` 评分前提升为 best。
+
+`replay_static_refresh_variants_001` 已跑完 0016/0017 在 `near_single_object`、`far_cabinet`、`depth_hole_black_object` 上的静态 smoke，6/6 pass，且 `candidate_0017` 分数和 p95 最好；但该结果中 scored frames 的 `color_contour_refresh_count=0`、`color_contour_cache_reuse_count=3`，只说明静态缓存复用成本可控，不说明 motion/unknown/far-loss 触发在运动场景有效。最小摘要在 `leaderboards/replay_static_refresh_variants_001/`。
+
 评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
 
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：
