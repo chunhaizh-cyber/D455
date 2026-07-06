@@ -245,6 +245,18 @@ def score_run(run_dir, config):
     color_refresh_roi_rejected_large_count = sum(
         int(row_float(r, "color_contour_refresh_roi_rejected_large") > 0) for r in timing_rows
     )
+    color_refresh_roi_region_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_region_count")) for r in timing_rows
+    )
+    color_refresh_roi_stereo_reuse_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_stereo_reuse_count")) for r in timing_rows
+    )
+    color_refresh_roi_stereo_failed_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_stereo_failed_count")) for r in timing_rows
+    )
+    color_refresh_roi_preserved_stereo_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_preserved_stereo_count")) for r in timing_rows
+    )
     color_cache_age_p50 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 50)
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
@@ -381,6 +393,10 @@ def score_run(run_dir, config):
             "color_contour_refresh_roi_candidate_pixels_p95": color_refresh_roi_candidate_pixels_p95,
             "color_contour_refresh_roi_rejected_empty_count": color_refresh_roi_rejected_empty_count,
             "color_contour_refresh_roi_rejected_large_count": color_refresh_roi_rejected_large_count,
+            "color_contour_refresh_roi_region_count": color_refresh_roi_region_count,
+            "color_contour_refresh_roi_stereo_reuse_count": color_refresh_roi_stereo_reuse_count,
+            "color_contour_refresh_roi_stereo_failed_count": color_refresh_roi_stereo_failed_count,
+            "color_contour_refresh_roi_preserved_stereo_count": color_refresh_roi_preserved_stereo_count,
             "color_contour_cache_age_frames_p50": color_cache_age_p50,
             "color_contour_cache_age_frames_p95": color_cache_age_p95,
             "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,

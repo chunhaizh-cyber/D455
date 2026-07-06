@@ -75,6 +75,10 @@ def main():
             "color_refresh_roi_candidate_pixels_p95",
             "color_refresh_roi_rejected_empty_count",
             "color_refresh_roi_rejected_large_count",
+            "color_refresh_roi_region_count",
+            "color_refresh_roi_stereo_reuse_count",
+            "color_refresh_roi_stereo_failed_count",
+            "color_refresh_roi_preserved_stereo_count",
             "color_cache_age_p95", "color_async_worker_ms_p95",
             "color_async_worker_ms_positive_p95", "run_id"
         ])
@@ -112,6 +116,10 @@ def main():
                 metric(s, "color_contour_refresh_roi_candidate_pixels_p95"),
                 metric(s, "color_contour_refresh_roi_rejected_empty_count"),
                 metric(s, "color_contour_refresh_roi_rejected_large_count"),
+                metric(s, "color_contour_refresh_roi_region_count"),
+                metric(s, "color_contour_refresh_roi_stereo_reuse_count"),
+                metric(s, "color_contour_refresh_roi_stereo_failed_count"),
+                metric(s, "color_contour_refresh_roi_preserved_stereo_count"),
                 metric(s, "color_contour_cache_age_frames_p95"),
                 metric(s, "color_contour_async_worker_ms_p95"),
                 metric(s, "color_contour_async_worker_ms_positive_p95"),

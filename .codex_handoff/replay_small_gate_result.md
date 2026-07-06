@@ -210,11 +210,12 @@ ROI-local refresh is wired but not proven by `slow_pan_far_object`: 0030 recorde
 
 Run: `analysis_runs/replay_local_motion_roi_probe_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
 
-| candidate | pass | score | profile p95 ms | max ms | ROI count | ROI pixels p95 | rejected large | far failed | note |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| candidate_0030 | true | 94.823 | 61.1594 | 73.390 | 0 | - | 0 | 0 | slow-pan best remains best overall, but does not trigger local ROI because threshold is 40% |
-| candidate_0032 | true | 72.604 | 62.6242 | 75.631 | 1 | 76800 | 0 | 6 | ROI path is proven to trigger, but far stereo/region inheritance regresses |
+| candidate | pass | score | profile p95 ms | max ms | ROI count | ROI pixels p95 | rejected large | far failed | preserved stereo | ROI stereo failed | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0030 | true | 94.823 | 61.1594 | 73.390 | 0 | - | 0 | 0 | 0 | 0 | slow-pan best remains best overall, but does not trigger local ROI because threshold is 40% |
+| candidate_0032 | true | 94.940 | 60.3776 | 78.578 | 4 | 76800 | 0 | 0 | 3 | 6 | ROI path triggers and far evidence is preserved by cached stereo-bearing regions |
+| candidate_0033 | true | 94.892 | 60.7032 | 72.871 | 4 | 76800 | 0 | 0 | 3 | 6 | named probe for the ROI stereo-retention code fix; same thresholds as 0032 |
 
-Conclusion: ROI-local refresh is now mechanically verified separately from slow-pan. The ROI candidate area is local rather than full-frame, and `best_roi_refresh` in the pareto output selects `candidate_0032`. Do not promote 0032: it uses a 3% motion threshold only for deterministic ROI validation and exposes the next bug, which is ROI merge/stereo reuse quality after partial refresh.
+Conclusion: ROI-local refresh is now mechanically verified separately from slow-pan, and the previous far-stereo regression is fixed at the evidence-retention layer. `mergeColorContourRoiRefresh()` now keeps cached ROI-overlapping stereo-bearing regions when refreshed ROI regions do not carry matching distance evidence, which reduced `far_stereo_failed_event_count` from 6 to 0 in this probe. Do not promote 0032/0033 beyond ROI probe scope: the refreshed ROI regions still report `roi_stereo_failed_count=6` and `roi_stereo_reuse_count=0`, so the next quality task is direct ROI-region stereo reuse/recompute rather than another threshold change.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

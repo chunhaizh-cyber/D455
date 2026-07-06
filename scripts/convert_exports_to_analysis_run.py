@@ -73,6 +73,10 @@ FRAME_FIELDS = [
     "color_contour_refresh_roi_candidate_pixels",
     "color_contour_refresh_roi_rejected_empty",
     "color_contour_refresh_roi_rejected_large",
+    "color_contour_refresh_roi_region_count",
+    "color_contour_refresh_roi_stereo_reuse_count",
+    "color_contour_refresh_roi_stereo_failed_count",
+    "color_contour_refresh_roi_preserved_stereo_count",
     "color_contour_cache_age_frames",
     "color_contour_async_worker_ms",
     "unknown_spike",
@@ -406,6 +410,18 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         ),
         "color_contour_refresh_roi_rejected_large": as_int(
             profile_row.get("color_contour_refresh_roi_rejected_large")
+        ),
+        "color_contour_refresh_roi_region_count": as_int(
+            profile_row.get("color_contour_refresh_roi_region_count")
+        ),
+        "color_contour_refresh_roi_stereo_reuse_count": as_int(
+            profile_row.get("color_contour_refresh_roi_stereo_reuse_count")
+        ),
+        "color_contour_refresh_roi_stereo_failed_count": as_int(
+            profile_row.get("color_contour_refresh_roi_stereo_failed_count")
+        ),
+        "color_contour_refresh_roi_preserved_stereo_count": as_int(
+            profile_row.get("color_contour_refresh_roi_preserved_stereo_count")
         ),
         "color_contour_cache_age_frames": as_int(profile_row.get("color_contour_cache_age_frames")),
         "color_contour_async_worker_ms": round(
