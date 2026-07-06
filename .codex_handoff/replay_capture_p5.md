@@ -18,11 +18,11 @@ The capture writes:
 - `frames\000000_ir_right.png` when right IR capture is enabled by the selected options
 - `case_manifest.json`
 
-Important boundary: this only creates the fixed replay input format. A captured case is not benchmark truth until `case_manifest.json` is reviewed, expected behavior is filled in, and the case is replayed through `run_batch.py --execute`.
+Important boundary: this only creates the fixed replay input format. A captured case is not benchmark truth until `case_manifest.json` has `reviewed: true`, non-placeholder `notes`, a non-empty `expected` object, and the case is replayed through `run_batch.py --execute`.
 
 Recommended next run:
 
 ```powershell
-python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right
-python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
+python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right --require-reviewed-manifest
+python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --require-reviewed-manifest --execute
 ```

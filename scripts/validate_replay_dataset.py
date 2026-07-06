@@ -49,7 +49,10 @@ def load_manifest(case_dir):
         return None, f"invalid JSON in {manifest_path}: {exc}"
 
 
-def validate_case(case_dir, min_frames, require_ir_left, require_ir_right):
+PLACEHOLDER_NOTES = "Fill expected scene notes before using this case for regression."
+
+
+def validate_case(case_dir, min_frames, require_ir_left, require_ir_right, require_reviewed_manifest):
     errors = []
     warnings = []
     case_dir = Path(case_dir)
@@ -135,6 +138,15 @@ def validate_case(case_dir, min_frames, require_ir_left, require_ir_right):
             errors.append(f"manifest depth_unit should be millimeter_uint16, got {manifest.get('depth_unit')!r}")
         if manifest.get("format") != "d455_directory_replay_v1":
             warnings.append(f"manifest format is {manifest.get('format')!r}, expected d455_directory_replay_v1")
+        if require_reviewed_manifest:
+            if manifest.get("reviewed") is not True:
+                errors.append("manifest must contain reviewed=true before scoring")
+            notes = str(manifest.get("notes") or "").strip()
+            if not notes or notes == PLACEHOLDER_NOTES:
+                errors.append("manifest notes must describe the reviewed scene before scoring")
+            expected = manifest.get("expected")
+            if not isinstance(expected, dict) or not expected:
+                errors.append("manifest expected must be a non-empty object before scoring")
 
     return {
         "case_dir": str(case_dir),
@@ -157,11 +169,18 @@ def main():
     parser.add_argument("--min-frames", type=int, default=1)
     parser.add_argument("--require-ir-left", action="store_true")
     parser.add_argument("--require-ir-right", action="store_true")
+    parser.add_argument("--require-reviewed-manifest", action="store_true")
     parser.add_argument("--report")
     args = parser.parse_args()
 
     reports = [
-        validate_case(path, args.min_frames, args.require_ir_left, args.require_ir_right)
+        validate_case(
+            path,
+            args.min_frames,
+            args.require_ir_left,
+            args.require_ir_right,
+            args.require_reviewed_manifest,
+        )
         for path in args.case_dir
     ]
     output = {"pass": all(report["pass"] for report in reports), "cases": reports}

@@ -78,6 +78,7 @@ def main():
     parser.add_argument("--skip-missing-replay", action="store_true")
     parser.add_argument("--validate-replay", action="store_true")
     parser.add_argument("--require-replay-ir", action="store_true")
+    parser.add_argument("--require-reviewed-manifest", action="store_true")
     parser.add_argument("--weights", default="eval\\score_weights.yaml")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -185,6 +186,8 @@ def main():
             ]
             if args.require_replay_ir:
                 validation_command.extend(["--require-ir-left", "--require-ir-right"])
+            if args.require_reviewed_manifest:
+                validation_command.append("--require-reviewed-manifest")
             print(f"validate replay: {row['case_id']}")
             result = subprocess.run(validation_command)
             if result.returncode != 0:

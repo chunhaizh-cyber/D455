@@ -67,12 +67,14 @@ python scripts\run_batch.py --candidates configs\candidates\round_001 --cases ev
 
 采集脚本会按 case 暂停提示摆放场景，调用 `D455.exe --capture-replay-dir=... --quality-segmentation --stereo-contour-distance` 保存左右 IR，并在每个 case 完成后运行 `scripts\validate_replay_dataset.py`。`datasets/` 是本地真实采集输入，默认不进入 Git；需要同步数据集时应单独确认数据大小、隐私和 LFS 策略。
 
+采集完成后必须人工审查并编辑每个 `case_manifest.json`：把 `reviewed` 设为 `true`，将 `notes` 从占位文本改成实际场景说明，并填入非空 `expected` 对象。小型评分 gate 会用 `--require-reviewed-manifest` 阻止未审查 case 进入评分。
+
 小型 replay round 先只跑 3 个固定 case 和少量候选，`run_batch.py` 支持用 `--case-id`、`--candidate-id`、`--max-frames-override=120` 限定范围；`--skip-missing-replay` 只用于采集未完成时验证命令链，不代表有效评分：
 
 ```powershell
-python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right
-python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
-python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0001 --candidate-id candidate_0002 --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
+python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right --require-reviewed-manifest
+python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --require-reviewed-manifest --execute
+python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0001 --candidate-id candidate_0002 --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --require-reviewed-manifest --execute
 ```
 
 ## 下一阶段工程化路线
