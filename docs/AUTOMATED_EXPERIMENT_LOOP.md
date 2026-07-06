@@ -51,7 +51,14 @@ python scripts/make_codex_handoff.py --leaderboard leaderboards/leaderboard.csv 
 
 Round 001 has been initialized this way: 12 candidates were generated under `configs/candidates/round_001/`, and a 60-command dry-run plan was written to `.codex_handoff/round_001_plan/command_plan.csv`. This round has no winner because there is no deterministic replay dataset and no real `run_score.json` evidence yet.
 
-The export converter is currently a final-frame bridge, not a full frame-series metrics producer. It reads the last timing row and one final `cluster_map` / `final_segmentation` metadata pair, so p50/p95 scores from converted smoke runs are only smoke-test signals. Use them to verify wiring, not to select true winners. Real winner selection requires deterministic replay plus multi-frame metrics.
+The export converter still supports the old final-frame bridge, but smoke scoring should now prefer periodic analysis export:
+
+```powershell
+.\x64\Release\D455.exe --cluster-map --final-segmentation-export=analysis_runs\<run_id>\final_segmentation --cluster-map-export=analysis_runs\<run_id>\cluster_map --profile-csv=analysis_runs\<run_id>\profile.csv --analysis-export-every-n=30 --max-frames=120 --no-display
+python scripts\convert_exports_to_analysis_run.py --run-dir=analysis_runs\<run_id>
+```
+
+`--analysis-export-every-n=N` writes frame-suffixed metadata such as `cluster_map_frame_000030_metadata.json` and `final_segmentation_frame_000030_metadata.json`. The converter combines those metadata files with matching rows from `profile.csv` to produce multi-row `frame_metrics.csv` and multi-frame `cluster_metrics.jsonl`. This is still not a deterministic benchmark until replay exists, but it is no longer limited to one final frame.
 
 When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
 

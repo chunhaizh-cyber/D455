@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--cases", default="eval/cases.yaml")
     parser.add_argument("--out", default="analysis_runs")
     parser.add_argument("--exe", default=".\\x64\\Release\\D455.exe")
+    parser.add_argument("--analysis-export-every-n", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -59,6 +60,7 @@ def main():
                 args.exe,
                 *cand.get("args", []),
                 f"--max-frames={case['frames']}",
+                *([f"--analysis-export-every-n={args.analysis_export_every_n}"] if args.analysis_export_every_n > 0 else []),
                 f"--profile-csv={profile_csv}",
                 f"--cluster-map-export={cluster_map_base}",
                 f"--final-segmentation-export={final_segmentation_base}",

@@ -156,6 +156,7 @@ struct SegmentationConfig
     int colorRefineMinOverlapPercent = 18;
     int colorRefineMaxAreaDeltaPercent = 280;
     int nonPreciseColorOwnershipMinPercent = 10;
+    int analysisExportEveryN = 0;
     int stereoContourMinDisparityTenthsPx = 5;
     int stereoContourMaxVerticalShiftPixels = 12;
     int stereoContourSearchMarginPixels = 48;
@@ -708,6 +709,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--non-precise-color-ownership-min-percent=", config.nonPreciseColorOwnershipMinPercent) ||
             parseIntOption(arg, "--d455-precision-min-far-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
             parseIntOption(arg, "--d455-precision-min-color-depth-support-percent=", config.nonPreciseColorOwnershipMinPercent) ||
+            parseIntOption(arg, "--analysis-export-every-n=", config.analysisExportEveryN) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
             parseIntOption(arg, "--stereo-contour-max-vertical-shift-px=", config.stereoContourMaxVerticalShiftPixels) ||
             parseIntOption(arg, "--stereo-contour-search-margin-px=", config.stereoContourSearchMarginPixels) ||
@@ -6896,17 +6898,34 @@ std::filesystem::path clusterMapExportBasePath(const SegmentationConfig& config)
     return output;
 }
 
+std::string frameExportSuffix(uint64_t frameId)
+{
+    std::ostringstream stream;
+    stream << "_frame_" << std::setw(6) << std::setfill('0') << frameId;
+    return stream.str();
+}
+
+std::filesystem::path appendFrameExportSuffix(const std::filesystem::path& base, uint64_t frameId)
+{
+    return base.parent_path() / (base.filename().string() + frameExportSuffix(frameId));
+}
+
 void writeClusterMapExport(
     const ClusterMapFrame& frame,
     const cv::Mat& colorBgr,
-    const SegmentationConfig& config)
+    const SegmentationConfig& config,
+    int64_t exportFrameId = -1)
 {
     if (frame.clusterIdMap.empty())
     {
         return;
     }
 
-    const std::filesystem::path base = clusterMapExportBasePath(config);
+    std::filesystem::path base = clusterMapExportBasePath(config);
+    if (exportFrameId >= 0)
+    {
+        base = appendFrameExportSuffix(base, static_cast<uint64_t>(exportFrameId));
+    }
     if (base.has_parent_path())
     {
         std::filesystem::create_directories(base.parent_path());
@@ -6938,6 +6957,10 @@ void writeClusterMapExport(
 
     metadata << "{\n";
     metadata << "  \"image_size\": [" << frame.clusterIdMap.cols << ", " << frame.clusterIdMap.rows << "],\n";
+    if (exportFrameId >= 0)
+    {
+        metadata << "  \"frame_id\": " << exportFrameId << ",\n";
+    }
     metadata << "  \"assignment_coverage_percent\": "
         << std::fixed << std::setprecision(3) << frame.assignmentCoveragePercent << ",\n";
     metadata << "  \"cluster_coverage_percent\": "
@@ -6990,14 +7013,19 @@ std::filesystem::path finalSegmentationExportBasePath(const SegmentationConfig& 
 
 void writeFinalSegmentationExport(
     const FinalSegmentationFrame& frame,
-    const SegmentationConfig& config)
+    const SegmentationConfig& config,
+    int64_t exportFrameId = -1)
 {
     if (frame.idMap.empty())
     {
         return;
     }
 
-    const std::filesystem::path base = finalSegmentationExportBasePath(config);
+    std::filesystem::path base = finalSegmentationExportBasePath(config);
+    if (exportFrameId >= 0)
+    {
+        base = appendFrameExportSuffix(base, static_cast<uint64_t>(exportFrameId));
+    }
     if (base.has_parent_path())
     {
         std::filesystem::create_directories(base.parent_path());
@@ -7036,6 +7064,10 @@ void writeFinalSegmentationExport(
 
     metadata << "{\n";
     metadata << "  \"image_size\": [" << frame.idMap.cols << ", " << frame.idMap.rows << "],\n";
+    if (exportFrameId >= 0)
+    {
+        metadata << "  \"frame_id\": " << exportFrameId << ",\n";
+    }
     metadata << "  \"assigned_pixel_count\": " << assignedPixelCount << ",\n";
     metadata << "  \"depth_material_count\": " << frame.depthMaterials.size() << ",\n";
     metadata << "  \"color_region_count\": " << frame.colorRegions.size() << ",\n";
@@ -11189,6 +11221,7 @@ void printUsage()
         << "  --near-plane-frame-interval=10\n"
         << "  --cluster-map\n"
         << "  --cluster-map-export=recordings\\cluster_map_sample\n"
+        << "  --analysis-export-every-n=30\n"
         << "  --cluster-map-visual-min-area-px=700\n"
         << "  --cluster-map-visual-morph-kernel-px=7\n"
         << "  --cluster-map-max-visual-regions=24\n"
@@ -11959,6 +11992,25 @@ int main(int argc, char** argv)
                 lastClusterMapColor = colorBgr.clone();
                 hasLastClusterMapFrame = true;
                 timingStats.diagnosticsMs += takeSectionMs();
+            }
+            if (config.analysisExportEveryN > 0 &&
+                frameId % static_cast<uint64_t>(config.analysisExportEveryN) == 0)
+            {
+                if (config.clusterMap && hasLastClusterMapFrame)
+                {
+                    writeClusterMapExport(
+                        lastClusterMapFrame,
+                        lastClusterMapColor,
+                        config,
+                        static_cast<int64_t>(frameId));
+                }
+                if (!config.finalSegmentationExportPath.empty() && hasLastFinalSegmentationFrame)
+                {
+                    writeFinalSegmentationExport(
+                        lastFinalSegmentationFrame,
+                        config,
+                        static_cast<int64_t>(frameId));
+                }
             }
             ColorContourCompletionStats completionStats;
             cv::Mat segmentedView;

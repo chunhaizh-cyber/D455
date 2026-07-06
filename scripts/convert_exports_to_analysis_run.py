@@ -2,6 +2,7 @@
 import argparse
 import csv
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,12 +107,21 @@ def read_json(path):
         return json.load(f)
 
 
-def read_last_csv_row(path):
+def read_csv_rows(path):
     if not path or not path.exists():
-        return {}
+        return []
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
+    return rows
+
+
+def read_last_csv_row(path):
+    rows = read_csv_rows(path)
     return rows[-1] if rows else {}
+
+
+def row_frame_id(row):
+    return as_int(row.get("frame_index") or row.get("frame_id"), -1)
 
 
 def find_metadata(run_dir, stem):
@@ -121,6 +131,55 @@ def find_metadata(run_dir, stem):
         if path.exists():
             return path
     return None
+
+
+def frame_id_from_path(path):
+    match = re.search(r"_frame_(\d+)_metadata\.json$", path.name)
+    return int(match.group(1)) if match else None
+
+
+def frame_id_from_metadata(path, meta):
+    if "frame_id" in meta:
+        return as_int(meta.get("frame_id"))
+    return frame_id_from_path(path)
+
+
+def metadata_series_from_explicit(path):
+    if not path:
+        return []
+    path = Path(path)
+    stem = path.name
+    if stem.endswith("_metadata.json"):
+        stem = stem[:-len("_metadata.json")]
+    frame_matches = sorted(path.parent.glob(f"{stem}_frame_*_metadata.json"))
+    if frame_matches:
+        return frame_matches
+    return [path] if path.exists() else []
+
+
+def find_metadata_series(run_dir, explicit_path, stem):
+    explicit_series = metadata_series_from_explicit(explicit_path)
+    if explicit_series:
+        return explicit_series
+    frame_matches = sorted(run_dir.glob(f"{stem}_frame_*_metadata.json"))
+    if frame_matches:
+        return frame_matches
+    single = find_metadata(run_dir, stem)
+    return [single] if single else []
+
+
+def load_metadata_series(run_dir, explicit_path, stem):
+    series = []
+    for path in find_metadata_series(run_dir, explicit_path, stem):
+        meta = read_json(path)
+        if not meta:
+            continue
+        series.append({
+            "frame_id": frame_id_from_metadata(path, meta),
+            "path": path,
+            "meta": meta,
+        })
+    return sorted(series, key=lambda item: (-1 if item["frame_id"] is None else item["frame_id"], str(item["path"])))
 
 
 def find_optional_csv(run_dir, names):
@@ -220,7 +279,7 @@ def load_clusters(cluster_meta, final_meta, total_pixels):
     return clusters
 
 
-def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, args):
+def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, args, frame_id_override=None):
     width, height = image_size_from_metadata(cluster_meta, final_meta)
     total_pixels = max(0, width * height)
     mode_pixels = {field: 0 for field in PIXEL_FIELD_BY_MODE.values()}
@@ -261,7 +320,9 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         profile_row.get("total_frame_ms"),
         0.0,
     )
-    frame_id = as_int(profile_row.get("frame_index") or profile_row.get("frame_id"), 0)
+    frame_id = frame_id_override if frame_id_override is not None else row_frame_id(profile_row)
+    if frame_id < 0:
+        frame_id = 0
 
     row = {field: 0 for field in FRAME_FIELDS}
     row.update({
@@ -335,24 +396,27 @@ def cluster_metric_line(frame_id, total_pixels, cluster):
     }
 
 
-def write_frame_metrics(run_dir, row):
+def write_frame_metrics(run_dir, rows):
+    if isinstance(rows, dict):
+        rows = [rows]
     with (run_dir / "frame_metrics.csv").open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FRAME_FIELDS)
         writer.writeheader()
-        writer.writerow(row)
+        writer.writerows(rows)
 
 
-def write_cluster_metrics(run_dir, frame_id, total_pixels, clusters):
+def write_cluster_metrics(run_dir, frame_clusters):
     with (run_dir / "cluster_metrics.jsonl").open("w", encoding="utf-8") as f:
-        for cluster in clusters:
-            f.write(json.dumps(
-                cluster_metric_line(frame_id, total_pixels, cluster),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ) + "\n")
+        for frame_id, total_pixels, clusters in frame_clusters:
+            for cluster in clusters:
+                f.write(json.dumps(
+                    cluster_metric_line(frame_id, total_pixels, cluster),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ) + "\n")
 
 
-def write_events(run_dir, frame_row):
+def collect_events(frame_row):
     events = []
     frame_id = frame_row["frame_id"]
     if frame_row["unknown_spike"]:
@@ -391,6 +455,15 @@ def write_events(run_dir, frame_row):
             "value_before": "",
             "value_after": frame_row["total_frame_ms"],
         })
+    return events
+
+
+def write_events(run_dir, frame_rows):
+    if isinstance(frame_rows, dict):
+        frame_rows = [frame_rows]
+    events = []
+    for frame_row in frame_rows:
+        events.extend(collect_events(frame_row))
     with (run_dir / "events.csv").open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=EVENT_FIELDS)
         writer.writeheader()
@@ -444,16 +517,22 @@ def build_manifest(run_dir, args, candidate_config, inputs, existing=None):
         "evaluation_mode": "converted_export",
         "command_line": args.command_line or manifest.get("command_line", ""),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "converted_from": {name: str(path) for name, path in inputs.items() if path},
+        "converted_from": {name: stringify_input(path) for name, path in inputs.items() if path},
     })
     return manifest
+
+
+def stringify_input(value):
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return str(value)
 
 
 def build_config_snapshot(candidate_config, inputs, existing=None):
     config = {
         "source": "convert_exports_to_analysis_run.py",
         "candidate_config": candidate_config,
-        "inputs": {name: str(path) for name, path in inputs.items() if path},
+        "inputs": {name: stringify_input(path) for name, path in inputs.items() if path},
     }
     if existing:
         config["previous_config_snapshot"] = existing
@@ -505,35 +584,63 @@ def main():
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    cluster_path = Path(args.cluster_map) if args.cluster_map else find_metadata(run_dir, "cluster_map")
-    final_path = Path(args.final_segmentation) if args.final_segmentation else find_metadata(run_dir, "final_segmentation")
     profile_path = Path(args.profile_csv) if args.profile_csv else find_optional_csv(run_dir, ["profile.csv", "profile_*.csv"])
     acceptance_path = Path(args.acceptance_csv) if args.acceptance_csv else find_optional_csv(run_dir, ["acceptance.csv", "acceptance_*.csv"])
     timing_path = profile_path or acceptance_path
 
-    cluster_meta = read_json(cluster_path)
-    final_meta = read_json(final_path)
-    if not cluster_meta and not final_meta:
+    cluster_series = load_metadata_series(run_dir, args.cluster_map, "cluster_map")
+    final_series = load_metadata_series(run_dir, args.final_segmentation, "final_segmentation")
+    if not cluster_series and not final_series:
         raise SystemExit("No cluster_map or final_segmentation metadata found.")
 
-    width, height = image_size_from_metadata(cluster_meta, final_meta)
-    total_pixels = max(0, width * height)
-    clusters = load_clusters(cluster_meta, final_meta, total_pixels)
-    profile_row = read_last_csv_row(timing_path)
-    frame_row = summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, args)
+    profile_rows = read_csv_rows(timing_path)
+    profile_by_frame = {
+        row_frame_id(row): row for row in profile_rows if row_frame_id(row) >= 0
+    }
+    fallback_profile_row = profile_rows[-1] if profile_rows else {}
+    final_by_frame = {
+        item["frame_id"]: item for item in final_series if item["frame_id"] is not None
+    }
+    single_final = final_series[-1] if final_series else None
+
+    source_series = cluster_series or final_series
+    frame_rows = []
+    frame_clusters = []
+    for item in source_series:
+        frame_id = item["frame_id"]
+        cluster_item = item if cluster_series else None
+        final_item = final_by_frame.get(frame_id) if frame_id is not None else None
+        if final_item is None:
+            final_item = single_final
+        cluster_meta = cluster_item["meta"] if cluster_item else {}
+        final_meta = final_item["meta"] if final_item else {}
+        profile_row = profile_by_frame.get(frame_id, fallback_profile_row)
+        width, height = image_size_from_metadata(cluster_meta, final_meta)
+        total_pixels = max(0, width * height)
+        clusters = load_clusters(cluster_meta, final_meta, total_pixels)
+        frame_row = summarize_frame(
+            run_dir,
+            cluster_meta,
+            final_meta,
+            profile_row,
+            clusters,
+            args,
+            frame_id_override=frame_id)
+        frame_rows.append(frame_row)
+        frame_clusters.append((frame_row["frame_id"], frame_row["total_pixels"], clusters))
 
     candidate_config = load_candidate_config(args.candidate_config)
     inputs = {
-        "cluster_map_metadata": cluster_path,
-        "final_segmentation_metadata": final_path,
+        "cluster_map_metadata": [item["path"] for item in cluster_series],
+        "final_segmentation_metadata": [item["path"] for item in final_series],
         "timing_csv": timing_path,
         "candidate_config": Path(args.candidate_config) if args.candidate_config else None,
     }
     write_manifest_and_config(run_dir, args, candidate_config, inputs)
-    write_frame_metrics(run_dir, frame_row)
-    write_cluster_metrics(run_dir, frame_row["frame_id"], frame_row["total_pixels"], clusters)
-    write_events(run_dir, frame_row)
-    print(f"converted {run_dir}")
+    write_frame_metrics(run_dir, frame_rows)
+    write_cluster_metrics(run_dir, frame_clusters)
+    write_events(run_dir, frame_rows)
+    print(f"converted {run_dir}: {len(frame_rows)} frame rows")
 
 
 if __name__ == "__main__":
