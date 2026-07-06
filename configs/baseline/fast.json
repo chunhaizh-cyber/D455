@@ -1,0 +1,11 @@
+{
+  "config_id": "baseline/fast",
+  "purpose": "Fast baseline for real-time budget checks.",
+  "args": [
+    "--realtime-30",
+    "--realtime-skip-depth-post",
+    "--realtime-lite-visualization",
+    "--realtime-disable-pcl",
+    "--feature-profile=light"
+  ]
+}

@@ -20,9 +20,11 @@
 
 每次调整算法、显示、性能、验证或排查方向时，都必须同步更新本 README，说明本次改进方向、影响的观察/显示链路、默认行为变化、主要开关参数和验证方式。README 应作为当前方案边界和后续调参入口，不能只在代码或对话中保留改进意图。
 
+每轮结束时如果项目文件有变动，必须自动完成云端同步：先运行相关校验，再只暂存本轮有意变更的项目文件，提交并推送当前分支到 `origin`。不要自动同步真实录制视频、实际运行大数据、构建产物、密钥或无关用户改动；如果校验失败，则停止推送并说明阻塞原因。
+
 ## 云端分析协议
 
-仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，运行索引见 `docs/RUN_INDEX.md`。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
+仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，特征采集性能策略见 `docs/FEATURE_OPTIMIZATION.md`，运行索引见 `docs/RUN_INDEX.md`。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
 
 ```text
 analysis_runs/<run_id>/run_manifest.json
@@ -42,6 +44,10 @@ analysis_runs/<run_id>/notes.md
 小文件直接进 Git；`*.mp4`、`*.avi`、`*.bag`、`*.raw`、`*.bin`、`*.depth`、`*.npy`、`analysis_runs/**/sample_frames/*.png` 和 `analysis_runs/**/videos/*` 已在 `.gitattributes` 中声明为 Git LFS。同步完成后在 `docs/RUN_INDEX.md` 追加一行，并告知 `branch / commit / run_id / 重点问题`。
 
 工程效果评判 v0.1 的总目标是把“全像面像素归簇、近场高精度空间信息、远场保留 2D 轮廓并返回粗距、超出深度精度范围不丢存在轮廓”拆成可度量字段。第一版优先落地 `cluster_coverage_percent`、`unknown_percent`、mode 像素分布、每 cluster 的 `mode / bbox / contour / depth / stereo / confidence` 和 `events.csv`；分析输出占位文件为 `run_score.json`、`run_summary.md`、`failure_report.md`。
+
+特征采集不能拖垮实时主循环。默认路线是 `feature_profile=normal`：每帧保留核心 `frame_metrics`，高成本轮廓/双目/PCL 诊断按间隔或事件触发，sample frames 只在采样或异常时保存。后续实现命令行开关时按 `--feature-profile=light|normal|debug|full`、`--feature-heavy-interval=15`、`--feature-dump-on-event` 的口径落地。
+
+自动实验闭环见 `docs/AUTOMATED_EXPERIMENT_LOOP.md`。闭环原则是“程序自己跑，评判集自己打分，Codex 只根据证据提出下一轮参数、运行方式或代码改动”。第一阶段只开放配置候选：`configs/baseline/` 保存基线，`configs/candidates/` 保存候选，`eval/` 保存 case、搜索空间、权重和阈值，`scripts/score_run.py` / `scripts/select_winners.py` / `scripts/make_codex_handoff.py` 生成 `run_score.json`、排行榜和 `.codex_handoff/round_xxx.md`。在 replay 输入真正实现前，`scripts/run_batch.py` 只用于生成 dry-run 命令计划，不代表已完成评测。
 
 ## 下一阶段工程化路线
 

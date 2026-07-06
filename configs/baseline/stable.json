@@ -1,0 +1,11 @@
+{
+  "config_id": "baseline/stable",
+  "purpose": "Stable quality baseline for non-realtime segmentation checks.",
+  "args": [
+    "--no-realtime-30",
+    "--pcl-clustering",
+    "--quality-segmentation",
+    "--color-refine-depth-masks",
+    "--feature-profile=debug"
+  ]
+}

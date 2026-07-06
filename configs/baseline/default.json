@@ -1,0 +1,12 @@
+{
+  "config_id": "baseline/default",
+  "purpose": "Default quality baseline for D455 full-frame clustering experiments.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--feature-profile=normal"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["candidates"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "parent", "purpose", "args", "expected_effect", "risk"],
+        "properties": {
+          "candidate_id": { "type": "string" },
+          "parent": { "type": "string" },
+          "purpose": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "expected_effect": { "type": "array", "items": { "type": "string" } },
+          "risk": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

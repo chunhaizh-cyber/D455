@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["run_id", "pass", "total_score", "scores", "hard_fail_reasons", "top_failures", "recommended_next_actions"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "candidate_id": { "type": ["string", "null"] },
+    "case_id": { "type": ["string", "null"] },
+    "pass": { "type": "boolean" },
+    "total_score": { "type": "number" },
+    "scores": {
+      "type": "object",
+      "required": ["pixel_clustering", "contour_quality", "spatial_quality", "temporal_stability", "far_retention", "performance", "diagnostic_completeness"],
+      "properties": {
+        "pixel_clustering": { "type": "number" },
+        "contour_quality": { "type": "number" },
+        "spatial_quality": { "type": "number" },
+        "temporal_stability": { "type": "number" },
+        "far_retention": { "type": "number" },
+        "performance": { "type": "number" },
+        "diagnostic_completeness": { "type": "number" }
+      }
+    },
+    "metrics": { "type": "object" },
+    "hard_fail_reasons": { "type": "array", "items": { "type": "string" } },
+    "top_failures": { "type": "array", "items": { "type": "string" } },
+    "recommended_next_actions": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

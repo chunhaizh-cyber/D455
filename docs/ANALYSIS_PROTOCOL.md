@@ -143,9 +143,21 @@ Minimum keys:
   "color_refine_depth_masks": true,
   "stereo_contour_distance": true,
   "non_precise_color_ownership_min_percent": 10,
+  "feature_profile": "normal",
+  "feature_heavy_interval": 15,
+  "feature_cluster_metrics_interval": 1,
+  "feature_dump_on_event": true,
+  "feature_event_ring_frames": 10,
+  "pcl_mode": "sampled",
+  "pcl_run_interval": 2,
+  "pcl_run_on_change": true,
+  "far_stereo_interval": 3,
+  "far_stereo_sparse_only": true,
   "notes": "Manual slider changes or non-default runtime context."
 }
 ```
+
+Feature collection policy and performance tradeoffs are documented in `docs/FEATURE_OPTIMIZATION.md`.
 
 ## frame_metrics.csv
 

@@ -1,0 +1,102 @@
+# D455 Automatic Experiment Loop
+
+The automatic loop lets scripts run experiments, score results, build leaderboards, and hand evidence to Codex. Codex may propose the next candidates or a narrow code change, but the evaluator remains the judge.
+
+## Roles
+
+| Role | Responsibility |
+|---|---|
+| Experiment Runner | Runs a candidate config against one or more cases and writes `analysis_runs/<run_id>` |
+| Evaluator | Reads metrics and writes `run_score.json`, `run_summary.md`, and `failure_report.md` |
+| Candidate Generator | Produces the next `configs/candidates/*.json` from a search space or handoff |
+| Codex Improver | Reads scores/failures and proposes config or code changes with evidence |
+
+## Flow
+
+```text
+baseline config
+  -> generate candidate configs
+  -> run replay cases
+  -> score each run
+  -> write leaderboard.csv and pareto_front.csv
+  -> generate .codex_handoff/round_xxx.md
+  -> Codex proposes next candidates or a narrow patch
+  -> repeat
+```
+
+This is not AI guessing. It is evidence-driven iteration: fixed metrics, fixed gates, reproducible run directories, and explicit rollback points.
+
+## Permission Levels
+
+| Level | Codex Permissions | Output |
+|---|---|---|
+| 1. Read-only analyst | Read leaderboards, scores, events, notes, sample frames | `docs/codex_analysis/<date>_diagnosis.md` |
+| 2. Config generator | Edit `configs/candidates/*.json` and `eval/search_space.yaml` | Candidate JSON files |
+| 3. Code improvement PR | Edit code/docs/scripts after measured failure evidence | Narrow patch plus validation |
+
+Start with Level 1 and Level 2 until the replay/evaluation loop has run repeatedly. Open Level 3 only when parameter search plateaus or the metrics expose a missing capability.
+
+## First Local Loop
+
+```powershell
+python scripts/generate_candidates.py --search-space eval/search_space.yaml --parent configs/baseline/default.json --count 12 --out configs/candidates/round_001
+python scripts/run_batch.py --candidates configs/candidates/round_001 --cases eval/cases.yaml --out analysis_runs --dry-run
+python scripts/score_run.py --runs analysis_runs
+python scripts/select_winners.py --runs analysis_runs --out leaderboards
+python scripts/make_codex_handoff.py --leaderboard leaderboards/leaderboard.csv --runs analysis_runs --out .codex_handoff/round_001.md
+```
+
+`run_batch.py` is intentionally dry-run friendly until replay input is implemented. Do not treat a generated command plan as a completed experiment.
+
+## Gates
+
+Hard fail conditions come from `eval/score_weights.yaml` and `docs/EVALUATION_FEATURES.md`.
+
+Required regression checks:
+
+```text
+overall_score_delta >= +2.0
+hard_fail = false
+near_score_delta >= -1.0
+far_score_delta >= -1.0
+total_frame_ms_p95 <= baseline * 1.25
+```
+
+## Data Splits
+
+Use train/validation/test splits in `eval/cases.yaml`.
+
+Codex may use train and validation summaries for proposal generation. Do not repeatedly tune against test cases.
+
+## Current Minimal Landing
+
+The current repository provides:
+
+- `AGENTS.md` for durable project rules.
+- Baseline/candidate config templates under `configs/`.
+- Evaluation settings under `eval/`.
+- Script skeletons under `scripts/`.
+- Codex handoff and prompt templates.
+
+The next implementation step is real replay support in `D455.exe` or a converter that turns recorded inputs into deterministic case directories.
+
+## Codex Automation Surfaces
+
+The loop uses official Codex surfaces conservatively:
+
+- `AGENTS.md` stores durable repository rules. Codex reads it as project guidance at the start of a run.
+- `codex exec` can run non-interactively in scripts, with explicit sandbox and approval settings.
+- The Codex GitHub Action can run Codex in CI/CD, but should start as read-only review with limited triggers and sanitized prompt input.
+
+Security rules:
+
+- Use read-only or config-only rounds before code-edit rounds.
+- Do not expose API keys to repository-controlled setup steps.
+- Keep Codex review workflows limited to trusted manual triggers until prompt-injection risks are handled.
+- Treat generated candidates as proposals until `run_score.json`, leaderboards, and regression gates pass.
+
+Official references:
+
+- AGENTS.md: https://developers.openai.com/codex/guides/agents-md
+- Non-interactive mode: https://developers.openai.com/codex/noninteractive
+- Codex GitHub Action: https://developers.openai.com/codex/github-action

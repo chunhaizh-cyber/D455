@@ -1,0 +1,25 @@
+total_score:
+  pixel_clustering: 0.20
+  contour_quality: 0.20
+  spatial_quality: 0.20
+  temporal_stability: 0.15
+  far_retention: 0.10
+  performance: 0.10
+  diagnostics: 0.05
+
+hard_fail:
+  cluster_coverage_percent_p50_min: 95
+  unknown_percent_p50_max: 15
+  total_frame_ms_p95_max: 100
+  contour_lost_event_max: 30
+
+performance_budget:
+  realtime_30fps_ms: 33.3
+  soft_budget_ms: 66.6
+  hard_budget_ms: 100
+
+regression_gate:
+  overall_score_delta_min: 2.0
+  near_score_delta_min: -1.0
+  far_score_delta_min: -1.0
+  frame_ms_p95_baseline_multiplier_max: 1.25

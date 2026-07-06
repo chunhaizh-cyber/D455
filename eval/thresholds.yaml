@@ -1,0 +1,24 @@
+pixel_clustering:
+  cluster_coverage_percent_excellent: 99
+  cluster_coverage_percent_usable: 98
+  cluster_coverage_percent_high_risk: 95
+  unknown_percent_excellent: 2
+  unknown_percent_usable: 5
+  unknown_percent_watch: 10
+  unknown_percent_severe: 20
+
+near_3d:
+  depth_valid_percent_excellent: 90
+  depth_valid_percent_usable: 75
+  depth_valid_percent_watch: 50
+
+far_stereo:
+  matched_stereo_points_good: 30
+  matched_stereo_points_usable: 12
+  epipolar_y_error_px_excellent: 1
+  epipolar_y_error_px_usable: 3
+
+performance:
+  realtime_budget_ms: 33.3
+  soft_budget_ms: 66.6
+  hard_budget_ms: 100

@@ -1,0 +1,56 @@
+splits:
+  train:
+    - near_single_object
+    - far_cabinet
+    - wall_table_background
+  validation:
+    - near_adjacent_objects
+    - depth_hole_black_object
+  test:
+    - unseen_room_far_objects
+    - unseen_reflective_scene
+
+cases:
+  - case_id: near_single_object
+    replay: datasets/near_single_object
+    frames: 600
+    tags: [near, precise_3d, simple]
+    weight: 1.0
+    expected:
+      near_precise_required: true
+      far_required: false
+
+  - case_id: near_adjacent_objects
+    replay: datasets/near_adjacent_objects
+    frames: 600
+    tags: [near, merge_risk, pcl]
+    weight: 1.5
+    expected:
+      merge_events_max: 2
+      split_events_max: 5
+
+  - case_id: far_cabinet
+    replay: datasets/far_cabinet
+    frames: 600
+    tags: [far, contour_retention, stereo_rough]
+    weight: 1.5
+    expected:
+      far_retention_required: true
+      precise_depth_required: false
+
+  - case_id: depth_hole_black_object
+    replay: datasets/depth_hole_black_object
+    frames: 600
+    tags: [depth_hole, image_only_contour]
+    weight: 1.5
+    expected:
+      image_only_allowed: true
+      contour_lost_max: 3
+
+  - case_id: wall_table_background
+    replay: datasets/wall_table_background
+    frames: 600
+    tags: [background, plane, full_pixel]
+    weight: 1.0
+    expected:
+      unknown_percent_p50_max: 10
