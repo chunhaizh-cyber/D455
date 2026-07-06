@@ -1,0 +1,30 @@
+{
+  "candidate_id": "candidate_0026",
+  "parent": "candidate_0025",
+  "purpose": "Async refresh with a lower-priority background worker to reduce main-thread jitter during slow camera pan.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--async-color-contour-refresh",
+    "--async-color-contour-low-priority"
+  ],
+  "expected_effect": [
+    "Keep full candidate_0017 color-contour quality while avoiding synchronous refresh stalls.",
+    "Let the main processing loop win CPU scheduling over the background color contour worker.",
+    "Reduce over-100ms frame spikes compared with candidate_0025."
+  ],
+  "risk": [
+    "Lower-priority worker may increase cache age during continuous motion.",
+    "If stale contours become visible, ROI-local refresh is still required."
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "candidate_id": "candidate_0027",
+  "parent": "candidate_0024",
+  "purpose": "Hybrid slow-pan probe: combine candidate_0024 coarse color ownership with async refresh to reduce its remaining over-100ms refresh spike.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Preserve candidate_0024 low p95 profile while moving coarse color refresh off the main loop.",
+    "Reduce frame_ms_max and over-100ms frame count compared with candidate_0024.",
+    "Keep a coarse-refresh reference separate from full-quality async candidate_0025."
+  ],
+  "risk": [
+    "Still inherits candidate_0024 coarse segmentation quality limits.",
+    "If coarse worker still contends with diagnostics/calibration, ROI-local refresh remains necessary."
+  ]
+}

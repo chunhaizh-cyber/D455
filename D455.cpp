@@ -39,7 +39,14 @@
 #include <vector>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <conio.h>
+#include <windows.h>
 #endif
 
 namespace
@@ -212,6 +219,7 @@ struct SegmentationConfig
     bool stereoContourDistance = true;
     bool stereoContourReuseCachedOnRefresh = false;
     bool asyncColorContourRefresh = false;
+    bool asyncColorContourLowPriority = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
@@ -1085,6 +1093,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-async-color-contour-refresh")
         {
             config.asyncColorContourRefresh = false;
+            continue;
+        }
+        if (arg == "--async-color-contour-low-priority")
+        {
+            config.asyncColorContourLowPriority = true;
+            continue;
+        }
+        if (arg == "--no-async-color-contour-low-priority")
+        {
+            config.asyncColorContourLowPriority = false;
             continue;
         }
         if (arg == "--color-contour-refresh-on-motion")
@@ -6224,8 +6242,9 @@ struct AsyncColorContourRefreshResult
 class AsyncColorContourRefreshWorker
 {
 public:
-    AsyncColorContourRefreshWorker()
-        : thread_([this]() { run(); })
+    explicit AsyncColorContourRefreshWorker(bool lowPriority)
+        : lowPriority_(lowPriority)
+        , thread_([this]() { run(); })
     {
     }
 
@@ -6287,6 +6306,12 @@ public:
 private:
     void run()
     {
+#ifdef _WIN32
+        if (lowPriority_)
+        {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+#endif
         while (true)
         {
             AsyncColorContourRefreshTask task;
@@ -6322,6 +6347,7 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable condition_;
+    bool lowPriority_ = false;
     std::thread thread_;
     bool stop_ = false;
     bool busy_ = false;
@@ -11728,6 +11754,8 @@ void printUsage()
         << "  --no-stereo-contour-reuse-cached-on-refresh\n"
         << "  --async-color-contour-refresh\n"
         << "  --no-async-color-contour-refresh\n"
+        << "  --async-color-contour-low-priority\n"
+        << "  --no-async-color-contour-low-priority\n"
         << "  --final-segmentation-export=recordings\\final_segmentation_sample\n"
         << "  --color-segmentation-min-area-px=700\n"
         << "  --color-segmentation-max-roi-area-percent=55\n"
@@ -11970,7 +11998,8 @@ int runReplayDirectory(
     std::unique_ptr<AsyncColorContourRefreshWorker> asyncColorContourWorker;
     if (config.asyncColorContourRefresh)
     {
-        asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>();
+        asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>(
+            config.asyncColorContourLowPriority);
     }
 
     for (size_t replayIndex = 0; replayIndex < replayFrames.size(); ++replayIndex)
@@ -12855,7 +12884,8 @@ int main(int argc, char** argv)
         std::unique_ptr<AsyncColorContourRefreshWorker> asyncColorContourWorker;
         if (config.asyncColorContourRefresh)
         {
-            asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>();
+            asyncColorContourWorker = std::make_unique<AsyncColorContourRefreshWorker>(
+                config.asyncColorContourLowPriority);
         }
         uint64_t frameId = 0;
         while (true)

@@ -192,8 +192,10 @@ Result summary after switching performance p95 to the full `profile.csv` stream 
 | candidate_0017 | true | 82.2889 | 506.911 | 6 | 502.4370 | 0 | 10.0 | motion trigger works, sync refresh creates large spikes |
 | candidate_0020 | true | 86.2305 | 489.235 | 5 | 482.0038 | 0 | 10.0 | cached stereo transfer works, color extraction still spikes |
 | candidate_0025 | true | 93.4440 | 119.407 | 3 | 119.1408 | 5 | 10.0 | first async path; valid but not better than 0024 yet |
+| candidate_0026 | true | 93.4909 | 120.556 | 4 | 117.8588 | 5 | 10.0 | low-priority worker does not improve 0025 |
+| candidate_0027 | true | 70.4080 | 101.534 | 1 | 100.7420 | 5 | 10.0 | coarse 0024 plus async; lower max frame but slightly lower score |
 | candidate_0015 | false | 426.8040 | 470.235 | 14 | 464.6214 | 0 | 10.0 | motion refresh baseline remains unusable |
 
-Conclusion: motion refresh detection is real. The first async path removes the 400-500ms synchronous refresh stall, but background full-frame extraction still competes with the main loop and produces 3 over-budget frames on this replay. Do not promote `candidate_0025` as motion best yet. `candidate_0024` is the current slow-pan profile-p95 leader, but its 115ms max frame means the next implementation should target jitter directly with ROI-local refresh, worker throttling, or split-frame work rather than only improving p95.
+Conclusion: motion refresh detection is real. The first full-quality async path removes the 400-500ms synchronous refresh stall, but background full-frame extraction still competes with the main loop and produces 3-4 over-budget frames on this replay. `candidate_0026` shows Windows below-normal worker priority is not enough. `candidate_0027` is useful as a coarse async probe because it reduces the current leader's worst frame from 115.311ms to 101.534ms, but it does not beat `candidate_0024` on total score and remains too coarse for final quality. Do not promote 0025-0027 as motion best yet; the next implementation should target jitter directly with ROI-local refresh, explicit worker cooldown, or split-frame work rather than only improving p95.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.
