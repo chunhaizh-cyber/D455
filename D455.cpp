@@ -1044,6 +1044,12 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg.rfind("--capture-replay-dir=", 0) == 0 ||
+            arg.rfind("--capture-replay-frames=", 0) == 0 ||
+            arg.rfind("--capture-replay-warmup=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--record-video" ||
             arg == "--no-record-video" ||
             arg == "--record-command-control" ||
@@ -11320,6 +11326,9 @@ void printUsage()
         << "  --imu-gravity-max-accel-std-milli-mps2=250\n"
         << "  --imu-gravity-max-gyro-milliradps=50\n"
         << "  --imu-gravity-csv=recordings\\imu_gravity_check.csv\n"
+        << "  --capture-replay-dir=datasets\\near_single_object\n"
+        << "  --capture-replay-frames=120\n"
+        << "  --capture-replay-warmup=30\n"
         << "  --replay-dir=datasets\\near_single_object\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
@@ -11896,6 +11905,123 @@ int runReplayDirectory(
     std::cout << "Replay directory complete: processed " << replayFrames.size() << " frames\n";
     return 0;
 }
+
+cv::Mat depthUnitsToMillimeters(const cv::Mat& depthUnits16, float depthScale)
+{
+    cv::Mat depthMm32f;
+    depthUnits16.convertTo(depthMm32f, CV_32F, depthScale * 1000.0f);
+    cv::Mat depthMm16;
+    depthMm32f.convertTo(depthMm16, CV_16UC1);
+    return depthMm16;
+}
+
+int runCaptureReplayDirectory(
+    const std::string& captureDirText,
+    int argc,
+    char** argv,
+    const SegmentationConfig& config,
+    int maxFrames)
+{
+    const std::filesystem::path captureDir = resolveProjectOutputPath(std::filesystem::path(captureDirText), "");
+    const std::filesystem::path framesDir = captureDir / "frames";
+    std::filesystem::create_directories(framesDir);
+
+    const int captureFrames = std::max(
+        1,
+        parseIntOptionOrDefault(
+            argc,
+            argv,
+            "--capture-replay-frames=",
+            maxFrames > 0 ? maxFrames : 120));
+    const int warmupFrames = std::max(
+        0,
+        parseIntOptionOrDefault(argc, argv, "--capture-replay-warmup=", 30));
+
+    rs2::pipeline pipeline;
+    rs2::config rsConfig;
+    rsConfig.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
+    rsConfig.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
+    rsConfig.enable_stream(RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 30);
+    const bool captureRightIr = config.qualitySegmentation && config.stereoContourDistance;
+    if (captureRightIr)
+    {
+        rsConfig.enable_stream(RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 30);
+    }
+
+    const rs2::pipeline_profile profile = pipeline.start(rsConfig);
+    const float depthScale = findDepthScale(profile);
+    rs2::align alignToColor(RS2_STREAM_COLOR);
+    std::cout << "Capture replay directory: " << captureDir.string()
+        << " frames=" << captureFrames
+        << " warmup=" << warmupFrames
+        << " depth_scale=" << depthScale << '\n';
+
+    for (int i = 0; i < warmupFrames; ++i)
+    {
+        (void)waitForLatestRgbdFrames(pipeline);
+    }
+
+    int captured = 0;
+    while (captured < captureFrames)
+    {
+        rs2::frameset rawFrames = waitForLatestRgbdFrames(pipeline);
+        rs2::frameset alignedFrames = alignToColor.process(rawFrames);
+        const rs2::video_frame colorFrame = alignedFrames.get_color_frame();
+        const rs2::depth_frame depthFrame = alignedFrames.get_depth_frame();
+        const rs2::video_frame leftIrFrame = rawFrames.get_infrared_frame(1);
+        const rs2::video_frame rightIrFrame = rawFrames.get_infrared_frame(2);
+        if (!colorFrame || !depthFrame)
+        {
+            continue;
+        }
+
+        cv::Mat colorBgr = colorFrameToBgr(colorFrame);
+        cv::Mat depthMm16 = depthUnitsToMillimeters(depthFrameToMat(depthFrame), depthScale);
+        cv::Mat leftIr = leftIrFrame ? videoFrameToGray8(leftIrFrame) : cv::Mat();
+        cv::Mat rightIr = rightIrFrame ? videoFrameToGray8(rightIrFrame) : cv::Mat();
+        if (!leftIr.empty() && leftIr.size() != colorBgr.size())
+        {
+            cv::resize(leftIr, leftIr, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+        }
+        if (!rightIr.empty() && rightIr.size() != colorBgr.size())
+        {
+            cv::resize(rightIr, rightIr, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+        }
+
+        std::ostringstream prefix;
+        prefix << std::setw(6) << std::setfill('0') << captured;
+        const std::string stem = prefix.str();
+        cv::imwrite((framesDir / (stem + "_color.png")).string(), colorBgr);
+        cv::imwrite((framesDir / (stem + "_depth16.png")).string(), depthMm16);
+        if (!leftIr.empty())
+        {
+            cv::imwrite((framesDir / (stem + "_ir_left.png")).string(), leftIr);
+        }
+        if (!rightIr.empty())
+        {
+            cv::imwrite((framesDir / (stem + "_ir_right.png")).string(), rightIr);
+        }
+        ++captured;
+    }
+
+    std::ofstream manifest(captureDir / "case_manifest.json", std::ios::out | std::ios::trunc);
+    manifest << "{\n";
+    manifest << "  \"case_id\": \"" << captureDir.filename().string() << "\",\n";
+    manifest << "  \"frame_count\": " << captured << ",\n";
+    manifest << "  \"format\": \"d455_directory_replay_v1\",\n";
+    manifest << "  \"depth_unit\": \"millimeter_uint16\",\n";
+    manifest << "  \"color_resolution\": [640, 480],\n";
+    manifest << "  \"depth_resolution\": [640, 480],\n";
+    manifest << "  \"ir_left_present\": true,\n";
+    manifest << "  \"ir_right_present\": " << (captureRightIr ? "true" : "false") << ",\n";
+    manifest << "  \"notes\": \"Fill expected scene notes before using this case for regression.\"\n";
+    manifest << "}\n";
+    manifest.close();
+
+    pipeline.stop();
+    std::cout << "Capture replay complete: wrote " << captured << " frames to " << captureDir.string() << '\n';
+    return 0;
+}
 }
 
 int main(int argc, char** argv)
@@ -11923,9 +12049,11 @@ int main(int argc, char** argv)
         return 0;
     }
     std::string replayDirPath;
+    std::string captureReplayDirPath;
     for (int i = 1; i < argc; ++i)
     {
         parseStringOption(argv[i], "--replay-dir=", replayDirPath);
+        parseStringOption(argv[i], "--capture-replay-dir=", captureReplayDirPath);
     }
     if (!replayDirPath.empty())
     {
@@ -11957,6 +12085,10 @@ int main(int argc, char** argv)
         {
             std::cerr << "No RealSense device found. Connect D455 and run again.\n";
             return 1;
+        }
+        if (!captureReplayDirPath.empty())
+        {
+            return runCaptureReplayDirectory(captureReplayDirPath, argc, argv, config, maxFrames);
         }
 
         if (imuGravityConfig.enabled)

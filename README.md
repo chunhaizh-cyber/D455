@@ -59,6 +59,14 @@ analysis_runs/<run_id>/notes.md
 python scripts\run_batch.py --candidates configs\candidates\round_001 --cases eval\cases.yaml --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
 ```
 
+固定 case 的采集入口是 `--capture-replay-dir=datasets\<case_id>`，它会从真实 D455 保存 color、对齐后的毫米 depth16、左/右 IR 和 `case_manifest.json`。第一批不要采太长，建议每个 case 60 到 120 帧，先建立 `near_single_object`、`far_cabinet`、`depth_hole_black_object` 三个可复跑输入，再跑小型 Round 001：
+
+```powershell
+.\x64\Release\D455.exe --capture-replay-dir=datasets\near_single_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\x64\Release\D455.exe --capture-replay-dir=datasets\far_cabinet --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\x64\Release\D455.exe --capture-replay-dir=datasets\depth_hole_black_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+```
+
 ## 下一阶段工程化路线
 
 当前项目已经进入工程化、可验证、可复现实验阶段。后续优先级不再是继续把所有能力塞进 `D455.cpp`，而是先建立可拆分、可回放、可量化的实验骨架：

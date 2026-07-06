@@ -84,6 +84,16 @@ datasets/<case_id>/
 python scripts\run_batch.py --candidates configs\candidates\round_001 --cases eval\cases.yaml --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
 ```
 
+Capture the first fixed cases directly from D455 before running measured optimization:
+
+```powershell
+.\x64\Release\D455.exe --capture-replay-dir=datasets\near_single_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\x64\Release\D455.exe --capture-replay-dir=datasets\far_cabinet --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+.\x64\Release\D455.exe --capture-replay-dir=datasets\depth_hole_black_object --capture-replay-frames=120 --capture-replay-warmup=30 --no-display
+```
+
+After capture, edit each `case_manifest.json` with scene notes and expected behavior. Do not treat uncategorized live captures as benchmark truth.
+
 When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
 
 ## Gates
