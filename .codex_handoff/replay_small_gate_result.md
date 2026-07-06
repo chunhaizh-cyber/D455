@@ -194,10 +194,14 @@ Result summary after switching performance p95 to the full `profile.csv` stream 
 | candidate_0025 | true | 93.4440 | 119.407 | 3 | 119.1408 | 5 | 10.0 | first async path; valid but not better than 0024 yet |
 | candidate_0026 | true | 93.4909 | 120.556 | 4 | 117.8588 | 5 | 10.0 | low-priority worker does not improve 0025 |
 | candidate_0027 | true | 70.4080 | 101.534 | 1 | 100.7420 | 5 | 10.0 | coarse 0024 plus async; lower max frame but slightly lower score |
-| candidate_0028 | true | 69.0991 | 98.105 | 0 | 96.8206 | 5 | 10.0 | coarse async plus cooldown; current slow-pan stage winner |
+| candidate_0028 | true | 69.0991 | 98.105 | 0 | 96.8206 | 5 | 10.0 | coarse async plus cooldown; previous slow-pan stage winner |
 | candidate_0029 | true | 90.7647 | 130.683 | 6 | 128.8250 | 5 | 10.0 | full-quality async plus cooldown still spikes |
+| candidate_0030 | true | 63.2137 | 91.658 | 0 | 89.5322 | 5 | 10.0 | coarse async plus cooldown plus ROI diagnostics; current slow-pan stage winner |
+| candidate_0031 | true | 90.9270 | 121.249 | 1 | 116.9246 | 5 | 10.0 | full-quality async plus ROI diagnostics still spikes |
 | candidate_0015 | false | 426.8040 | 470.235 | 14 | 464.6214 | 0 | 10.0 | motion refresh baseline remains unusable |
 
-Conclusion: motion refresh detection is real. The first full-quality async path removes the 400-500ms synchronous refresh stall, but background full-frame extraction still competes with the main loop and produces 3-6 over-budget frames on this replay even with cooldown. `candidate_0028` is the first slow-pan candidate with far_score 10.0 and zero over-100ms frames: cooldown skipped 7 refresh requests, async submitted/applied 5 tasks, and positive worker p95 was 23.2298ms. Promote 0028 only to the `best_replay_motion_slow_pan` bucket; it remains a coarse segmentation strategy and must not become overall best until visual review plus `hand_occlusion_reappear` pass.
+Conclusion: motion refresh detection is real. The first full-quality async path removes the 400-500ms synchronous refresh stall, but background full-frame extraction still competes with the main loop and produces over-budget frames on this replay even with cooldown. `candidate_0030` is now the slow-pan bucket leader with far_score 10.0 and zero over-100ms frames: cooldown skipped 7 refresh requests, async submitted/applied 5 tasks, and positive worker p95 was 21.9194ms. Promote 0030 only to the `best_replay_motion_slow_pan` bucket; it remains a coarse segmentation strategy and must not become overall best until visual review plus `hand_occlusion_reappear` pass.
+
+ROI-local refresh is wired but not proven by `slow_pan_far_object`: 0030 recorded `color_contour_refresh_roi_count=0`, `color_contour_refresh_roi_rejected_large_count=4`, and positive ROI candidate area 307200px. This means slow camera pan produced full-frame motion diff, so the 35% ROI cap correctly rejected local refresh and fell back to full-frame async refresh. The next ROI validation needs a localized motion/occlusion case rather than another pure pan.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

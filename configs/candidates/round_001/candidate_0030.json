@@ -1,0 +1,39 @@
+{
+  "candidate_id": "candidate_0030",
+  "parent": "candidate_0028",
+  "purpose": "Coarse async cooldown candidate with motion ROI refresh, intended to preserve candidate_0028 stability while reducing refreshed area.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-padding-px=48",
+    "--color-contour-refresh-max-roi-area-percent=35",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Limit motion-triggered refresh work to changed image regions.",
+    "Keep candidate_0028 zero-over-100ms behavior while reducing worker cost and cache disruption.",
+    "Expose ROI count and ROI pixels in leaderboard for validating local refresh behavior."
+  ],
+  "risk": [
+    "Broad camera pan can produce a full-frame motion ROI; in that case the area cap rejects ROI refresh and falls back to full-frame async refresh.",
+    "ROI may miss localized changes and leave stale cached contours outside the ROI if the diff mask is too narrow.",
+    "Still inherits coarse color segmentation quality limits."
+  ]
+}

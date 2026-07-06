@@ -233,6 +233,18 @@ def score_run(run_dir, config):
     color_async_applied_count = sum(int(row_float(r, "color_contour_async_applied") > 0) for r in timing_rows)
     color_async_dropped_count = sum(int(row_float(r, "color_contour_async_dropped") > 0) for r in timing_rows)
     color_refresh_cooldown_skipped_count = sum(int(row_float(r, "color_contour_refresh_cooldown_skipped") > 0) for r in timing_rows)
+    color_refresh_roi_count = sum(int(row_float(r, "color_contour_refresh_roi") > 0) for r in timing_rows)
+    color_refresh_roi_pixels_p95 = positive_percentile([r.get("color_contour_refresh_roi_pixels") for r in timing_rows], 95)
+    color_refresh_roi_candidate_pixels_p95 = positive_percentile(
+        [r.get("color_contour_refresh_roi_candidate_pixels") for r in timing_rows],
+        95,
+    )
+    color_refresh_roi_rejected_empty_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_rejected_empty") > 0) for r in timing_rows
+    )
+    color_refresh_roi_rejected_large_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_rejected_large") > 0) for r in timing_rows
+    )
     color_cache_age_p50 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 50)
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
@@ -364,6 +376,11 @@ def score_run(run_dir, config):
             "color_contour_async_applied_count": color_async_applied_count,
             "color_contour_async_dropped_count": color_async_dropped_count,
             "color_contour_refresh_cooldown_skipped_count": color_refresh_cooldown_skipped_count,
+            "color_contour_refresh_roi_count": color_refresh_roi_count,
+            "color_contour_refresh_roi_pixels_p95": color_refresh_roi_pixels_p95,
+            "color_contour_refresh_roi_candidate_pixels_p95": color_refresh_roi_candidate_pixels_p95,
+            "color_contour_refresh_roi_rejected_empty_count": color_refresh_roi_rejected_empty_count,
+            "color_contour_refresh_roi_rejected_large_count": color_refresh_roi_rejected_large_count,
             "color_contour_cache_age_frames_p50": color_cache_age_p50,
             "color_contour_cache_age_frames_p95": color_cache_age_p95,
             "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,
