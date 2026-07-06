@@ -57,7 +57,9 @@ def main():
             "candidate_id", "case_id", "total_score", "pass",
             "cluster_coverage_p50", "unknown_p50", "near_score", "far_score",
             "temporal_score", "frame_ms_p95", "merge_events", "split_events",
-            "contour_lost_events", "run_id"
+            "contour_lost_events", "color_refresh_count", "color_refresh_motion_count",
+            "color_refresh_unknown_spike_count", "color_refresh_far_loss_count",
+            "color_cache_reuse_count", "color_stereo_reuse_p50", "run_id"
         ])
         for s in scores:
             writer.writerow([
@@ -74,6 +76,12 @@ def main():
                 metric(s, "merge_event_count"),
                 metric(s, "split_event_count"),
                 metric(s, "contour_lost_event_count"),
+                metric(s, "color_contour_refresh_count"),
+                metric(s, "color_contour_refresh_motion_count"),
+                metric(s, "color_contour_refresh_unknown_spike_count"),
+                metric(s, "color_contour_refresh_far_loss_count"),
+                metric(s, "color_contour_cache_reuse_count"),
+                metric(s, "color_contour_stereo_reuse_count_p50"),
                 s.get("run_id", ""),
             ])
 

@@ -30,6 +30,12 @@ function Get-CasePrompt([string]$CaseId) {
         "depth_hole_black_object" {
             return "Place a dark or depth-hole-prone object in view, with visible color contour."
         }
+        "slow_pan_far_object" {
+            return "Aim at a far object and move the camera slowly sideways during capture to expose cached-contour lag."
+        }
+        "hand_occlusion_reappear" {
+            return "Aim at a far object, briefly occlude it with a hand, then reveal it again during capture."
+        }
         default {
             return "Prepare the scene for case '$CaseId'."
         }

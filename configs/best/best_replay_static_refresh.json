@@ -1,0 +1,39 @@
+{
+  "config_id": "best/replay_static_refresh",
+  "source_candidate_id": "candidate_0017",
+  "parent": "candidate_0015",
+  "purpose": "Stage best for deterministic/static replay gates that need retained cached stereo rough distance plus observable motion/unknown/far-loss refresh hooks, while keeping static cache-reuse overhead below the hard performance gate.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12"
+  ],
+  "expected_effect": [
+    "Preserve candidate_0014-style cached ApproxStereoContour evidence in static replay.",
+    "Keep refresh observability active through profile.csv, frame_metrics.csv, events.csv, and run_score.json.",
+    "Improve static replay p95 margin compared with candidate_0014 and candidate_0016."
+  ],
+  "applicability": [
+    "deterministic/static refresh replay gate",
+    "low-motion scenes where cached color contours remain aligned",
+    "static replay comparisons that need refresh/cache metrics without claiming motion validation"
+  ],
+  "validation_evidence": [
+    "replay_static_refresh_variants_001: 3/3 pass for candidate_0017 on near_single_object, far_cabinet, and depth_hole_black_object.",
+    "Average p95 was about 80.396 ms across the static smoke cases.",
+    "Scored frames had color_contour_refresh_count=0 and color_contour_cache_reuse_count=3, so this validates static cache reuse overhead only."
+  ],
+  "risk": [
+    "Not a live-motion final strategy.",
+    "Motion, occlusion, and reappearance behavior is unproven until slow_pan_far_object and hand_occlusion_reappear replay datasets exist.",
+    "Higher motion and unknown thresholds can miss subtle cache drift."
+  ]
+}

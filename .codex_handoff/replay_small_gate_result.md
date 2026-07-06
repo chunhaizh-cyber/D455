@@ -167,4 +167,6 @@ Static smoke with `analysis_runs/replay_static_refresh_variants_001`:
 
 Minimum leaderboard artifacts are committed under `leaderboards/replay_static_refresh_variants_001/`; full analysis outputs remain local. `candidate_0017` is the current static refresh-variant winner, but scored frames only reused cached color contours. This validates lower static overhead, not motion refresh correctness.
 
+`configs/best/best_replay_static_refresh.json` now promotes `candidate_0017` only for the static refresh bucket. It does not replace `best_replay_static_far_distance.json`, which remains the earlier `candidate_0014` low-frequency far-distance baseline. The generated leaderboard schema now includes refresh/cache/reuse columns so the next motion gate can be judged directly from `leaderboard.csv`.
+
 Current blocker remains unchanged: `datasets/slow_pan_far_object` and `datasets/hand_occlusion_reappear` are not present locally yet, so no real motion gate score has been produced.

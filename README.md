@@ -69,6 +69,8 @@ analysis_runs/<run_id>/notes.md
 
 `replay_static_refresh_variants_001` 已跑完 0016/0017 在 `near_single_object`、`far_cabinet`、`depth_hole_black_object` 上的静态 smoke，6/6 pass，且 `candidate_0017` 分数和 p95 最好；但该结果中 scored frames 的 `color_contour_refresh_count=0`、`color_contour_cache_reuse_count=3`，只说明静态缓存复用成本可控，不说明 motion/unknown/far-loss 触发在运动场景有效。最小摘要在 `leaderboards/replay_static_refresh_variants_001/`。
 
+`configs/best/best_replay_static_refresh.json` 将 `candidate_0017` 固化为当前静态 refresh bucket 赢家；它不替换 `best_replay_static_far_distance.json`，后者仍保留为来自 `candidate_0014` 的低频粗距基础桶。`best_replay_static_refresh` 的适用范围限定为 deterministic/static replay 和低运动场景，不能代表 motion best。`scripts/select_winners.py` 的 leaderboard 现在直接输出 `color_refresh_count`、`color_refresh_motion_count`、`color_refresh_unknown_spike_count`、`color_refresh_far_loss_count`、`color_cache_reuse_count` 和 `color_stereo_reuse_p50`，后续 `replay_motion_gate_001` 不需要再逐个翻 `run_score.json` 才能判断刷新触发是否真的发生。
+
 评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
 
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：
