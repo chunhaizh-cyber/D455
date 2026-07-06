@@ -76,6 +76,8 @@ def main():
     parser.add_argument("--candidate-id", action="append", default=[])
     parser.add_argument("--case-id", action="append", default=[])
     parser.add_argument("--skip-missing-replay", action="store_true")
+    parser.add_argument("--validate-replay", action="store_true")
+    parser.add_argument("--require-replay-ir", action="store_true")
     parser.add_argument("--weights", default="eval\\score_weights.yaml")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -131,6 +133,7 @@ def main():
                 "candidate_id": candidate_id,
                 "case_id": case["case_id"],
                 "replay": case["replay"],
+                "max_frames": max_frames,
                 "analysis_dir": analysis_dir,
                 "command": command,
                 "convert_command": convert_command,
@@ -150,6 +153,7 @@ def main():
                 "candidate_id",
                 "case_id",
                 "replay",
+                "max_frames",
                 "analysis_dir",
                 "command",
                 "convert_command",
@@ -172,6 +176,19 @@ def main():
                 print(f"skip missing replay for {row['run_id']}: {row['replay']}")
                 continue
             raise SystemExit(f"Replay path does not exist for {row['case_id']}: {row['replay']}")
+        if args.validate_replay:
+            validation_command = [
+                sys.executable,
+                "scripts\\validate_replay_dataset.py",
+                f"--case-dir={row['replay']}",
+                f"--min-frames={row['max_frames']}",
+            ]
+            if args.require_replay_ir:
+                validation_command.extend(["--require-ir-left", "--require-ir-right"])
+            print(f"validate replay: {row['case_id']}")
+            result = subprocess.run(validation_command)
+            if result.returncode != 0:
+                raise SystemExit(f"replay validation failed for {row['case_id']} with exit code {result.returncode}")
         Path(row["analysis_dir"]).mkdir(parents=True, exist_ok=True)
         for label, command in [
             ("run", row["command"]),

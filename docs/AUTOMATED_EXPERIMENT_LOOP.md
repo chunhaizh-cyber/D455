@@ -97,11 +97,12 @@ After capture, edit each `case_manifest.json` with scene notes and expected beha
 Run the first measured replay round as a small gate, not as the full 60-run grid:
 
 ```powershell
-python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
-python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0001 --candidate-id candidate_0002 --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
+python scripts\validate_replay_dataset.py --case-dir datasets\near_single_object --case-dir datasets\far_cabinet --case-dir datasets\depth_hole_black_object --min-frames=120 --require-ir-left --require-ir-right
+python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
+python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0001 --candidate-id candidate_0002 --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --validate-replay --require-replay-ir --execute
 ```
 
-`run_batch.py` supports `--case-id` and `--candidate-id` filters for bounded smoke rounds, `--max-frames-override` to keep the first fixed cases at 60 to 120 frames, and `--skip-missing-replay` only for command-chain validation before all datasets are captured. A skipped replay run is not scoring evidence.
+`validate_replay_dataset.py` checks color/depth frame pairs, PNG bit depth, dimensions, manifest format, and optional left/right IR. `run_batch.py` supports `--case-id` and `--candidate-id` filters for bounded smoke rounds, `--max-frames-override` to keep the first fixed cases at 60 to 120 frames, `--validate-replay` to gate each replay input before execution, and `--skip-missing-replay` only for command-chain validation before all datasets are captured. A skipped replay run is not scoring evidence.
 
 When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
 
