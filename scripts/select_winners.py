@@ -20,6 +20,13 @@ def metric(score, name, default=""):
     return score.get("metrics", {}).get(name, default)
 
 
+def metric_float(score, name, default=0.0):
+    try:
+        return float(metric(score, name, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 def is_passed(score):
     return bool(score.get("pass"))
 
@@ -118,16 +125,27 @@ def main():
         ("best_low_unknown", lambda s: -(metric(s, "unknown_percent_p50", 999) or 999)),
         ("best_low_merge", lambda s: -(metric(s, "merge_event_count", 999) or 999)),
         ("best_low_split", lambda s: -(metric(s, "split_event_count", 999) or 999)),
+        ("best_roi_refresh", lambda s: (
+            -metric_float(s, "color_contour_refresh_roi_rejected_large_count", 999),
+            metric_float(s, "color_contour_refresh_roi_count", 0),
+            s.get("total_score", 0),
+        )),
     ]
     pareto = out / "pareto_front.csv"
     with pareto.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["slot", "candidate_id", "total_score", "near_score", "far_score", "performance_score", "unknown_p50", "frame_ms_p95", "run_id"])
         for slot, key in slots:
-            if not passed_scores:
+            candidates = passed_scores
+            if slot == "best_roi_refresh":
+                candidates = [
+                    s for s in passed_scores
+                    if metric_float(s, "color_contour_refresh_roi_count", 0) > 0
+                ]
+            if not candidates:
                 write_no_pass_candidate(writer, slot)
                 continue
-            best = max(passed_scores, key=key)
+            best = max(candidates, key=key)
             writer.writerow([
                 slot,
                 best.get("candidate_id") or "",

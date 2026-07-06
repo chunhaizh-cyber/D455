@@ -5,3 +5,4 @@ best_realtime,candidate_0013,92.854,20.0,7.0,6.854,0.0,54.2832,slow_pan_far_obje
 best_low_unknown,candidate_0030,94.515,20.0,10.0,5.515,0.0,63.213650000000015,slow_pan_far_object_candidate_0030
 best_low_merge,candidate_0030,94.515,20.0,10.0,5.515,0.0,63.213650000000015,slow_pan_far_object_candidate_0030
 best_low_split,candidate_0030,94.515,20.0,10.0,5.515,0.0,63.213650000000015,slow_pan_far_object_candidate_0030
+best_roi_refresh,no_pass_candidate,,,,,,,

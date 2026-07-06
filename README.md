@@ -85,6 +85,8 @@ ROI/数量筛选只能小幅降低刷新帧耗时，不能根治同步 `matchTem
 
 真实慢速平移数据 `datasets/slow_pan_far_object` 已完成本地采集，包含 180 帧 color/depth16/left IR/right IR，并已按 case contract finalized/reviewed；检查视频为本地 `recordings/slow_pan_far_object_color_20260706_1549.mp4`，数据集和视频不进入 Git。`replay_motion_slow_pan_001` 跑了 0013、0014、0015、0017、0018-0031。评分器现在用完整 `profile.csv` 计算性能 p95，用导出帧 `frame_metrics.csv` 计算分割质量，并在 leaderboard 保留导出采样 p95、最大帧耗时、超 100ms 帧数作为顿挫风险指标。`candidate_0030` 是当前 slow-pan 阶段赢家：p95 63.2137ms、max 91.658ms、超 100ms 帧数为 0、far_score 10.0；它基于 0028 的粗粒度 async+cooldown 路线，增加 motion ROI 刷新开关和 ROI 诊断字段。该结果已进入 `configs/best/best_replay_motion_slow_pan.json`，但它仍是 coarse slow-pan bucket best，不是 overall best；本次 slow-pan 中 ROI 候选面积为 307200px 且 4 次因过大被拒绝，所以这不证明 ROI 局部刷新已产生收益。
 
+`local_motion_roi_probe` 是独立于 slow-pan 的 ROI 机制验证 case：`scripts/generate_local_motion_roi_probe.py` 会从已有静态 D455 replay 的一帧自动生成局部移动目标，输出 color/depth16/left IR/right IR 和 reviewed manifest；它是 synthetic probe，只验证 ROI 刷新管线，不代表真实场景分割质量。`candidate_0032` 基于 0030，但把 `--color-contour-refresh-motion-delta-percent` 降到 3%，用于触发小目标局部运动。`replay_local_motion_roi_probe_001` 结果显示：0030 总分仍最高且不触发 ROI；0032 触发 `color_contour_refresh_roi_count=1`，ROI 面积 76800px，没有 `rejected_large`，worker positive p95 14.5749ms，但 far_score 降为 0、`far_stereo_failed_event_count=6`。结论是 ROI 路径已被证明能进入局部刷新，但 ROI 合并后的 stereo/region 继承质量还没过关，0032 只能作为 ROI probe，不能作为 best。
+
 第一版多线程实现为 `--async-color-contour-refresh`：启动帧仍同步建立首个 cache；之后 motion/interval/unknown/far-loss 触发只在后台 worker 空闲时提交彩图轮廓刷新任务，主线程继续使用旧 cache；worker 完成后按 bbox IoU/中心距离转移 cached stereo 粗距并切换新 cache。`--async-color-contour-low-priority` 会在 Windows 下把 worker 线程降为 `THREAD_PRIORITY_BELOW_NORMAL`；0026 实测没有改善 slow-pan p95/尖峰，只保留为可控开关。`--color-contour-refresh-min-gap-frames=N` 会跳过过近的非 startup 刷新请求并复用 cache，profile/leaderboard 记录 `color_contour_refresh_cooldown_skipped_count`。`--color-contour-refresh-motion-roi` 会尝试只刷新 motion diff 对应区域，并用 `--color-contour-refresh-roi-padding-px` 与 `--color-contour-refresh-max-roi-area-percent` 控制 ROI；如果相机平移导致候选 ROI 接近整帧，会退回全图刷新并记录 `color_contour_refresh_roi_rejected_large_count`。score 同时保留全帧 `color_contour_async_worker_ms_p95` 和只统计非零 worker 帧的 `color_contour_async_worker_ms_positive_p95`；0030 的 positive worker p95 为 21.9194ms。下一步仍应优先采集/跑 `hand_occlusion_reappear`，再针对局部遮挡重现验证 ROI 局部刷新或分片刷新。
 
 评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
@@ -99,6 +101,13 @@ python scripts\run_batch.py --candidates configs\candidates\round_001 --cases ev
 
 ```powershell
 .\tools\Capture-ReplayCases.ps1 -Frames 120 -Warmup 30
+```
+
+生成局部 ROI 机制 probe 时不需要人工参与：
+
+```powershell
+python scripts\generate_local_motion_roi_probe.py --source-case datasets\near_single_object --out-case datasets\local_motion_roi_probe --frames 120 --force
+python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0030 --candidate-id candidate_0032 --cases eval\cases.yaml --case-id local_motion_roi_probe --max-frames-override=120 --analysis-export-every-n=15 --ignore-first-n-frames=15 --validate-replay --require-replay-ir --require-reviewed-manifest --execute
 ```
 
 采集脚本会按 case 暂停提示摆放场景，调用 `D455.exe --capture-replay-dir=... --quality-segmentation --stereo-contour-distance` 保存左右 IR，在每个 case 完成后运行 `scripts\validate_replay_dataset.py`，并默认调用 `scripts\finalize_replay_manifests.py` 从 `eval/cases.yaml` 自动写入 `reviewed: true`、`review_method: auto_case_contract_v1`、`expected` 和 tags。`datasets/` 是本地真实采集输入，默认不进入 Git；需要同步数据集时应单独确认数据大小、隐私和 LFS 策略。

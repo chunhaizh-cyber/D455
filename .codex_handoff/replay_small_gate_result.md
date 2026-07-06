@@ -204,4 +204,17 @@ Conclusion: motion refresh detection is real. The first full-quality async path 
 
 ROI-local refresh is wired but not proven by `slow_pan_far_object`: 0030 recorded `color_contour_refresh_roi_count=0`, `color_contour_refresh_roi_rejected_large_count=4`, and positive ROI candidate area 307200px. This means slow camera pan produced full-frame motion diff, so the 35% ROI cap correctly rejected local refresh and fell back to full-frame async refresh. The next ROI validation needs a localized motion/occlusion case rather than another pure pan.
 
+## Local Motion ROI Probe 001
+
+`scripts/generate_local_motion_roi_probe.py` now creates `datasets/local_motion_roi_probe` from one reviewed static D455 replay frame by injecting a bounded local moving target into color, depth16, left IR, and right IR. This is a deterministic synthetic probe for ROI refresh plumbing only; it is not a real-scene quality benchmark.
+
+Run: `analysis_runs/replay_local_motion_roi_probe_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | ROI count | ROI pixels p95 | rejected large | far failed | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0030 | true | 94.823 | 61.1594 | 73.390 | 0 | - | 0 | 0 | slow-pan best remains best overall, but does not trigger local ROI because threshold is 40% |
+| candidate_0032 | true | 72.604 | 62.6242 | 75.631 | 1 | 76800 | 0 | 6 | ROI path is proven to trigger, but far stereo/region inheritance regresses |
+
+Conclusion: ROI-local refresh is now mechanically verified separately from slow-pan. The ROI candidate area is local rather than full-frame, and `best_roi_refresh` in the pareto output selects `candidate_0032`. Do not promote 0032: it uses a 3% motion threshold only for deterministic ROI validation and exposes the next bug, which is ROI merge/stereo reuse quality after partial refresh.
+
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

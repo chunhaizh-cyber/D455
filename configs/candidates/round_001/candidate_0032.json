@@ -1,0 +1,38 @@
+{
+  "candidate_id": "candidate_0032",
+  "parent": "candidate_0030",
+  "purpose": "Local-motion ROI verification candidate: keep the coarse async cooldown path but lower the motion trigger threshold so a small moving object can enter the ROI refresh path.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-padding-px=48",
+    "--color-contour-refresh-max-roi-area-percent=35",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=3",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh"
+  ],
+  "expected_effect": [
+    "Trigger refresh on local object motion that is too small for candidate_0030's 40% pan threshold.",
+    "Produce positive color_refresh_roi_count with ROI area below the full-frame rejection cap.",
+    "Separate ROI plumbing validation from the slow-pan benchmark."
+  ],
+  "risk": [
+    "The 3% motion threshold is for deterministic ROI validation only; it is not suitable for live slow-pan best and may over-refresh on noise or minor camera motion.",
+    "Synthetic local-motion replay validates ROI mechanics, not real-scene segmentation quality."
+  ]
+}
