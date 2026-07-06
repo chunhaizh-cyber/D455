@@ -141,9 +141,12 @@ def validate_case(case_dir, min_frames, require_ir_left, require_ir_right, requi
         if require_reviewed_manifest:
             if manifest.get("reviewed") is not True:
                 errors.append("manifest must contain reviewed=true before scoring")
+            review_method = str(manifest.get("review_method") or "").strip()
+            if review_method not in {"auto_case_contract_v1", "manual_review_v1"}:
+                errors.append("manifest review_method must be auto_case_contract_v1 or manual_review_v1 before scoring")
             notes = str(manifest.get("notes") or "").strip()
             if not notes or notes == PLACEHOLDER_NOTES:
-                errors.append("manifest notes must describe the reviewed scene before scoring")
+                errors.append("manifest notes must describe the accepted case contract before scoring")
             expected = manifest.get("expected")
             if not isinstance(expected, dict) or not expected:
                 errors.append("manifest expected must be a non-empty object before scoring")

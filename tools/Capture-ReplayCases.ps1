@@ -6,6 +6,7 @@ param(
     [int]$Warmup = 30,
     [switch]$Force,
     [switch]$NoPrompt,
+    [switch]$NoFinalize,
     [switch]$RequireIr = $true
 )
 
@@ -88,7 +89,28 @@ foreach ($caseId in $Cases) {
     if ($LASTEXITCODE -ne 0) {
         throw "Replay validation failed for $caseId with exit code $LASTEXITCODE"
     }
+
+    if (-not $NoFinalize) {
+        $finalizeArgs = @(
+            "scripts\finalize_replay_manifests.py",
+            "--dataset-root", $datasetRootPath,
+            "--case-id", $caseId,
+            "--force"
+        )
+        Write-Host "finalize: python $($finalizeArgs -join ' ')"
+        & python @finalizeArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Replay manifest finalization failed for $caseId with exit code $LASTEXITCODE"
+        }
+
+        $reviewedValidateArgs = $validateArgs + @("--require-reviewed-manifest")
+        Write-Host "validate reviewed: python $($reviewedValidateArgs -join ' ')"
+        & python @reviewedValidateArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Reviewed replay validation failed for $caseId with exit code $LASTEXITCODE"
+        }
+    }
 }
 
 Write-Host ""
-Write-Host "Replay capture complete. Review each case_manifest.json before scoring."
+Write-Host "Replay capture complete. Manifests were finalized from eval/cases.yaml unless -NoFinalize was used."

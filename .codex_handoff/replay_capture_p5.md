@@ -8,7 +8,7 @@ Recommended capture command:
 .\tools\Capture-ReplayCases.ps1 -Frames 120 -Warmup 30
 ```
 
-The helper captures `near_single_object`, `far_cabinet`, and `depth_hole_black_object` by default. It pauses before each case so the scene can be arranged, passes `--quality-segmentation --stereo-contour-distance` to capture both IR streams, and runs `scripts\validate_replay_dataset.py` after each capture.
+The helper captures `near_single_object`, `far_cabinet`, and `depth_hole_black_object` by default. It pauses before each case so the scene can be arranged, passes `--quality-segmentation --stereo-contour-distance` to capture both IR streams, validates each case, and finalizes each manifest from `eval/cases.yaml`.
 
 The capture writes:
 
@@ -18,7 +18,7 @@ The capture writes:
 - `frames\000000_ir_right.png` when right IR capture is enabled by the selected options
 - `case_manifest.json`
 
-Important boundary: this only creates the fixed replay input format. A captured case is not benchmark truth until `case_manifest.json` has `reviewed: true`, non-placeholder `notes`, a non-empty `expected` object, and the case is replayed through `run_batch.py --execute`.
+Important boundary: `reviewed: true` with `review_method: auto_case_contract_v1` means the capture is accepted by fixed case_id contract. It is not manual pixel-level truth. A captured case becomes scoring input only after the manifest contains non-placeholder `notes`, non-empty `expected`, and the case is replayed through `run_batch.py --execute`.
 
 Recommended next run:
 

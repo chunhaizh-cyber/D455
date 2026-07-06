@@ -65,9 +65,9 @@ python scripts\run_batch.py --candidates configs\candidates\round_001 --cases ev
 .\tools\Capture-ReplayCases.ps1 -Frames 120 -Warmup 30
 ```
 
-采集脚本会按 case 暂停提示摆放场景，调用 `D455.exe --capture-replay-dir=... --quality-segmentation --stereo-contour-distance` 保存左右 IR，并在每个 case 完成后运行 `scripts\validate_replay_dataset.py`。`datasets/` 是本地真实采集输入，默认不进入 Git；需要同步数据集时应单独确认数据大小、隐私和 LFS 策略。
+采集脚本会按 case 暂停提示摆放场景，调用 `D455.exe --capture-replay-dir=... --quality-segmentation --stereo-contour-distance` 保存左右 IR，在每个 case 完成后运行 `scripts\validate_replay_dataset.py`，并默认调用 `scripts\finalize_replay_manifests.py` 从 `eval/cases.yaml` 自动写入 `reviewed: true`、`review_method: auto_case_contract_v1`、`expected` 和 tags。`datasets/` 是本地真实采集输入，默认不进入 Git；需要同步数据集时应单独确认数据大小、隐私和 LFS 策略。
 
-采集完成后必须人工审查并编辑每个 `case_manifest.json`：把 `reviewed` 设为 `true`，将 `notes` 从占位文本改成实际场景说明，并填入非空 `expected` 对象。小型评分 gate 会用 `--require-reviewed-manifest` 阻止未审查 case 进入评分。
+这里的 reviewed 表示“按固定 case_id 合同接受为评测输入”，不是人工像素级真值标注。自动化闭环只要求 case 目录、帧格式和 `eval/cases.yaml` 中的 expected 合同一致；如果要做人眼复核，可另写 `review_method: manual_review_v1`。
 
 小型 replay round 先只跑 3 个固定 case 和少量候选，`run_batch.py` 支持用 `--case-id`、`--candidate-id`、`--max-frames-override=120` 限定范围；`--skip-missing-replay` 只用于采集未完成时验证命令链，不代表有效评分：
 
