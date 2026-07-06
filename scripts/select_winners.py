@@ -77,8 +77,11 @@ def main():
             "color_refresh_roi_rejected_large_count",
             "color_refresh_roi_region_count",
             "color_refresh_roi_stereo_reuse_count",
+            "color_refresh_roi_stereo_built_count",
             "color_refresh_roi_stereo_failed_count",
             "color_refresh_roi_preserved_stereo_count",
+            "roi_stereo_g1_preservation_pass",
+            "roi_stereo_g2_rebuild_pass",
             "color_cache_age_p95", "color_async_worker_ms_p95",
             "color_async_worker_ms_positive_p95", "run_id"
         ])
@@ -118,8 +121,11 @@ def main():
                 metric(s, "color_contour_refresh_roi_rejected_large_count"),
                 metric(s, "color_contour_refresh_roi_region_count"),
                 metric(s, "color_contour_refresh_roi_stereo_reuse_count"),
+                metric(s, "color_contour_refresh_roi_stereo_built_count"),
                 metric(s, "color_contour_refresh_roi_stereo_failed_count"),
                 metric(s, "color_contour_refresh_roi_preserved_stereo_count"),
+                metric(s, "roi_stereo_g1_preservation_pass"),
+                metric(s, "roi_stereo_g2_rebuild_pass"),
                 metric(s, "color_contour_cache_age_frames_p95"),
                 metric(s, "color_contour_async_worker_ms_p95"),
                 metric(s, "color_contour_async_worker_ms_positive_p95"),
@@ -138,6 +144,18 @@ def main():
             metric_float(s, "color_contour_refresh_roi_count", 0),
             s.get("total_score", 0),
         )),
+        ("best_roi_stereo_preservation", lambda s: (
+            metric_float(s, "roi_stereo_g1_preservation_pass", 0),
+            metric_float(s, "color_contour_refresh_roi_preserved_stereo_count", 0),
+            s.get("total_score", 0),
+        )),
+        ("best_roi_stereo_rebuild", lambda s: (
+            metric_float(s, "roi_stereo_g2_rebuild_pass", 0),
+            metric_float(s, "color_contour_refresh_roi_stereo_built_count", 0) +
+                metric_float(s, "color_contour_refresh_roi_stereo_reuse_count", 0),
+            -metric_float(s, "color_contour_refresh_roi_stereo_failed_count", 999),
+            s.get("total_score", 0),
+        )),
     ]
     pareto = out / "pareto_front.csv"
     with pareto.open("w", encoding="utf-8", newline="") as f:
@@ -149,6 +167,16 @@ def main():
                 candidates = [
                     s for s in passed_scores
                     if metric_float(s, "color_contour_refresh_roi_count", 0) > 0
+                ]
+            if slot == "best_roi_stereo_preservation":
+                candidates = [
+                    s for s in passed_scores
+                    if metric_float(s, "roi_stereo_g1_preservation_pass", 0) > 0
+                ]
+            if slot == "best_roi_stereo_rebuild":
+                candidates = [
+                    s for s in passed_scores
+                    if metric_float(s, "roi_stereo_g2_rebuild_pass", 0) > 0
                 ]
             if not candidates:
                 write_no_pass_candidate(writer, slot)

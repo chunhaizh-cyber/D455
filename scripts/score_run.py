@@ -251,6 +251,9 @@ def score_run(run_dir, config):
     color_refresh_roi_stereo_reuse_count = sum(
         int(row_float(r, "color_contour_refresh_roi_stereo_reuse_count")) for r in timing_rows
     )
+    color_refresh_roi_stereo_built_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_stereo_built_count")) for r in timing_rows
+    )
     color_refresh_roi_stereo_failed_count = sum(
         int(row_float(r, "color_contour_refresh_roi_stereo_failed_count")) for r in timing_rows
     )
@@ -261,6 +264,11 @@ def score_run(run_dir, config):
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
     color_async_worker_ms_positive_p95 = positive_percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
+    roi_stereo_evidence_count = (
+        color_refresh_roi_stereo_reuse_count +
+        color_refresh_roi_stereo_built_count +
+        color_refresh_roi_preserved_stereo_count
+    )
 
     coverage_min = float(hard_fail.get("cluster_coverage_percent_p50_min", 95.0))
     unknown_max = float(hard_fail.get("unknown_percent_p50_max", 15.0))
@@ -363,6 +371,8 @@ def score_run(run_dir, config):
         recommended.append("inspect far contour retention and stereo confidence downgrade")
     if frame_ms_p95 is not None and frame_ms_p95 > soft_budget_ms:
         recommended.append("switch to lighter feature profile or sample heavy metrics")
+    if color_refresh_roi_count > 0 and color_refresh_roi_stereo_failed_count > 0:
+        recommended.append("separate ROI stereo preservation from ROI stereo rebuild; inspect IR disparity and cached reuse path")
 
     return {
         "run_id": manifest.get("run_id", run_dir.name),
@@ -395,8 +405,23 @@ def score_run(run_dir, config):
             "color_contour_refresh_roi_rejected_large_count": color_refresh_roi_rejected_large_count,
             "color_contour_refresh_roi_region_count": color_refresh_roi_region_count,
             "color_contour_refresh_roi_stereo_reuse_count": color_refresh_roi_stereo_reuse_count,
+            "color_contour_refresh_roi_stereo_built_count": color_refresh_roi_stereo_built_count,
             "color_contour_refresh_roi_stereo_failed_count": color_refresh_roi_stereo_failed_count,
             "color_contour_refresh_roi_preserved_stereo_count": color_refresh_roi_preserved_stereo_count,
+            "roi_stereo_g1_preservation_pass": int(
+                color_refresh_roi_count > 0 and
+                far_failed_events == 0 and
+                roi_stereo_evidence_count > 0
+            ),
+            "roi_stereo_g2_rebuild_pass": int(
+                color_refresh_roi_count > 0 and
+                color_refresh_roi_region_count > 0 and
+                color_refresh_roi_stereo_failed_count == 0 and
+                (
+                    color_refresh_roi_stereo_reuse_count > 0 or
+                    color_refresh_roi_stereo_built_count > 0
+                )
+            ),
             "color_contour_cache_age_frames_p50": color_cache_age_p50,
             "color_contour_cache_age_frames_p95": color_cache_age_p95,
             "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,

@@ -37,7 +37,31 @@ def local_motion_box(frame_index, width, height, box_width, box_height, travel_x
     return (x, y, x + box_width, y + box_height)
 
 
-def draw_probe_object(color, depth, ir_left, ir_right, box, object_depth_mm):
+def shifted_box(box, shift_x, shift_y, width, height):
+    shifted = (
+        box[0] + shift_x,
+        box[1] + shift_y,
+        box[2] + shift_x,
+        box[3] + shift_y,
+    )
+    return (
+        max(0, min(width, shifted[0])),
+        max(0, min(height, shifted[1])),
+        max(0, min(width, shifted[2])),
+        max(0, min(height, shifted[3])),
+    )
+
+
+def draw_ir_probe_object(ir, box):
+    ir_draw = ImageDraw.Draw(ir)
+    ir_draw.rectangle(box, fill=230)
+    inset = (box[0] + 8, box[1] + 8, box[2] - 8, box[3] - 8)
+    if inset[2] > inset[0] and inset[3] > inset[1]:
+        ir_draw.rectangle(inset, fill=80)
+
+
+def draw_probe_object(color, depth, ir_left, ir_right, box, object_depth_mm, right_ir_shift_x, right_ir_shift_y):
+    width, height = color.size
     color_draw = ImageDraw.Draw(color)
     color_draw.rectangle(box, fill=(245, 40, 35))
     inset = (box[0] + 8, box[1] + 8, box[2] - 8, box[3] - 8)
@@ -46,10 +70,9 @@ def draw_probe_object(color, depth, ir_left, ir_right, box, object_depth_mm):
     depth_draw = ImageDraw.Draw(depth)
     depth_draw.rectangle(box, fill=int(object_depth_mm))
 
-    for ir in [ir_left, ir_right]:
-        ir_draw = ImageDraw.Draw(ir)
-        ir_draw.rectangle(box, fill=230)
-        ir_draw.rectangle(inset, fill=80)
+    draw_ir_probe_object(ir_left, box)
+    right_box = shifted_box(box, right_ir_shift_x, right_ir_shift_y, width, height)
+    draw_ir_probe_object(ir_right, right_box)
 
 
 def copy_or_save(path, image):
@@ -69,6 +92,14 @@ def main():
     parser.add_argument("--travel-y", type=int, default=0)
     parser.add_argument("--period", type=int, default=60)
     parser.add_argument("--object-depth-mm", type=int, default=1200)
+    parser.add_argument(
+        "--right-ir-shift-x",
+        type=int,
+        default=0,
+        help="Shift the synthetic object in right IR. Negative values create positive stereo disparity.",
+    )
+    parser.add_argument("--right-ir-shift-y", type=int, default=0)
+    parser.add_argument("--expect-roi-stereo-rebuild", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -118,7 +149,16 @@ def main():
             args.travel_y,
             args.period,
         )
-        draw_probe_object(color, depth, ir_left, ir_right, box, args.object_depth_mm)
+        draw_probe_object(
+            color,
+            depth,
+            ir_left,
+            ir_right,
+            box,
+            args.object_depth_mm,
+            args.right_ir_shift_x,
+            args.right_ir_shift_y,
+        )
         stem = f"{index:06d}"
         copy_or_save(out_frames / f"{stem}_color.png", color)
         copy_or_save(out_frames / f"{stem}_depth16.png", depth)
@@ -146,6 +186,9 @@ def main():
             "travel_x": args.travel_x,
             "travel_y": args.travel_y,
             "period": args.period,
+            "object_depth_mm": args.object_depth_mm,
+            "right_ir_shift_x": args.right_ir_shift_x,
+            "right_ir_shift_y": args.right_ir_shift_y,
         },
         "notes": (
             "Synthetic local-motion ROI probe generated from one reviewed D455 replay frame. "
@@ -155,8 +198,18 @@ def main():
             "motion_refresh_required": True,
             "roi_refresh_required": True,
             "full_frame_roi_rejected_large_max": 0,
+            "roi_stereo_g1_preservation_required": True,
+            "roi_stereo_g2_rebuild_required": bool(args.expect_roi_stereo_rebuild),
+            "roi_stereo_failed_count_max": 0 if args.expect_roi_stereo_rebuild else None,
+            "roi_stereo_reuse_or_built_min": 1 if args.expect_roi_stereo_rebuild else None,
         },
-        "tags": ["motion", "local_motion", "roi_refresh", "synthetic_probe"],
+        "tags": [
+            "motion",
+            "local_motion",
+            "roi_refresh",
+            "synthetic_probe",
+            *(['roi_stereo_rebuild'] if args.expect_roi_stereo_rebuild else []),
+        ],
         "case_contract": {
             "source": "eval/cases.yaml",
             "replay": str(out_case).replace("/", "\\"),

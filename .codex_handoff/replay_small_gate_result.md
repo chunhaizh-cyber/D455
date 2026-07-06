@@ -218,4 +218,22 @@ Run: `analysis_runs/replay_local_motion_roi_probe_001`, `--max-frames-override=1
 
 Conclusion: ROI-local refresh is now mechanically verified separately from slow-pan, and the previous far-stereo regression is fixed at the evidence-retention layer. `mergeColorContourRoiRefresh()` now keeps cached ROI-overlapping stereo-bearing regions when refreshed ROI regions do not carry matching distance evidence, which reduced `far_stereo_failed_event_count` from 6 to 0 in this probe. Do not promote 0032/0033 beyond ROI probe scope: the refreshed ROI regions still report `roi_stereo_failed_count=6` and `roi_stereo_reuse_count=0`, so the next quality task is direct ROI-region stereo reuse/recompute rather than another threshold change.
 
+## Local Motion ROI Stereo Probe 001
+
+The ROI gate is now split into two explicit score metrics:
+
+- G1 `roi_stereo_g1_preservation_pass`: ROI refresh does not break existing far stereo evidence.
+- G2 `roi_stereo_g2_rebuild_pass`: refreshed ROI regions get stereo evidence themselves by reuse or new build.
+
+`scripts/generate_local_motion_roi_probe.py` now supports `--right-ir-shift-x`; `datasets/local_motion_roi_stereo_probe` was generated with `--right-ir-shift-x=-30` and `--object-depth-mm=1200` so the synthetic moving target has stable depth and positive left/right IR disparity.
+
+Run: `analysis_runs/replay_local_motion_roi_stereo_probe_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | ROI count | ROI reuse | ROI built | ROI failed | preserved stereo | G1 | G2 | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0033 | true | 94.414 | 63.8886 | 77.449 | 4 | 6 | 0 | 0 | 3 | 1 | 1 | G2 passes through cached stereo reuse into refreshed ROI regions |
+| candidate_0034 | true | 94.757 | 61.5988 | 74.174 | 4 | 0 | 4 | 4 | 4 | 1 | 0 | direct-build probe; stereo builds for some ROI regions but still fails others |
+
+Conclusion: G1 is closed by c3949ec and remains closed here. G2 is now measurable and has one passing route: refreshed ROI regions can inherit cached stereo evidence when the synthetic IR target provides valid initial disparity. Direct ROI stereo rebuild is only partially validated: `candidate_0034` reports `roi_stereo_built_count=4`, but `roi_stereo_failed_count=4`, so it should remain a probe. Next direct-build task is to reduce ROI region over-splitting or filter ROI stereo attempts so `roi_stereo_failed_count` reaches 0 without relying on cached reuse.
+
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

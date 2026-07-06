@@ -8,6 +8,7 @@ splits:
     - depth_hole_black_object
     - slow_pan_far_object
     - local_motion_roi_probe
+    - local_motion_roi_stereo_probe
     - hand_occlusion_reappear
   test:
     - unseen_room_far_objects
@@ -69,6 +70,20 @@ cases:
       motion_refresh_required: true
       roi_refresh_required: true
       full_frame_roi_rejected_large_max: 0
+
+  - case_id: local_motion_roi_stereo_probe
+    replay: datasets/local_motion_roi_stereo_probe
+    frames: 120
+    tags: [motion, local_motion, roi_refresh, roi_stereo_rebuild, synthetic_probe]
+    weight: 1.0
+    expected:
+      motion_refresh_required: true
+      roi_refresh_required: true
+      full_frame_roi_rejected_large_max: 0
+      roi_stereo_g1_preservation_required: true
+      roi_stereo_g2_rebuild_required: true
+      roi_stereo_failed_count_max: 0
+      roi_stereo_reuse_or_built_min: 1
 
   - case_id: hand_occlusion_reappear
     replay: datasets/hand_occlusion_reappear

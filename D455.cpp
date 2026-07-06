@@ -444,6 +444,7 @@ struct ColorContourRefreshStats
     bool roiRejectedLarge = false;
     int roiRefreshedRegionCount = 0;
     int roiStereoReuseCount = 0;
+    int roiStereoBuiltCount = 0;
     int roiStereoFailedCount = 0;
     int roiPreservedStereoCount = 0;
     int cacheAgeFrames = 0;
@@ -6409,6 +6410,17 @@ int countStereoDistanceValidRegions(const std::vector<ColorContourRegion>& regio
     return count;
 }
 
+void updateRoiStereoRefreshStats(
+    ColorContourRefreshStats& stats,
+    const std::vector<ColorContourRegion>& regions)
+{
+    stats.roiRefreshedRegionCount = static_cast<int>(regions.size());
+    const int stereoValidCount = countStereoDistanceValidRegions(regions);
+    stats.roiStereoReuseCount = stats.stereoReuseCount;
+    stats.roiStereoBuiltCount = std::max(0, stereoValidCount - stats.roiStereoReuseCount);
+    stats.roiStereoFailedCount = std::max(0, stats.roiRefreshedRegionCount - stereoValidCount);
+}
+
 int reuseCachedStereoDistances(
     std::vector<ColorContourRegion>& regions,
     const std::vector<ColorContourRegion>& cachedRegions)
@@ -9317,6 +9329,7 @@ public:
             << (colorContourRefreshStats.roiRejectedLarge ? 1 : 0) << ','
             << colorContourRefreshStats.roiRefreshedRegionCount << ','
             << colorContourRefreshStats.roiStereoReuseCount << ','
+            << colorContourRefreshStats.roiStereoBuiltCount << ','
             << colorContourRefreshStats.roiStereoFailedCount << ','
             << colorContourRefreshStats.roiPreservedStereoCount << ','
             << colorContourRefreshStats.cacheAgeFrames << ','
@@ -9375,6 +9388,7 @@ private:
             << "color_contour_refresh_roi_rejected_large,"
             << "color_contour_refresh_roi_region_count,"
             << "color_contour_refresh_roi_stereo_reuse_count,"
+            << "color_contour_refresh_roi_stereo_built_count,"
             << "color_contour_refresh_roi_stereo_failed_count,"
             << "color_contour_refresh_roi_preserved_stereo_count,"
             << "color_contour_cache_age_frames,color_contour_async_worker_ms\n";
@@ -12324,15 +12338,7 @@ int runReplayDirectory(
                     reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
                 if (!asyncResult.refreshRoi.empty())
                 {
-                    colorContourRefreshStats.roiRefreshedRegionCount =
-                        static_cast<int>(asyncResult.regions.size());
-                    colorContourRefreshStats.roiStereoReuseCount =
-                        colorContourRefreshStats.stereoReuseCount;
-                    colorContourRefreshStats.roiStereoFailedCount =
-                        std::max(
-                            0,
-                            colorContourRefreshStats.roiRefreshedRegionCount -
-                                countStereoDistanceValidRegions(asyncResult.regions));
+                    updateRoiStereoRefreshStats(colorContourRefreshStats, asyncResult.regions);
                 }
                 cachedColorContourRegions = mergeColorContourRoiRefresh(
                     cachedColorContourRegions,
@@ -12457,15 +12463,7 @@ int runReplayDirectory(
                 }
                 if (!refreshRoi.empty())
                 {
-                    colorContourRefreshStats.roiRefreshedRegionCount =
-                        static_cast<int>(colorContourRegions.size());
-                    colorContourRefreshStats.roiStereoReuseCount =
-                        colorContourRefreshStats.stereoReuseCount;
-                    colorContourRefreshStats.roiStereoFailedCount =
-                        std::max(
-                            0,
-                            colorContourRefreshStats.roiRefreshedRegionCount -
-                                countStereoDistanceValidRegions(colorContourRegions));
+                    updateRoiStereoRefreshStats(colorContourRefreshStats, colorContourRegions);
                 }
                 cachedColorContourRegions = mergeColorContourRoiRefresh(
                     cachedColorContourRegions,
@@ -13310,15 +13308,7 @@ int main(int argc, char** argv)
                         reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
                     if (!asyncResult.refreshRoi.empty())
                     {
-                        colorContourRefreshStats.roiRefreshedRegionCount =
-                            static_cast<int>(asyncResult.regions.size());
-                        colorContourRefreshStats.roiStereoReuseCount =
-                            colorContourRefreshStats.stereoReuseCount;
-                        colorContourRefreshStats.roiStereoFailedCount =
-                            std::max(
-                                0,
-                                colorContourRefreshStats.roiRefreshedRegionCount -
-                                    countStereoDistanceValidRegions(asyncResult.regions));
+                        updateRoiStereoRefreshStats(colorContourRefreshStats, asyncResult.regions);
                     }
                     cachedColorContourRegions = mergeColorContourRoiRefresh(
                         cachedColorContourRegions,
@@ -13453,15 +13443,7 @@ int main(int argc, char** argv)
                     }
                     if (!refreshRoi.empty())
                     {
-                        colorContourRefreshStats.roiRefreshedRegionCount =
-                            static_cast<int>(colorContourRegions.size());
-                        colorContourRefreshStats.roiStereoReuseCount =
-                            colorContourRefreshStats.stereoReuseCount;
-                        colorContourRefreshStats.roiStereoFailedCount =
-                            std::max(
-                                0,
-                                colorContourRefreshStats.roiRefreshedRegionCount -
-                                    countStereoDistanceValidRegions(colorContourRegions));
+                        updateRoiStereoRefreshStats(colorContourRefreshStats, colorContourRegions);
                     }
                     cachedColorContourRegions = mergeColorContourRoiRefresh(
                         cachedColorContourRegions,
