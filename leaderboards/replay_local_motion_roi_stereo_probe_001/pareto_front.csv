@@ -8,3 +8,4 @@ best_low_split,candidate_0034,94.757,20.0,10.0,5.757,0.0,61.5988,local_motion_ro
 best_roi_refresh,candidate_0034,94.757,20.0,10.0,5.757,0.0,61.5988,local_motion_roi_stereo_probe_candidate_0034
 best_roi_stereo_preservation,candidate_0034,94.757,20.0,10.0,5.757,0.0,61.5988,local_motion_roi_stereo_probe_candidate_0034
 best_roi_stereo_rebuild,candidate_0033,94.414,20.0,10.0,5.414,0.0,63.8886,local_motion_roi_stereo_probe_candidate_0033
+best_roi_stereo_direct_build,candidate_0035,94.199,20.0,10.0,5.199,0.0,65.3226,local_motion_roi_stereo_probe_candidate_0035

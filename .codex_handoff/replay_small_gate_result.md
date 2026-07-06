@@ -233,7 +233,8 @@ Run: `analysis_runs/replay_local_motion_roi_stereo_probe_001`, `--max-frames-ove
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | candidate_0033 | true | 94.414 | 63.8886 | 77.449 | 4 | 6 | 0 | 0 | 3 | 1 | 1 | G2 passes through cached stereo reuse into refreshed ROI regions |
 | candidate_0034 | true | 94.757 | 61.5988 | 74.174 | 4 | 0 | 4 | 4 | 4 | 1 | 0 | direct-build probe; stereo builds for some ROI regions but still fails others |
+| candidate_0035 | true | 94.199 | 65.3226 | 78.581 | 4 | 0 | 4 | 0 | 4 | 1 | 1 | direct-build probe with stereo-failed ROI fragments dropped after build attempt |
 
-Conclusion: G1 is closed by c3949ec and remains closed here. G2 is now measurable and has one passing route: refreshed ROI regions can inherit cached stereo evidence when the synthetic IR target provides valid initial disparity. Direct ROI stereo rebuild is only partially validated: `candidate_0034` reports `roi_stereo_built_count=4`, but `roi_stereo_failed_count=4`, so it should remain a probe. Next direct-build task is to reduce ROI region over-splitting or filter ROI stereo attempts so `roi_stereo_failed_count` reaches 0 without relying on cached reuse.
+Conclusion: G1 is closed by c3949ec and remains closed here. G2 is now measurable with two separated routes: `candidate_0033` passes through cached stereo reuse, while `candidate_0035` passes the direct-build specialty gate by filtering out revealed-background ROI fragments that still have no stereo evidence after the build attempt. `candidate_0035` is `best_roi_stereo_direct_build` only; the filter can remove valid image-only ROI contours, so it must stay probe-only until a real `hand_occlusion_reappear` or equivalent occlusion case verifies the visual tradeoff.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.

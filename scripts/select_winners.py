@@ -156,6 +156,12 @@ def main():
             -metric_float(s, "color_contour_refresh_roi_stereo_failed_count", 999),
             s.get("total_score", 0),
         )),
+        ("best_roi_stereo_direct_build", lambda s: (
+            metric_float(s, "roi_stereo_g2_rebuild_pass", 0),
+            metric_float(s, "color_contour_refresh_roi_stereo_built_count", 0),
+            -metric_float(s, "color_contour_refresh_roi_stereo_failed_count", 999),
+            s.get("total_score", 0),
+        )),
     ]
     pareto = out / "pareto_front.csv"
     with pareto.open("w", encoding="utf-8", newline="") as f:
@@ -177,6 +183,12 @@ def main():
                 candidates = [
                     s for s in passed_scores
                     if metric_float(s, "roi_stereo_g2_rebuild_pass", 0) > 0
+                ]
+            if slot == "best_roi_stereo_direct_build":
+                candidates = [
+                    s for s in passed_scores
+                    if metric_float(s, "roi_stereo_g2_rebuild_pass", 0) > 0 and
+                    metric_float(s, "color_contour_refresh_roi_stereo_built_count", 0) > 0
                 ]
             if not candidates:
                 write_no_pass_candidate(writer, slot)

@@ -224,6 +224,7 @@ struct SegmentationConfig
     bool asyncColorContourRefresh = false;
     bool asyncColorContourLowPriority = false;
     bool colorContourRefreshMotionRoi = false;
+    bool colorContourRefreshRoiDropStereoFailed = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
@@ -1131,6 +1132,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-color-contour-refresh-motion-roi")
         {
             config.colorContourRefreshMotionRoi = false;
+            continue;
+        }
+        if (arg == "--color-contour-refresh-roi-drop-stereo-failed")
+        {
+            config.colorContourRefreshRoiDropStereoFailed = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-refresh-roi-drop-stereo-failed")
+        {
+            config.colorContourRefreshRoiDropStereoFailed = false;
             continue;
         }
         if (arg == "--color-contour-refresh-on-motion")
@@ -6419,6 +6430,21 @@ void updateRoiStereoRefreshStats(
     stats.roiStereoReuseCount = stats.stereoReuseCount;
     stats.roiStereoBuiltCount = std::max(0, stereoValidCount - stats.roiStereoReuseCount);
     stats.roiStereoFailedCount = std::max(0, stats.roiRefreshedRegionCount - stereoValidCount);
+}
+
+int dropStereoFailedColorContourRegions(std::vector<ColorContourRegion>& regions)
+{
+    const int before = static_cast<int>(regions.size());
+    regions.erase(
+        std::remove_if(
+            regions.begin(),
+            regions.end(),
+            [](const ColorContourRegion& region)
+            {
+                return region.estimatedDistanceMm <= 0;
+            }),
+        regions.end());
+    return before - static_cast<int>(regions.size());
 }
 
 int reuseCachedStereoDistances(
@@ -12042,6 +12068,8 @@ void printUsage()
         << "  --color-contour-refresh-min-gap-frames=0\n"
         << "  --color-contour-refresh-motion-roi\n"
         << "  --no-color-contour-refresh-motion-roi\n"
+        << "  --color-contour-refresh-roi-drop-stereo-failed\n"
+        << "  --no-color-contour-refresh-roi-drop-stereo-failed\n"
         << "  --color-contour-refresh-roi-padding-px=48\n"
         << "  --color-contour-refresh-max-roi-area-percent=35\n"
         << "  --color-contour-refresh-on-motion\n"
@@ -12460,6 +12488,10 @@ int runReplayDirectory(
                         rightIrForStereo,
                         colorIntrinsics,
                         config);
+                }
+                if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
+                {
+                    dropStereoFailedColorContourRegions(colorContourRegions);
                 }
                 if (!refreshRoi.empty())
                 {
@@ -13440,6 +13472,10 @@ int main(int argc, char** argv)
                             rightIrForStereo,
                             colorIntrinsics,
                             config);
+                    }
+                    if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
+                    {
+                        dropStereoFailedColorContourRegions(colorContourRegions);
                     }
                     if (!refreshRoi.empty())
                     {
