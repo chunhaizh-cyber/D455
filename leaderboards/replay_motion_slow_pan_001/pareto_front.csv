@@ -8,3 +8,4 @@ best_low_split,candidate_0030,94.515,20.0,10.0,5.515,0.0,63.213650000000015,slow
 best_roi_refresh,no_pass_candidate,,,,,,,
 best_roi_stereo_preservation,no_pass_candidate,,,,,,,
 best_roi_stereo_rebuild,no_pass_candidate,,,,,,,
+best_roi_stereo_direct_build,no_pass_candidate,,,,,,,

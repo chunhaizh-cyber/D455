@@ -1,7 +1,11 @@
 slot,candidate_id,total_score,near_score,far_score,performance_score,unknown_p50,frame_ms_p95,run_id
-best_overall,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
-best_far_retention,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
-best_realtime,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
-best_low_unknown,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
-best_low_merge,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
-best_low_split,candidate_0017,92.367,20.0,10.0,3.367,0.0,77.5449,far_cabinet_candidate_0017
+best_overall,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_far_retention,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_realtime,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_low_unknown,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_low_merge,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_low_split,candidate_0017,95.992,20.0,10.0,6.992,0.0,53.3621,depth_hole_black_object_candidate_0017
+best_roi_refresh,no_pass_candidate,,,,,,,
+best_roi_stereo_preservation,no_pass_candidate,,,,,,,
+best_roi_stereo_rebuild,no_pass_candidate,,,,,,,
+best_roi_stereo_direct_build,no_pass_candidate,,,,,,,

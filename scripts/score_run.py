@@ -260,6 +260,12 @@ def score_run(run_dir, config):
     color_refresh_roi_preserved_stereo_count = sum(
         int(row_float(r, "color_contour_refresh_roi_preserved_stereo_count")) for r in timing_rows
     )
+    color_refresh_roi_stereo_dropped_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_stereo_dropped_count")) for r in timing_rows
+    )
+    color_refresh_roi_stereo_dropped_pixels = sum(
+        int(row_float(r, "color_contour_refresh_roi_stereo_dropped_pixels")) for r in timing_rows
+    )
     color_cache_age_p50 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 50)
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
@@ -408,6 +414,8 @@ def score_run(run_dir, config):
             "color_contour_refresh_roi_stereo_built_count": color_refresh_roi_stereo_built_count,
             "color_contour_refresh_roi_stereo_failed_count": color_refresh_roi_stereo_failed_count,
             "color_contour_refresh_roi_preserved_stereo_count": color_refresh_roi_preserved_stereo_count,
+            "color_contour_refresh_roi_stereo_dropped_count": color_refresh_roi_stereo_dropped_count,
+            "color_contour_refresh_roi_stereo_dropped_pixels": color_refresh_roi_stereo_dropped_pixels,
             "roi_stereo_g1_preservation_pass": int(
                 color_refresh_roi_count > 0 and
                 far_failed_events == 0 and

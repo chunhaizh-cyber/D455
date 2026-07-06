@@ -1,0 +1,16 @@
+{
+  "dropped_fragment_count": 4,
+  "dropped_fragment_pixels": 22952,
+  "frames_with_drops": [
+    30,
+    45,
+    90,
+    105
+  ],
+  "frame_count_with_drops": 4,
+  "baseline_run": "analysis_runs\\replay_local_motion_roi_stereo_probe_001\\local_motion_roi_stereo_probe_candidate_0034",
+  "filtered_run": "analysis_runs\\replay_local_motion_roi_stereo_probe_001\\local_motion_roi_stereo_probe_candidate_0035",
+  "case_dir": "datasets\\local_motion_roi_stereo_probe",
+  "review_status": "needs_visual_review",
+  "acceptance_note": "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays to decide whether dropped fragments are only revealed background/no-stereo fragments."
+}

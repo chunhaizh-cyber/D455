@@ -448,6 +448,8 @@ struct ColorContourRefreshStats
     int roiStereoBuiltCount = 0;
     int roiStereoFailedCount = 0;
     int roiPreservedStereoCount = 0;
+    int roiStereoDroppedCount = 0;
+    int roiStereoDroppedPixels = 0;
     int cacheAgeFrames = 0;
     double asyncWorkerMs = 0.0;
 };
@@ -6432,9 +6434,23 @@ void updateRoiStereoRefreshStats(
     stats.roiStereoFailedCount = std::max(0, stats.roiRefreshedRegionCount - stereoValidCount);
 }
 
-int dropStereoFailedColorContourRegions(std::vector<ColorContourRegion>& regions)
+struct DroppedColorContourStats
 {
-    const int before = static_cast<int>(regions.size());
+    int count = 0;
+    int pixels = 0;
+};
+
+DroppedColorContourStats dropStereoFailedColorContourRegions(std::vector<ColorContourRegion>& regions)
+{
+    DroppedColorContourStats stats;
+    for (const ColorContourRegion& region : regions)
+    {
+        if (region.estimatedDistanceMm <= 0)
+        {
+            ++stats.count;
+            stats.pixels += std::max(0, region.pixelCount);
+        }
+    }
     regions.erase(
         std::remove_if(
             regions.begin(),
@@ -6444,7 +6460,7 @@ int dropStereoFailedColorContourRegions(std::vector<ColorContourRegion>& regions
                 return region.estimatedDistanceMm <= 0;
             }),
         regions.end());
-    return before - static_cast<int>(regions.size());
+    return stats;
 }
 
 int reuseCachedStereoDistances(
@@ -9358,6 +9374,8 @@ public:
             << colorContourRefreshStats.roiStereoBuiltCount << ','
             << colorContourRefreshStats.roiStereoFailedCount << ','
             << colorContourRefreshStats.roiPreservedStereoCount << ','
+            << colorContourRefreshStats.roiStereoDroppedCount << ','
+            << colorContourRefreshStats.roiStereoDroppedPixels << ','
             << colorContourRefreshStats.cacheAgeFrames << ','
             << std::setprecision(3) << colorContourRefreshStats.asyncWorkerMs
             << '\n';
@@ -9417,6 +9435,8 @@ private:
             << "color_contour_refresh_roi_stereo_built_count,"
             << "color_contour_refresh_roi_stereo_failed_count,"
             << "color_contour_refresh_roi_preserved_stereo_count,"
+            << "color_contour_refresh_roi_stereo_dropped_count,"
+            << "color_contour_refresh_roi_stereo_dropped_pixels,"
             << "color_contour_cache_age_frames,color_contour_async_worker_ms\n";
         std::cout << "Profile CSV: " << outputPath_ << '\n';
     }
@@ -12491,7 +12511,10 @@ int runReplayDirectory(
                 }
                 if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
                 {
-                    dropStereoFailedColorContourRegions(colorContourRegions);
+                    const DroppedColorContourStats droppedStats =
+                        dropStereoFailedColorContourRegions(colorContourRegions);
+                    colorContourRefreshStats.roiStereoDroppedCount = droppedStats.count;
+                    colorContourRefreshStats.roiStereoDroppedPixels = droppedStats.pixels;
                 }
                 if (!refreshRoi.empty())
                 {
@@ -13475,7 +13498,10 @@ int main(int argc, char** argv)
                     }
                     if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
                     {
-                        dropStereoFailedColorContourRegions(colorContourRegions);
+                        const DroppedColorContourStats droppedStats =
+                            dropStereoFailedColorContourRegions(colorContourRegions);
+                        colorContourRefreshStats.roiStereoDroppedCount = droppedStats.count;
+                        colorContourRefreshStats.roiStereoDroppedPixels = droppedStats.pixels;
                     }
                     if (!refreshRoi.empty())
                     {
