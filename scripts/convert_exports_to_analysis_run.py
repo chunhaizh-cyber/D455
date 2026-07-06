@@ -577,6 +577,7 @@ def main():
     parser.add_argument("--command-line", default="")
     parser.add_argument("--update-manifest", action="store_true")
     parser.add_argument("--overwrite-config-snapshot", action="store_true")
+    parser.add_argument("--ignore-first-n-frames", type=int, default=0)
     parser.add_argument("--unknown-spike-percent", type=float, default=15.0)
     parser.add_argument("--frame-budget-ms", type=float, default=33.3)
     args = parser.parse_args()
@@ -608,6 +609,8 @@ def main():
     frame_clusters = []
     for item in source_series:
         frame_id = item["frame_id"]
+        if frame_id is not None and frame_id < args.ignore_first_n_frames:
+            continue
         cluster_item = item if cluster_series else None
         final_item = final_by_frame.get(frame_id) if frame_id is not None else None
         if final_item is None:
@@ -628,6 +631,8 @@ def main():
             frame_id_override=frame_id)
         frame_rows.append(frame_row)
         frame_clusters.append((frame_row["frame_id"], frame_row["total_pixels"], clusters))
+    if not frame_rows:
+        raise SystemExit("No frame metrics remained after applying --ignore-first-n-frames.")
 
     candidate_config = load_candidate_config(args.candidate_config)
     inputs = {

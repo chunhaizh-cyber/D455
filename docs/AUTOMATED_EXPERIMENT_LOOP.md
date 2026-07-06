@@ -60,6 +60,30 @@ python scripts\convert_exports_to_analysis_run.py --run-dir=analysis_runs\<run_i
 
 `--analysis-export-every-n=N` writes frame-suffixed metadata such as `cluster_map_frame_000030_metadata.json` and `final_segmentation_frame_000030_metadata.json`. The converter combines those metadata files with matching rows from `profile.csv` to produce multi-row `frame_metrics.csv` and multi-frame `cluster_metrics.jsonl`. This is still not a deterministic benchmark until replay exists, but it is no longer limited to one final frame.
 
+Directory replay is the first deterministic input path:
+
+```text
+datasets/<case_id>/
+  frames/
+    000000_color.png
+    000000_depth16.png
+    000000_ir_left.png
+    000000_ir_right.png
+  case_manifest.json
+```
+
+`depth16.png` is interpreted as unsigned 16-bit millimeters with `depth_scale=0.001`. `ir_left` and `ir_right` are optional for basic depth/color replay, but stereo contour distance needs both IR images. D455 can run this path without a connected camera:
+
+```powershell
+.\x64\Release\D455.exe --replay-dir=datasets\<case_id> --cluster-map --final-segmentation-export=analysis_runs\<run_id>\final_segmentation --cluster-map-export=analysis_runs\<run_id>\cluster_map --profile-csv=analysis_runs\<run_id>\profile.csv --analysis-export-every-n=30 --max-frames=120 --no-display
+```
+
+`run_batch.py --execute` now runs the full replay chain: D455 execution, converter, and `score_run.py`. Use `--ignore-first-n-frames=30` when converting/scoring replay exports to drop startup or tracker-warmup frames from metrics.
+
+```powershell
+python scripts\run_batch.py --candidates configs\candidates\round_001 --cases eval\cases.yaml --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
+```
+
 When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
 
 ## Gates

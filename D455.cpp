@@ -31,6 +31,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -1036,6 +1037,10 @@ SegmentationConfig parseConfig(int argc, char** argv)
             continue;
         }
         if (arg.rfind("--max-frames=", 0) == 0)
+        {
+            continue;
+        }
+        if (arg.rfind("--replay-dir=", 0) == 0)
         {
             continue;
         }
@@ -2230,6 +2235,123 @@ cv::Mat depthFrameToMat(const rs2::depth_frame& frame)
         cv::Mat::AUTO_STEP);
 
     return view.clone();
+}
+
+struct ReplayFramePaths
+{
+    uint64_t frameId = 0;
+    std::filesystem::path colorPath;
+    std::filesystem::path depthPath;
+    std::filesystem::path irLeftPath;
+    std::filesystem::path irRightPath;
+};
+
+bool parseFrameIdFromStem(const std::string& stem, uint64_t& frameId)
+{
+    const size_t suffixPos = stem.rfind("_color");
+    const std::string idText = suffixPos == std::string::npos ? stem : stem.substr(0, suffixPos);
+    if (idText.empty() || !std::all_of(idText.begin(), idText.end(), [](unsigned char ch) { return std::isdigit(ch); }))
+    {
+        return false;
+    }
+    frameId = static_cast<uint64_t>(std::stoull(idText));
+    return true;
+}
+
+std::vector<ReplayFramePaths> listReplayFrames(const std::filesystem::path& replayDir)
+{
+    const std::filesystem::path framesDir = replayDir / "frames";
+    if (!std::filesystem::exists(framesDir))
+    {
+        throw std::runtime_error("Replay frames directory does not exist: " + framesDir.string());
+    }
+
+    std::vector<ReplayFramePaths> frames;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(framesDir))
+    {
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        const std::filesystem::path path = entry.path();
+        if (path.extension() != ".png")
+        {
+            continue;
+        }
+        const std::string stem = path.stem().string();
+        if (stem.size() < 6 || stem.substr(stem.size() - 6) != "_color")
+        {
+            continue;
+        }
+        uint64_t frameId = 0;
+        if (!parseFrameIdFromStem(stem, frameId))
+        {
+            continue;
+        }
+        const std::string prefix = stem.substr(0, stem.size() - 6);
+        ReplayFramePaths replayFrame;
+        replayFrame.frameId = frameId;
+        replayFrame.colorPath = path;
+        replayFrame.depthPath = framesDir / (prefix + "_depth16.png");
+        replayFrame.irLeftPath = framesDir / (prefix + "_ir_left.png");
+        replayFrame.irRightPath = framesDir / (prefix + "_ir_right.png");
+        if (std::filesystem::exists(replayFrame.depthPath))
+        {
+            frames.push_back(replayFrame);
+        }
+    }
+    std::sort(frames.begin(), frames.end(), [](const ReplayFramePaths& lhs, const ReplayFramePaths& rhs) {
+        return lhs.frameId < rhs.frameId;
+    });
+    return frames;
+}
+
+cv::Mat loadReplayDepth16(const std::filesystem::path& path)
+{
+    cv::Mat depth = cv::imread(path.string(), cv::IMREAD_UNCHANGED);
+    if (depth.empty())
+    {
+        throw std::runtime_error("Failed to read replay depth frame: " + path.string());
+    }
+    if (depth.channels() > 1)
+    {
+        std::vector<cv::Mat> channels;
+        cv::split(depth, channels);
+        depth = channels.front();
+    }
+    if (depth.type() != CV_16UC1)
+    {
+        cv::Mat converted;
+        depth.convertTo(converted, CV_16UC1);
+        depth = converted;
+    }
+    return depth;
+}
+
+cv::Mat loadReplayGray8(const std::filesystem::path& path)
+{
+    if (!std::filesystem::exists(path))
+    {
+        return cv::Mat();
+    }
+    return cv::imread(path.string(), cv::IMREAD_GRAYSCALE);
+}
+
+rs2_intrinsics makeReplayIntrinsics(const cv::Size& size)
+{
+    rs2_intrinsics intrinsics{};
+    intrinsics.width = size.width;
+    intrinsics.height = size.height;
+    intrinsics.ppx = static_cast<float>(size.width - 1) * 0.5f;
+    intrinsics.ppy = static_cast<float>(size.height - 1) * 0.5f;
+    intrinsics.fx = static_cast<float>(std::max(size.width, size.height)) * 0.6f;
+    intrinsics.fy = intrinsics.fx;
+    intrinsics.model = RS2_DISTORTION_NONE;
+    for (float& coeff : intrinsics.coeffs)
+    {
+        coeff = 0.0f;
+    }
+    return intrinsics;
 }
 
 int depthUnitsFromMm(int depthMm, float depthScale)
@@ -11198,6 +11320,7 @@ void printUsage()
         << "  --imu-gravity-max-accel-std-milli-mps2=250\n"
         << "  --imu-gravity-max-gyro-milliradps=50\n"
         << "  --imu-gravity-csv=recordings\\imu_gravity_check.csv\n"
+        << "  --replay-dir=datasets\\near_single_object\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
         << "  --min-depth-mm=250\n"
@@ -11379,6 +11502,400 @@ void printUsage()
         << "  --show-labels\n"
         << "  --show-centers\n";
 }
+int runReplayDirectory(
+    const std::string& replayDirText,
+    int argc,
+    char** argv,
+    SegmentationConfig config,
+    int maxFrames)
+{
+    const std::filesystem::path replayDir = resolveProjectOutputPath(std::filesystem::path(replayDirText), "");
+    std::vector<ReplayFramePaths> replayFrames = listReplayFrames(replayDir);
+    if (replayFrames.empty())
+    {
+        std::cerr << "No replay frames found under " << (replayDir / "frames").string() << '\n';
+        return 1;
+    }
+    if (maxFrames > 0 && static_cast<size_t>(maxFrames) < replayFrames.size())
+    {
+        replayFrames.resize(static_cast<size_t>(maxFrames));
+    }
+
+    RgbDepthAccuracyConfig stableDisplayConfig = parseRgbDepthAccuracyConfig(argc, argv);
+    stableDisplayConfig.stableContourVideo = true;
+    if (config.realtime30)
+    {
+        const bool explicitAnchorStep =
+            hasOptionPrefix(argc, argv, "--rgb-depth-anchor-step-px=");
+        const bool explicitStableMinAnchors =
+            hasOptionPrefix(argc, argv, "--stable-contour-min-anchors=");
+        const bool explicitDepthSlice =
+            hasOptionPrefix(argc, argv, "--depth-slice-mm=");
+        if (!explicitAnchorStep)
+        {
+            stableDisplayConfig.anchorStepPixels =
+                std::max(stableDisplayConfig.anchorStepPixels, config.realtimeAnchorStepPixels);
+        }
+        if (!explicitStableMinAnchors)
+        {
+            stableDisplayConfig.stableContourMinAnchors =
+                std::min(stableDisplayConfig.stableContourMinAnchors, config.realtimeStableContourMinAnchors);
+        }
+        if (!explicitDepthSlice)
+        {
+            config.depthSliceMm = std::max(config.depthSliceMm, config.realtimeDepthSliceMm);
+        }
+        config.pclFrameInterval = std::max(config.pclFrameInterval, config.realtimePclFrameInterval);
+        if (config.realtimeDisablePcl)
+        {
+            config.pclClustering = false;
+        }
+        if (config.realtimeDepthOnlyBoundary)
+        {
+            config.colorSplit = false;
+            config.contourDepthConfirmSplit = false;
+        }
+        if (config.realtimeDisableDepthConfirmSplit)
+        {
+            config.contourDepthConfirmSplit = false;
+        }
+    }
+
+    const float depthScale = 0.001f;
+    std::cout << "Replay directory enabled: " << replayDir.string()
+        << " frames=" << replayFrames.size()
+        << " depth_scale=" << depthScale
+        << " analysis_export_every_n=" << config.analysisExportEveryN << '\n';
+
+    ProfileCsvWriter profileCsv(parseProfileCsvConfig(argc, argv));
+    SegmentationTracker tracker;
+    std::vector<ObservationMaterial> pclCandidateCache;
+    std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
+    IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
+    std::vector<ObservationMaterial> cachedNearPlaneMaterials;
+    bool hasIndoorPlaneCache = false;
+    bool hasNearPlaneCache = false;
+    ClusterMapFrame lastClusterMapFrame;
+    cv::Mat lastClusterMapColor;
+    bool hasLastClusterMapFrame = false;
+    FinalSegmentationFrame lastFinalSegmentationFrame;
+    bool hasLastFinalSegmentationFrame = false;
+    rs2_intrinsics colorIntrinsics{};
+
+    for (size_t replayIndex = 0; replayIndex < replayFrames.size(); ++replayIndex)
+    {
+        const ReplayFramePaths& replayFrame = replayFrames[replayIndex];
+        const uint64_t frameId = replayFrame.frameId;
+        const auto frameStart = std::chrono::steady_clock::now();
+        auto sectionStart = frameStart;
+        FrameTimingStats timingStats;
+        auto takeSectionMs = [&sectionStart]() {
+            const auto sectionEnd = std::chrono::steady_clock::now();
+            const double elapsedMs =
+                std::chrono::duration<double, std::milli>(sectionEnd - sectionStart).count();
+            sectionStart = sectionEnd;
+            return elapsedMs;
+        };
+
+        cv::Mat colorBgr = cv::imread(replayFrame.colorPath.string(), cv::IMREAD_COLOR);
+        if (colorBgr.empty())
+        {
+            std::cerr << "Failed to read replay color frame: " << replayFrame.colorPath.string() << '\n';
+            return 2;
+        }
+        cv::Mat rawDepth16 = loadReplayDepth16(replayFrame.depthPath);
+        cv::Mat depth16 = rawDepth16;
+        if (rawDepth16.size() != colorBgr.size())
+        {
+            cv::resize(rawDepth16, rawDepth16, colorBgr.size(), 0.0, 0.0, cv::INTER_NEAREST);
+            depth16 = rawDepth16;
+        }
+        if (replayIndex == 0)
+        {
+            colorIntrinsics = makeReplayIntrinsics(colorBgr.size());
+        }
+        timingStats.frameConvertMs = takeSectionMs();
+
+        cv::Mat segmentationGray = loadReplayGray8(replayFrame.irLeftPath);
+        bool edgeSourceIsInfrared = !segmentationGray.empty();
+        if (segmentationGray.empty())
+        {
+            cv::cvtColor(colorBgr, segmentationGray, cv::COLOR_BGR2GRAY);
+        }
+        if (segmentationGray.size() != colorBgr.size())
+        {
+            cv::resize(segmentationGray, segmentationGray, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+        }
+
+        std::vector<ColorContourRegion> colorContourRegions =
+            extractColorContourRegions(colorBgr, config);
+        if (!colorContourRegions.empty() && config.stereoContourDistance)
+        {
+            cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
+            cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
+            if (!leftIrForStereo.empty() && leftIrForStereo.size() != colorBgr.size())
+            {
+                cv::resize(leftIrForStereo, leftIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+            }
+            if (!rightIrForStereo.empty() && rightIrForStereo.size() != colorBgr.size())
+            {
+                cv::resize(rightIrForStereo, rightIrForStereo, colorBgr.size(), 0.0, 0.0, cv::INTER_LINEAR);
+            }
+            estimateStereoContourDistances(
+                colorContourRegions,
+                leftIrForStereo,
+                rightIrForStereo,
+                colorIntrinsics,
+                config);
+        }
+        timingStats.grayPrepareMs = takeSectionMs();
+
+        RgbDepthAnchorStats frameAnchorStats;
+        const cv::Mat anchorMask = makeReliableDepthAnchorMask(
+            rawDepth16,
+            depth16,
+            depthScale,
+            config,
+            stableDisplayConfig,
+            frameAnchorStats);
+        timingStats.anchorMs = takeSectionMs();
+
+        BoundaryAnalysis boundaryAnalysis =
+            makeBoundaryAnalysis(segmentationGray, depth16, config, depthScale, edgeSourceIsInfrared);
+        cv::Mat splitBoundaryMask = boundaryAnalysis.splitBoundaryMask;
+        timingStats.boundaryMs = takeSectionMs();
+
+        std::vector<ObservationMaterial> candidateMaterials =
+            extractObservationMaterials(
+                depth16,
+                splitBoundaryMask,
+                config,
+                depthScale,
+                colorIntrinsics,
+                frameId,
+                nullptr);
+        candidateMaterials = refineDepthMaterialsWithColorContours(
+            candidateMaterials,
+            colorContourRegions,
+            depth16,
+            depthScale,
+            colorIntrinsics,
+            config,
+            frameId);
+        timingStats.extractMs = takeSectionMs();
+
+        std::vector<FarDistanceMaterial> farDistanceMaterials;
+        if (config.farDistanceIntervals && config.clusterMap)
+        {
+            farDistanceMaterials =
+                extractFarDistanceMaterials(
+                    depth16,
+                    splitBoundaryMask,
+                    segmentationGray,
+                    edgeSourceIsInfrared,
+                    config,
+                    depthScale);
+            timingStats.farExtractMs = takeSectionMs();
+        }
+
+        if (config.pclClustering)
+        {
+            if (candidateMaterials.empty())
+            {
+                pclCandidateCache.clear();
+            }
+            else if (pclCandidateCache.empty() || frameId % static_cast<uint64_t>(config.pclFrameInterval) == 0)
+            {
+                pclCandidateCache = refineObservationMaterialsWithPclClusters(
+                    candidateMaterials,
+                    depth16,
+                    config,
+                    depthScale,
+                    colorIntrinsics,
+                    frameId);
+            }
+
+            candidateMaterials = pclCandidateCache;
+            for (ObservationMaterial& material : candidateMaterials)
+            {
+                material.sourceFrameId = frameId;
+            }
+        }
+        timingStats.pclMs = takeSectionMs();
+
+        if (config.qualitySegmentation)
+        {
+            lastFinalSegmentationFrame =
+                buildFinalSegmentationFrame(colorBgr, candidateMaterials, colorContourRegions);
+            hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
+        }
+
+        int anchorPointsOnCandidates = 0;
+        std::vector<ObservationMaterial> anchorSupportedCandidates =
+            calibrateMaterialsWithStableAnchors(
+                candidateMaterials,
+                anchorMask,
+                depth16,
+                depthScale,
+                stableDisplayConfig.stableContourMinAnchors,
+                anchorPointsOnCandidates);
+        timingStats.calibrateMs = takeSectionMs();
+        anchorSupportedCandidates = mergeStablePlaneFragmentsByAnchors(
+            anchorSupportedCandidates,
+            anchorMask,
+            splitBoundaryMask,
+            depth16,
+            config,
+            depthScale,
+            colorIntrinsics,
+            frameId);
+        anchorPointsOnCandidates =
+            countStableAnchorPointsOnMaterials(anchorSupportedCandidates, anchorMask, depth16, depthScale);
+        timingStats.calibrateMs += takeSectionMs();
+
+        CueSelectionSummary cueSummary;
+        std::vector<ObservationMaterial> cueSelectedCandidates =
+            selectCandidatesByCue(
+                anchorSupportedCandidates,
+                boundaryAnalysis,
+                config,
+                colorBgr.size(),
+                stableDisplayConfig.stableContourMinAnchors,
+                cueSummary);
+        timingStats.cueMs = takeSectionMs();
+
+        std::vector<ObservationMaterial> stableMaterials =
+            tracker.update(cueSelectedCandidates, config, frameId);
+        timingStats.trackerMs = takeSectionMs();
+
+        for (const ObservationMaterial& stableMaterial : stableMaterials)
+        {
+            const StableContourSupport support =
+                measureStableContourSupport(stableMaterial, anchorMask, depth16, depthScale);
+            if (support.anchorCount < stableDisplayConfig.stableContourMinAnchors)
+            {
+                continue;
+            }
+            StableContourTrackAggregate& aggregate = stableTrackAggregates[stableMaterial.observationId];
+            addStableContourObservation(
+                aggregate,
+                stableMaterial,
+                support,
+                static_cast<int>(frameId + 1));
+        }
+        timingStats.supportMs = takeSectionMs();
+
+        std::vector<ObservationMaterial> nearPlaneMaterials;
+        if (config.clusterMap && config.nearPlaneDisplay)
+        {
+            const bool refreshNearPlanes =
+                !hasNearPlaneCache ||
+                frameId % static_cast<uint64_t>(config.nearPlaneFrameInterval) == 0;
+            if (refreshNearPlanes)
+            {
+                cachedNearPlaneMaterials =
+                    extractNearPlaneDisplayMaterials(
+                        depth16,
+                        splitBoundaryMask,
+                        config,
+                        depthScale,
+                        colorIntrinsics,
+                        frameId);
+                hasNearPlaneCache = true;
+            }
+            nearPlaneMaterials = cachedNearPlaneMaterials;
+            timingStats.diagnosticsMs += takeSectionMs();
+        }
+
+        cv::Mat stableMaskForFrame;
+        if (config.clusterMap)
+        {
+            stableMaskForFrame = buildStableContourMask(colorBgr.size(), stableMaterials);
+        }
+        IndoorPlaneAnalysis indoorPlaneAnalysis;
+        if (config.clusterMap)
+        {
+            const bool refreshIndoorPlanes =
+                !hasIndoorPlaneCache ||
+                frameId % static_cast<uint64_t>(config.indoorPlaneFrameInterval) == 0;
+            if (refreshIndoorPlanes)
+            {
+                cachedIndoorPlaneAnalysis = buildIndoorPlaneAnalysis(
+                    depth16,
+                    stableMaskForFrame,
+                    config,
+                    depthScale,
+                    colorIntrinsics);
+                cachedIndoorPlaneAnalysis.reusedFromCache = false;
+                hasIndoorPlaneCache = true;
+            }
+            indoorPlaneAnalysis = cachedIndoorPlaneAnalysis;
+            indoorPlaneAnalysis.reusedFromCache = !refreshIndoorPlanes;
+        }
+        timingStats.diagnosticsMs += takeSectionMs();
+
+        if (config.clusterMap)
+        {
+            lastClusterMapFrame = buildFullFrameClusterMap(
+                colorBgr.size(),
+                stableMaterials,
+                farDistanceMaterials,
+                nearPlaneMaterials,
+                indoorPlaneAnalysis,
+                segmentationGray,
+                config);
+            lastClusterMapColor = colorBgr.clone();
+            hasLastClusterMapFrame = true;
+            timingStats.diagnosticsMs += takeSectionMs();
+        }
+
+        if (config.analysisExportEveryN > 0 &&
+            frameId % static_cast<uint64_t>(config.analysisExportEveryN) == 0)
+        {
+            if (config.clusterMap && hasLastClusterMapFrame)
+            {
+                writeClusterMapExport(
+                    lastClusterMapFrame,
+                    lastClusterMapColor,
+                    config,
+                    static_cast<int64_t>(frameId));
+            }
+            if (!config.finalSegmentationExportPath.empty() && hasLastFinalSegmentationFrame)
+            {
+                writeFinalSegmentationExport(
+                    lastFinalSegmentationFrame,
+                    config,
+                    static_cast<int64_t>(frameId));
+            }
+        }
+
+        const auto frameEnd = std::chrono::steady_clock::now();
+        const double frameMs =
+            std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+        profileCsv.write(
+            frameId,
+            frameMs,
+            static_cast<int>(candidateMaterials.size()),
+            static_cast<int>(anchorSupportedCandidates.size()),
+            static_cast<int>(stableMaterials.size()),
+            static_cast<int>(farDistanceMaterials.size()),
+            cv::countNonZero(anchorMask),
+            anchorPointsOnCandidates,
+            timingStats);
+    }
+
+    profileCsv.close();
+    if (config.clusterMap && hasLastClusterMapFrame)
+    {
+        writeClusterMapExport(lastClusterMapFrame, lastClusterMapColor, config);
+    }
+    if (!config.finalSegmentationExportPath.empty() && hasLastFinalSegmentationFrame)
+    {
+        writeFinalSegmentationExport(lastFinalSegmentationFrame, config);
+    }
+    std::cout << "Replay directory complete: processed " << replayFrames.size() << " frames\n";
+    return 0;
+}
 }
 
 int main(int argc, char** argv)
@@ -11404,6 +11921,15 @@ int main(int argc, char** argv)
     if (hasFlag(argc, argv, "--help") || hasFlag(argc, argv, "-h"))
     {
         return 0;
+    }
+    std::string replayDirPath;
+    for (int i = 1; i < argc; ++i)
+    {
+        parseStringOption(argv[i], "--replay-dir=", replayDirPath);
+    }
+    if (!replayDirPath.empty())
+    {
+        return runReplayDirectory(replayDirPath, argc, argv, config, maxFrames);
     }
 
     try
