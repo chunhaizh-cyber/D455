@@ -94,6 +94,15 @@ Capture the first fixed cases directly from D455 before running measured optimiz
 
 After capture, edit each `case_manifest.json` with scene notes and expected behavior. Do not treat uncategorized live captures as benchmark truth.
 
+Run the first measured replay round as a small gate, not as the full 60-run grid:
+
+```powershell
+python scripts\run_batch.py --candidates configs\baseline\default.json --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
+python scripts\run_batch.py --candidates configs\candidates\round_001 --candidate-id candidate_0001 --candidate-id candidate_0002 --cases eval\cases.yaml --case-id near_single_object --case-id far_cabinet --case-id depth_hole_black_object --max-frames-override=120 --analysis-export-every-n=30 --ignore-first-n-frames=30 --execute
+```
+
+`run_batch.py` supports `--case-id` and `--candidate-id` filters for bounded smoke rounds, `--max-frames-override` to keep the first fixed cases at 60 to 120 frames, and `--skip-missing-replay` only for command-chain validation before all datasets are captured. A skipped replay run is not scoring evidence.
+
 When converting smoke exports, `convert_exports_to_analysis_run.py` updates template or incomplete `run_manifest.json` / `config_snapshot.json` records with the real `run_id`, `candidate_id`, `case_id`, `evaluation_mode=converted_export`, input paths, and command line. Existing non-template records are preserved unless `--update-manifest` or `--overwrite-config-snapshot` is passed.
 
 ## Gates
