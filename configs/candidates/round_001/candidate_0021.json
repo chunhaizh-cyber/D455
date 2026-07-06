@@ -1,0 +1,30 @@
+{
+  "candidate_id": "candidate_0021",
+  "parent": "candidate_0020",
+  "purpose": "Motion-refresh variant: use cached stereo reuse and disable mean-shift color filtering to make color contour refresh lightweight enough for slow-pan replay.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0"
+  ],
+  "expected_effect": [
+    "Remove the high-cost pyrMeanShiftFiltering step from refresh frames.",
+    "Keep motion-triggered contour refresh and cached stereo transfer.",
+    "Preserve full-frame assignment while reducing refresh-frame p95."
+  ],
+  "risk": [
+    "Color-connected regions may become noisier without mean-shift smoothing.",
+    "Needs visual review and hand_occlusion_reappear replay before promotion."
+  ]
+}

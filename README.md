@@ -71,6 +71,20 @@ analysis_runs/<run_id>/notes.md
 
 `configs/best/best_replay_static_refresh.json` 将 `candidate_0017` 固化为当前静态 refresh bucket 赢家；它不替换 `best_replay_static_far_distance.json`，后者仍保留为来自 `candidate_0014` 的低频粗距基础桶。`best_replay_static_refresh` 的适用范围限定为 deterministic/static replay 和低运动场景，不能代表 motion best。`scripts/select_winners.py` 的 leaderboard 现在直接输出 `color_refresh_count`、`color_refresh_motion_count`、`color_refresh_unknown_spike_count`、`color_refresh_far_loss_count`、`color_cache_reuse_count` 和 `color_stereo_reuse_p50`，后续 `replay_motion_gate_001` 不需要再逐个翻 `run_score.json` 才能判断刷新触发是否真的发生。
 
+`slow_pan_far_object` 的第一段真实慢速平移 replay 显示，0015/0017 能触发 `color_contour_refresh_motion`，但刷新帧的 `gray_prepare_ms` 达到约 380-416ms，主要开销来自对全部彩图轮廓执行双目粗距匹配。为此新增 `--stereo-contour-max-regions-per-frame=N`，默认 32 保持旧行为；`candidate_0018` 先设为 8，但按面积优先仍会命中最大、最贵的区域。随后新增 `--stereo-contour-max-roi-area-percent=N`，默认 100 保持旧行为；`candidate_0019` 设为 12%，并把每帧实际 stereo match 尝试限制为 16 次，目标是跳过巨大平面/背景模板，让 motion refresh 不再产生 400ms 级别卡顿。风险是大区域可能暂时只有 2D 归属、没有双目粗距。
+
+ROI/数量筛选只能小幅降低刷新帧耗时，不能根治同步 `matchTemplate` 卡顿。`--stereo-contour-reuse-cached-on-refresh` 改为在已有缓存后刷新彩图轮廓、但把上一批 stereo 粗距按 bbox IoU/中心距离转移到新轮廓；`candidate_0020` 使用该策略，目标是让 motion refresh 更新轮廓归属而不在同一帧重跑双目匹配。这个策略的距离会有短时滞后，后续更完整的方案应把 stereo 粗距做成分帧或异步后台刷新。
+
+如果复用 stereo 后刷新帧仍超时，瓶颈就转移到彩图分割本身，尤其是 `pyrMeanShiftFiltering`。`candidate_0021` 在 0020 基础上把 `--color-segmentation-mean-shift-spatial=0` 和 `--color-segmentation-mean-shift-color=0`，用于验证轻量彩图轮廓刷新是否足够通过慢速平移 replay；风险是彩色连通区域会更碎，需要靠 leaderboard 的 split/merge 和后续可视化复核约束。
+
+`candidate_0022` 继续压低轻量彩图刷新成本：颜色 bins 从 6 降到 4，最多保留 16 个彩图区域，最小区域提高到 1200 px。它是 motion gate 的性能探针，不代表最终细粒度分割策略；如果它通过但画面颗粒度明显下降，下一步应改为 ROI 局部刷新或分帧刷新，而不是继续全局降质量。
+
+`candidate_0023` 是更激进的全局刷新下界探针：bins=3、最多 8 个彩图区域、min area=2000。它只用于判断全局彩图刷新是否存在可过 100ms p95 的参数空间；即使通过，也不能直接当最终质量方案。
+
+`candidate_0024` 进一步把全局刷新压到最多 4 个大彩图区域、min area=3000，用来确认硬门槛的理论下界。它若通过，只能说明“极粗全局刷新能跑快”，不能说明分割质量达标。
+
+真实慢速平移数据 `datasets/slow_pan_far_object` 已完成本地采集，包含 180 帧 color/depth16/left IR/right IR，并已按 case contract finalized/reviewed；检查视频为本地 `recordings/slow_pan_far_object_color_20260706_1549.mp4`，数据集和视频不进入 Git。`replay_motion_slow_pan_001` 跑了 0013、0014、0015、0017、0018-0024：只有关闭 stereo contour distance 的 `candidate_0013` 通过，`candidate_0024` 是最接近的刷新候选但 p95 仍为 111.572ms。结论是 motion trigger 有效，但全局彩图轮廓刷新即使降到 4 个大区域也不能可靠过 100ms；下一步应实现 ROI 局部刷新或分帧/异步刷新，而不是继续降低全局分割颗粒度。
+
 评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
 
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：

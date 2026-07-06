@@ -1,0 +1,33 @@
+{
+  "candidate_id": "candidate_0022",
+  "parent": "candidate_0021",
+  "purpose": "Motion-refresh variant: further reduce lightweight color contour refresh cost by using coarser color quantization and fewer retained color regions.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=4",
+    "--color-segmentation-max-regions=16",
+    "--color-segmentation-min-area-px=1200"
+  ],
+  "expected_effect": [
+    "Reduce per-refresh connected-component work.",
+    "Keep only larger color ownership regions during motion refresh.",
+    "Improve slow-pan p95 while retaining rough far-distance evidence through cached stereo transfer."
+  ],
+  "risk": [
+    "Fine-grained color ownership can be lost for small objects.",
+    "May hide split/merge issues that require denser color regions."
+  ]
+}

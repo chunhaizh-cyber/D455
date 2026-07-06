@@ -1,0 +1,28 @@
+{
+  "candidate_id": "candidate_0018",
+  "parent": "candidate_0017",
+  "purpose": "Motion-refresh variant: cap expensive stereo contour matching to the largest color regions so motion refresh can occur without a multi-hundred-ms frame spike.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-max-regions-per-frame=8"
+  ],
+  "expected_effect": [
+    "Keep candidate_0017 refresh behavior on slow-pan motion.",
+    "Reduce refresh-frame p95 by matching only the largest color contour regions.",
+    "Preserve enough far rough-distance evidence for large far objects."
+  ],
+  "risk": [
+    "Small far contours may lose stereo rough distance when more than eight color regions exist.",
+    "Needs slow_pan_far_object and hand_occlusion_reappear replay gates before promotion."
+  ]
+}

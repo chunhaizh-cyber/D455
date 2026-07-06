@@ -164,6 +164,8 @@ struct SegmentationConfig
     int stereoContourMinDisparityTenthsPx = 5;
     int stereoContourMaxVerticalShiftPixels = 12;
     int stereoContourSearchMarginPixels = 48;
+    int stereoContourMaxRegionsPerFrame = 32;
+    int stereoContourMaxRoiAreaPercent = 100;
     int stereoContourBaselineMm = 95;
     int processedViewScalePercent = 75;
     int overlapTrimMinSupportPercent = 3;
@@ -204,6 +206,7 @@ struct SegmentationConfig
     bool colorSegmentation = true;
     bool colorRefineDepthMasks = true;
     bool stereoContourDistance = true;
+    bool stereoContourReuseCachedOnRefresh = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
@@ -738,6 +741,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
             parseIntOption(arg, "--stereo-contour-max-vertical-shift-px=", config.stereoContourMaxVerticalShiftPixels) ||
             parseIntOption(arg, "--stereo-contour-search-margin-px=", config.stereoContourSearchMarginPixels) ||
+            parseIntOption(arg, "--stereo-contour-max-regions-per-frame=", config.stereoContourMaxRegionsPerFrame) ||
+            parseIntOption(arg, "--stereo-contour-max-roi-area-percent=", config.stereoContourMaxRoiAreaPercent) ||
             parseIntOption(arg, "--stereo-contour-baseline-mm=", config.stereoContourBaselineMm) ||
             parseIntOption(arg, "--processed-view-scale-percent=", config.processedViewScalePercent) ||
             parseIntOption(arg, "--overlap-trim-min-support-percent=", config.overlapTrimMinSupportPercent) ||
@@ -1051,6 +1056,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
             config.stereoContourDistance = false;
             continue;
         }
+        if (arg == "--stereo-contour-reuse-cached-on-refresh")
+        {
+            config.stereoContourReuseCachedOnRefresh = true;
+            continue;
+        }
+        if (arg == "--no-stereo-contour-reuse-cached-on-refresh")
+        {
+            config.stereoContourReuseCachedOnRefresh = false;
+            continue;
+        }
         if (arg == "--color-contour-refresh-on-motion")
         {
             config.colorContourRefreshOnMotion = true;
@@ -1335,6 +1350,8 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.stereoContourMinDisparityTenthsPx = std::clamp(config.stereoContourMinDisparityTenthsPx, 1, 200);
     config.stereoContourMaxVerticalShiftPixels = std::clamp(config.stereoContourMaxVerticalShiftPixels, 0, 120);
     config.stereoContourSearchMarginPixels = std::clamp(config.stereoContourSearchMarginPixels, 0, 240);
+    config.stereoContourMaxRegionsPerFrame = std::clamp(config.stereoContourMaxRegionsPerFrame, 1, 200);
+    config.stereoContourMaxRoiAreaPercent = std::clamp(config.stereoContourMaxRoiAreaPercent, 1, 100);
     config.stereoContourBaselineMm = std::clamp(config.stereoContourBaselineMm, 1, 500);
     config.processedViewScalePercent = std::clamp(config.processedViewScalePercent, 25, 100);
     config.overlapTrimMinSupportPercent = std::clamp(config.overlapTrimMinSupportPercent, 1, 80);
@@ -6124,6 +6141,49 @@ int countStereoDistanceValidRegions(const std::vector<ColorContourRegion>& regio
     return count;
 }
 
+int reuseCachedStereoDistances(
+    std::vector<ColorContourRegion>& regions,
+    const std::vector<ColorContourRegion>& cachedRegions)
+{
+    int reused = 0;
+    for (ColorContourRegion& region : regions)
+    {
+        const ColorContourRegion* best = nullptr;
+        double bestScore = 0.0;
+        for (const ColorContourRegion& cached : cachedRegions)
+        {
+            if (cached.estimatedDistanceMm <= 0)
+            {
+                continue;
+            }
+            const double iou = rectIou(region.roi, cached.roi);
+            const double centerDistance = std::hypot(
+                static_cast<double>(region.center.x - cached.center.x),
+                static_cast<double>(region.center.y - cached.center.y));
+            const double centerScore = std::max(0.0, 1.0 - centerDistance / 160.0);
+            const double score = iou * 3.0 + centerScore;
+            if ((iou >= 0.05 || centerDistance <= 120.0) && score > bestScore)
+            {
+                best = &cached;
+                bestScore = score;
+            }
+        }
+        if (best == nullptr)
+        {
+            continue;
+        }
+        region.estimatedDistanceMm = best->estimatedDistanceMm;
+        region.distanceUncertaintyMm = best->distanceUncertaintyMm;
+        region.estimatedWidthMm = best->estimatedWidthMm;
+        region.estimatedHeightMm = best->estimatedHeightMm;
+        region.medianDisparityPx = best->medianDisparityPx;
+        region.matchedStereoPoints = best->matchedStereoPoints;
+        region.distanceConfidence = best->distanceConfidence;
+        ++reused;
+    }
+    return reused;
+}
+
 cv::Mat makeColorContourMotionSignature(const cv::Mat& colorBgr)
 {
     if (colorBgr.empty())
@@ -6314,11 +6374,19 @@ void estimateStereoContourDistances(
     cv::Canny(rightGray, rightEdges, config.infraredCannyLow, config.infraredCannyHigh);
     const cv::Rect frameRect(0, 0, leftGray.cols, leftGray.rows);
     const double minDisparityPx = config.stereoContourMinDisparityTenthsPx / 10.0;
+    const int maxStereoRoiArea = std::max(
+        1,
+        frameRect.area() * config.stereoContourMaxRoiAreaPercent / 100);
 
+    int processedRegions = 0;
     for (ColorContourRegion& region : regions)
     {
         cv::Rect templateRoi = region.roi & frameRect;
         if (templateRoi.width < 8 || templateRoi.height < 8)
+        {
+            continue;
+        }
+        if (templateRoi.area() > maxStereoRoiArea)
         {
             continue;
         }
@@ -6342,6 +6410,11 @@ void estimateStereoContourDistances(
         {
             continue;
         }
+        if (processedRegions >= config.stereoContourMaxRegionsPerFrame)
+        {
+            break;
+        }
+        ++processedRegions;
 
         cv::Mat response;
         cv::matchTemplate(search, templ, response, cv::TM_CCOEFF_NORMED);
@@ -11495,6 +11568,8 @@ void printUsage()
         << "  --no-color-refine-depth-masks\n"
         << "  --stereo-contour-distance\n"
         << "  --no-stereo-contour-distance\n"
+        << "  --stereo-contour-reuse-cached-on-refresh\n"
+        << "  --no-stereo-contour-reuse-cached-on-refresh\n"
         << "  --final-segmentation-export=recordings\\final_segmentation_sample\n"
         << "  --color-segmentation-min-area-px=700\n"
         << "  --color-segmentation-max-roi-area-percent=55\n"
@@ -11514,6 +11589,8 @@ void printUsage()
         << "  --color-contour-refresh-unknown-percent=5\n"
         << "  --color-contour-refresh-on-far-loss\n"
         << "  --stereo-contour-min-disparity-tenths-px=5\n"
+        << "  --stereo-contour-max-regions-per-frame=32\n"
+        << "  --stereo-contour-max-roi-area-percent=100\n"
         << "  --stereo-contour-baseline-mm=95\n"
         << "  --mosaic-foreground-gate\n"
         << "  --no-mosaic-foreground-gate\n"
@@ -11811,7 +11888,16 @@ int runReplayDirectory(
             colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
             colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
             colorContourRegions = extractColorContourRegions(colorBgr, config);
-            if (!colorContourRegions.empty() && config.stereoContourDistance)
+            const bool reuseCachedStereoThisRefresh =
+                config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
+            if (reuseCachedStereoThisRefresh)
+            {
+                colorContourRefreshStats.stereoReuseCount =
+                    reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
+            }
+            if (!reuseCachedStereoThisRefresh &&
+                !colorContourRegions.empty() &&
+                config.stereoContourDistance)
             {
                 cv::Mat leftIrForStereo = loadReplayGray8(replayFrame.irLeftPath);
                 cv::Mat rightIrForStereo = loadReplayGray8(replayFrame.irRightPath);
@@ -12667,7 +12753,16 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
                 colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
                 colorContourRegions = extractColorContourRegions(colorBgr, config);
-                if (!colorContourRegions.empty() && config.stereoContourDistance)
+                const bool reuseCachedStereoThisRefresh =
+                    config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
+                if (reuseCachedStereoThisRefresh)
+                {
+                    colorContourRefreshStats.stereoReuseCount =
+                        reuseCachedStereoDistances(colorContourRegions, cachedColorContourRegions);
+                }
+                if (!reuseCachedStereoThisRefresh &&
+                    !colorContourRegions.empty() &&
+                    config.stereoContourDistance)
                 {
                     cv::Mat leftIrForStereo;
                     cv::Mat rightIrForStereo;

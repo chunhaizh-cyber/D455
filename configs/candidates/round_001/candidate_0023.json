@@ -1,0 +1,33 @@
+{
+  "candidate_id": "candidate_0023",
+  "parent": "candidate_0022",
+  "purpose": "Aggressive performance probe for slow-pan motion refresh: very coarse color quantization and only the largest ownership regions.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=8",
+    "--color-segmentation-min-area-px=2000"
+  ],
+  "expected_effect": [
+    "Find the lower bound of global color refresh cost before implementing ROI refresh.",
+    "Keep only large color ownership regions to reduce connected-component and calibration work.",
+    "Test whether any global refresh configuration can pass the 100 ms p95 gate on slow_pan_far_object."
+  ],
+  "risk": [
+    "This may be too coarse for final segmentation quality.",
+    "Use as a performance probe, not as a promotion candidate without visual review."
+  ]
+}

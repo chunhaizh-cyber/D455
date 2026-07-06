@@ -169,4 +169,30 @@ Minimum leaderboard artifacts are committed under `leaderboards/replay_static_re
 
 `configs/best/best_replay_static_refresh.json` now promotes `candidate_0017` only for the static refresh bucket. It does not replace `best_replay_static_far_distance.json`, which remains the earlier `candidate_0014` low-frequency far-distance baseline. The generated leaderboard schema now includes refresh/cache/reuse columns so the next motion gate can be judged directly from `leaderboard.csv`.
 
-Current blocker remains unchanged: `datasets/slow_pan_far_object` and `datasets/hand_occlusion_reappear` are not present locally yet, so no real motion gate score has been produced.
+First real `slow_pan_far_object` replay smoke showed the expected trigger but failed the performance gate: `candidate_0015` and `candidate_0017` both recorded `color_contour_refresh_motion=1`, while refresh frames spent roughly 380-416 ms in `gray_prepare_ms`. `candidate_0018` capped region count but still matched huge templates. `candidate_0019` adds `--stereo-contour-max-roi-area-percent=12` and caps actual match attempts with `--stereo-contour-max-regions-per-frame=16`.
+
+`candidate_0020` adds `--stereo-contour-reuse-cached-on-refresh`: after startup, color contour refresh updates masks but transfers cached stereo estimates by bbox IoU/center proximity instead of synchronously running stereo matchTemplate on the refresh frame. This is the first practical attempt to remove the 400 ms refresh-frame hitch while preserving rough far-distance evidence.
+
+If 0020 still fails, the next likely bottleneck is color segmentation itself. `candidate_0021` disables mean-shift color filtering with `--color-segmentation-mean-shift-spatial=0` and `--color-segmentation-mean-shift-color=0` while keeping cached stereo reuse.
+
+## Slow Pan Motion Smoke 001
+
+`datasets/slow_pan_far_object` was captured locally from a real slow camera pan: 180 color/depth16/left-IR/right-IR frames, finalized with `reviewed=true`. The review video is local at `recordings/slow_pan_far_object_color_20260706_1549.mp4`; raw dataset and video are not committed.
+
+Run: `analysis_runs/replay_motion_slow_pan_001`, `--max-frames-override=180`, `--analysis-export-every-n=30`, `--ignore-first-n-frames=30`.
+
+Result summary:
+
+| candidate | pass | p95 ms | refresh | motion refresh | stereo reuse p50 | far score | note |
+|---|---:|---:|---:|---:|---:|---:|---|
+| candidate_0013 | true | 82.3498 | 5 | 0 | 0 | 7.0 | speed baseline, no stereo contour distance |
+| candidate_0017 | false | 502.4370 | 2 | 1 | 9 | 10.0 | motion trigger works, sync stereo/color refresh stalls |
+| candidate_0020 | false | 482.0038 | 2 | 1 | 32 | 10.0 | cached stereo transfer works, color extraction still stalls |
+| candidate_0021 | false | 201.0834 | 2 | 1 | 32 | 10.0 | disabling mean-shift helps but not enough |
+| candidate_0022 | false | 163.6032 | 2 | 1 | 12 | 10.0 | coarser global refresh still fails |
+| candidate_0023 | false | 113.9948 | 2 | 1 | 8 | 10.0 | aggressive global lower-bound probe, still fails |
+| candidate_0024 | false | 111.5720 | 2 | 1 | 4 | 10.0 | closest failing probe; too coarse for final quality |
+
+Conclusion: motion refresh detection is real, but full-frame color contour refresh is not viable under the 100 ms p95 gate even after stereo reuse and aggressive global coarsening. The next implementation should be ROI-local refresh or split-frame/asynchronous refresh; do not promote 0020-0024 as best.
+
+Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.
