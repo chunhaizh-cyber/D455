@@ -269,10 +269,12 @@ struct FinalSegmentationFrame
 
 enum class ClusterSpatialMode
 {
-    NearPreciseObject,
-    FarContourObject,
+    PreciseDepth3D,
+    ApproxStereoContour,
     ImageOnlyContour,
     BackgroundPlane,
+    FarBackground,
+    DepthHoleCandidate,
     Unknown
 };
 
@@ -294,8 +296,9 @@ struct ClusterMapFrame
 {
     cv::Mat clusterIdMap;
     std::vector<ClusterInfo> clusters;
-    double coveragePercent = 0.0;
-    double unknownPixelPercent = 0.0;
+    double assignmentCoveragePercent = 0.0;
+    double clusterCoveragePercent = 0.0;
+    double unknownPercent = 0.0;
 };
 
 struct ObservationGroup
@@ -6511,14 +6514,18 @@ const char* clusterSpatialModeName(ClusterSpatialMode mode)
 {
     switch (mode)
     {
-    case ClusterSpatialMode::NearPreciseObject:
-        return "NearPreciseObject";
-    case ClusterSpatialMode::FarContourObject:
-        return "FarContourObject";
+    case ClusterSpatialMode::PreciseDepth3D:
+        return "PreciseDepth3D";
+    case ClusterSpatialMode::ApproxStereoContour:
+        return "ApproxStereoContour";
     case ClusterSpatialMode::ImageOnlyContour:
         return "ImageOnlyContour";
     case ClusterSpatialMode::BackgroundPlane:
         return "BackgroundPlane";
+    case ClusterSpatialMode::FarBackground:
+        return "FarBackground";
+    case ClusterSpatialMode::DepthHoleCandidate:
+        return "DepthHoleCandidate";
     case ClusterSpatialMode::Unknown:
     default:
         return "Unknown";
@@ -6676,7 +6683,7 @@ void appendFarDistanceClusters(
         appendClusterFromContour(
             frame,
             material.contour,
-            ClusterSpatialMode::FarContourObject,
+            ClusterSpatialMode::ApproxStereoContour,
             "far_depth_interval",
             material.observedDepthMinMm,
             material.medianDepthMm,
@@ -6807,7 +6814,7 @@ ClusterMapFrame buildFullFrameClusterMap(
     appendObservationMaterialClusters(
         frame,
         stableMaterials,
-        ClusterSpatialMode::NearPreciseObject,
+        ClusterSpatialMode::PreciseDepth3D,
         "stable_depth_tracker",
         0.90,
         nextClusterId);
@@ -6846,8 +6853,13 @@ ClusterMapFrame buildFullFrameClusterMap(
             unknownPixels += cluster.pixelCount;
         }
     }
-    frame.coveragePercent = 100.0 * static_cast<double>(assignedPixels) / static_cast<double>(framePixels);
-    frame.unknownPixelPercent = 100.0 * static_cast<double>(unknownPixels) / static_cast<double>(framePixels);
+    const int clusteredPixels = std::max(0, assignedPixels - unknownPixels);
+    frame.assignmentCoveragePercent =
+        100.0 * static_cast<double>(assignedPixels) / static_cast<double>(framePixels);
+    frame.clusterCoveragePercent =
+        100.0 * static_cast<double>(clusteredPixels) / static_cast<double>(framePixels);
+    frame.unknownPercent =
+        100.0 * static_cast<double>(unknownPixels) / static_cast<double>(framePixels);
     return frame;
 }
 
@@ -6926,8 +6938,12 @@ void writeClusterMapExport(
 
     metadata << "{\n";
     metadata << "  \"image_size\": [" << frame.clusterIdMap.cols << ", " << frame.clusterIdMap.rows << "],\n";
-    metadata << "  \"coverage_percent\": " << std::fixed << std::setprecision(3) << frame.coveragePercent << ",\n";
-    metadata << "  \"unknown_pixel_percent\": " << std::fixed << std::setprecision(3) << frame.unknownPixelPercent << ",\n";
+    metadata << "  \"assignment_coverage_percent\": "
+        << std::fixed << std::setprecision(3) << frame.assignmentCoveragePercent << ",\n";
+    metadata << "  \"cluster_coverage_percent\": "
+        << std::fixed << std::setprecision(3) << frame.clusterCoveragePercent << ",\n";
+    metadata << "  \"unknown_percent\": "
+        << std::fixed << std::setprecision(3) << frame.unknownPercent << ",\n";
     metadata << "  \"clusters\": [\n";
     for (size_t index = 0; index < frame.clusters.size(); ++index)
     {

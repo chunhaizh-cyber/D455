@@ -41,12 +41,13 @@ Start with Level 1 and Level 2 until the replay/evaluation loop has run repeated
 ```powershell
 python scripts/generate_candidates.py --search-space eval/search_space.yaml --parent configs/baseline/default.json --count 12 --out configs/candidates/round_001
 python scripts/run_batch.py --candidates configs/candidates/round_001 --cases eval/cases.yaml --out .codex_handoff/round_001_plan --dry-run
+python scripts/convert_exports_to_analysis_run.py --run-dir analysis_runs\<run_id>
 python scripts/score_run.py --runs analysis_runs
 python scripts/select_winners.py --runs analysis_runs --out leaderboards
 python scripts/make_codex_handoff.py --leaderboard leaderboards/leaderboard.csv --runs analysis_runs --out .codex_handoff/round_001.md
 ```
 
-`run_batch.py` is intentionally dry-run friendly until replay input is implemented. Keep dry-run command plans under `.codex_handoff/` so they do not look like measured `analysis_runs` data. Do not treat a generated command plan as a completed experiment.
+`run_batch.py` is intentionally dry-run friendly until replay input is implemented. Keep dry-run command plans under `.codex_handoff/` so they do not look like measured `analysis_runs` data. Do not treat a generated command plan as a completed experiment. The dry-run plan now includes a `convert_command` column; after manually running one planned D455 command, run that converter command to create the minimum standard package before scoring.
 
 Round 001 has been initialized this way: 12 candidates were generated under `configs/candidates/round_001/`, and a 60-command dry-run plan was written to `.codex_handoff/round_001_plan/command_plan.csv`. This round has no winner because there is no deterministic replay dataset and no real `run_score.json` evidence yet.
 

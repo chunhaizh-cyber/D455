@@ -47,7 +47,7 @@ analysis_runs/<run_id>/notes.md
 
 特征采集不能拖垮实时主循环。默认路线是 `feature_profile=normal`：每帧保留核心 `frame_metrics`，高成本轮廓/双目/PCL 诊断按间隔或事件触发，sample frames 只在采样或异常时保存。后续实现命令行开关时按 `--feature-profile=light|normal|debug|full`、`--feature-heavy-interval=15`、`--feature-dump-on-event` 的口径落地。
 
-自动实验闭环见 `docs/AUTOMATED_EXPERIMENT_LOOP.md`。闭环原则是“程序自己跑，评判集自己打分，Codex 只根据证据提出下一轮参数、运行方式或代码改动”。第一阶段只开放配置候选：`configs/baseline/` 保存基线，`configs/candidates/` 保存候选，`eval/` 保存 case、搜索空间、权重和阈值，`scripts/score_run.py` / `scripts/select_winners.py` / `scripts/make_codex_handoff.py` 生成 `run_score.json`、排行榜和 `.codex_handoff/round_xxx.md`。在 replay 输入真正实现前，`scripts/run_batch.py` 只用于生成 dry-run 命令计划，不代表已完成评测。
+自动实验闭环见 `docs/AUTOMATED_EXPERIMENT_LOOP.md`。闭环原则是“程序自己跑，评判集自己打分，Codex 只根据证据提出下一轮参数、运行方式或代码改动”。第一阶段只开放配置候选：`configs/baseline/` 保存基线，`configs/candidates/` 保存候选，`eval/` 保存 case、搜索空间、权重和阈值，`scripts/score_run.py` / `scripts/select_winners.py` / `scripts/make_codex_handoff.py` 生成 `run_score.json`、排行榜和 `.codex_handoff/round_xxx.md`。在 replay 输入真正实现前，`scripts/run_batch.py` 只用于生成 dry-run 命令计划，不代表已完成评测。当前过渡闭环先用 `scripts/convert_exports_to_analysis_run.py` 把 D455 已能导出的 `cluster_map_metadata.json`、`final_segmentation_metadata.json` 和 `profile.csv` 转成标准 `frame_metrics.csv`、`cluster_metrics.jsonl`、`events.csv`，再交给 `score_run.py`。
 
 自动优化 Round 001 已先落地为配置候选和干跑计划：候选位于 `configs/candidates/round_001/`，计划位于 `.codex_handoff/round_001_plan/command_plan.csv`，交接记录为 `.codex_handoff/round_001.md`。这一轮只确认候选生成和命令规划可复现，不宣称画面分割质量提升；真正的下一步是补齐 `datasets/` 确定性回放输入或实现可复跑 replay，然后由 `run_score.json` 和排行榜决定是否保留候选。当前候选生成脚本会从 `eval/search_space.yaml` 的 `arg` 字段读取真实 D455 命令行参数，基线配置不再携带尚未实现的 `--feature-profile=*` 开关。
 
@@ -58,7 +58,7 @@ analysis_runs/<run_id>/notes.md
 | 阶段 | 目标 | 当前动作 | 判定方式 |
 | --- | --- | --- | --- |
 | P4.5 工程拆分 | 将采集、深度后处理、边界分析、材料提取、PCL、tracker、诊断显示分层 | 先保持单文件行为不变，新增独立 profile CSV 作为拆分前基线；后续再逐步搬到 `src/` 模块 | 拆分前后 2x2 画面、验收 CSV 字段和核心指标基本一致 |
-| P5 全画面归簇 | 每个像素都有 `cluster_id`，近场给精确 3D，远场/无效深度先保留 2D 轮廓，剩余区域归 background/unknown | 已新增可选 `--cluster-map` 原型，导出最后一帧 `*_ids.png`、`*_overlay.png`、`*_metadata.json`；仍不改变默认 2x2 稳定显示 | `coverage_percent` 接近 100%，`unknown_pixel_percent` 可控，metadata 能区分近场、远场、图像轮廓、背景和未知 |
+| P5 全画面归簇 | 每个像素都有 `cluster_id`，近场给精确 3D，远场/无效深度先保留 2D 轮廓，剩余区域归 background/unknown | 已新增可选 `--cluster-map` 原型，导出最后一帧 `*_ids.png`、`*_overlay.png`、`*_metadata.json`；仍不改变默认 2x2 稳定显示 | `assignment_coverage_percent` 检查是否全像素有归属，`cluster_coverage_percent` 检查非 Unknown 有效归簇率，`unknown_percent` 检查未知区域占比 |
 | P6 指标门槛 | 把“感觉更稳”变成 pass/fail | 用 acceptance CSV + profile CSV 汇总 p50/p90/p95、IoU、抖动和 flicker | 指标达到阶段阈值，且失败帧可定位 |
 | P7 配置系统 | 减少命令行参数雪崩 | 后续增加 `configs/default.json` / `configs/fast.json`，命令行只做覆盖 | 一组效果参数能随仓库保存并复跑 |
 | P8 构建复现 | 降低换机器成本 | 后续补 `vcpkg.json`、`CMakeLists.txt`、`CMakePresets.json`，保留现有 `.vcxproj` | 新机器可按 preset 构建 |
@@ -202,16 +202,19 @@ msbuild .\D455.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 
 | mode | 含义 | 空间精度口径 |
 | --- | --- | --- |
-| `NearPreciseObject` | 当前稳定 tracker 输出的近场深度稳定轮廓 | 可使用 D455 深度统计，属于较高精度 3D 观察材料 |
-| `FarContourObject` | 超出有效距离但仍有深度区间支持的远距候选 | 只表示区间距离和近远顺序，不是精确 3D |
+| `PreciseDepth3D` | 当前稳定 tracker 输出的近场深度稳定轮廓 | 可使用 D455 深度统计，属于较高精度 3D 观察材料 |
+| `ApproxStereoContour` | 超出有效距离但仍有深度区间或双目轮廓支持的远距候选 | 只表示粗距或近远顺序，不是精确 3D |
 | `ImageOnlyContour` | 不依赖有效深度的 IR/RGB 视觉轮廓 | 只确认 2D 轮廓归属，距离未知 |
 | `BackgroundPlane` | 室内平面/近处水平面诊断得到的背景结构 | 背景结构归属，不进入前景稳定 tracker |
+| `FarBackground` | 远处背景结构 | 远场背景归属，不作为前景目标 |
+| `DepthHoleCandidate` | 无效深度空洞中仍有视觉证据的候选 | 保留存在可能，不提供精确距离 |
 | `Unknown` | 剩余像素 | 为保证全画面覆盖的未知归属 |
 
 ```powershell
 .\x64\Release\D455.exe --cluster-map --no-display --max-frames=120
 .\x64\Release\D455.exe --cluster-map-export=recordings\cluster_map_p5 --no-display --max-frames=120
 .\x64\Release\D455.exe --cluster-map --cluster-map-visual-min-area-px=500 --cluster-map-max-visual-regions=32
+python scripts\convert_exports_to_analysis_run.py --run-dir=analysis_runs\smoke --cluster-map=analysis_runs\smoke\cluster_map_metadata.json --final-segmentation=analysis_runs\smoke\final_segmentation_metadata.json --profile-csv=analysis_runs\smoke\profile.csv
 ```
 
 注意：P5 原型只解决“每个像素有归属”和“深度精度分层标注”。右红外 IR2 + 双目轮廓偏差粗距属于后续 P6，不应把当前 `ImageOnlyContour` 当成已有距离估计。

@@ -51,23 +51,53 @@ def main():
         cand = json.loads(cand_path.read_text(encoding="utf-8"))
         for case in parse_cases(args.cases):
             run_id = f"{case['case_id']}_{cand['candidate_id']}"
+            analysis_dir = f"analysis_runs\\{run_id}"
+            cluster_map_base = f"{analysis_dir}\\cluster_map"
+            final_segmentation_base = f"{analysis_dir}\\final_segmentation"
+            profile_csv = f"{analysis_dir}\\profile.csv"
             command = " ".join([
                 args.exe,
                 *cand.get("args", []),
                 f"--max-frames={case['frames']}",
-                f"--cluster-map-export=analysis_runs\\{run_id}\\cluster_map",
-                f"--final-segmentation-export=analysis_runs\\{run_id}\\final_segmentation",
+                f"--profile-csv={profile_csv}",
+                f"--cluster-map-export={cluster_map_base}",
+                f"--final-segmentation-export={final_segmentation_base}",
+            ])
+            convert_command = " ".join([
+                "python",
+                "scripts\\convert_exports_to_analysis_run.py",
+                f"--run-dir={analysis_dir}",
+                f"--cluster-map={cluster_map_base}_metadata.json",
+                f"--final-segmentation={final_segmentation_base}_metadata.json",
+                f"--profile-csv={profile_csv}",
+                f"--candidate-config={cand_path}",
+                f"--candidate-id={cand['candidate_id']}",
+                f"--case-id={case['case_id']}",
+                f"--run-id={run_id}",
             ])
             rows.append({
                 "run_id": run_id,
                 "candidate_id": cand["candidate_id"],
                 "case_id": case["case_id"],
                 "replay": case["replay"],
+                "analysis_dir": analysis_dir,
                 "command": command,
+                "convert_command": convert_command,
             })
 
     with plan.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["run_id", "candidate_id", "case_id", "replay", "command"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "run_id",
+                "candidate_id",
+                "case_id",
+                "replay",
+                "analysis_dir",
+                "command",
+                "convert_command",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
     print(f"wrote {plan}")
