@@ -6964,12 +6964,12 @@ ClusterMapFrame buildFullFrameClusterMap(
     appendClusterFromMask(
         frame,
         unassigned,
-        ClusterSpatialMode::Unknown,
-        "unassigned_full_frame_remainder",
+        ClusterSpatialMode::FarBackground,
+        "unassigned_far_background_remainder",
         0,
         0,
         0,
-        0.10,
+        0.20,
         nextClusterId);
 
     const int framePixels = std::max(1, frameSize.width * frameSize.height);

@@ -53,6 +53,10 @@ analysis_runs/<run_id>/notes.md
 
 当前转换器兼容“最终帧/单帧桥”，但 smoke 评分应优先使用多帧分析导出：D455 新增 `--analysis-export-every-n=N`，会额外写出 `cluster_map_frame_000030_metadata.json`、`final_segmentation_frame_000030_metadata.json` 这类按帧编号的 metadata；`scripts/convert_exports_to_analysis_run.py` 会把这些多帧 metadata 和 `profile.csv` 中对应帧合并成多行 `frame_metrics.csv` 与多帧 `cluster_metrics.jsonl`。这仍然不是确定性 replay，不适合选真正赢家，但已经能暴露最终帧桥漏掉的时间序列问题。转换模板目录时，converter 会更新模板或缺字段的 `run_manifest.json` / `config_snapshot.json`；需要强制更新时可加 `--update-manifest` 或 `--overwrite-config-snapshot`。`scripts/select_winners.py` 和 `scripts/make_codex_handoff.py` 现在只从 `pass=true` 的 run 中选择 winner/pareto/current best；如果没有合格 run，会写出 `no_pass_candidate`，避免失败配置被自动优化误选。
 
+全画面 cluster map 的最终未覆盖区域不再作为 `Unknown` 计入 hard fail，而是作为低置信 `FarBackground` fallback 输出，source 为 `unassigned_far_background_remainder`。这表示“像素已有粗背景归属，但没有精确 3D 或明确视觉轮廓”，不是远距离精确测量。
+
+小型 replay gate 的第一个通过候选是 `configs/candidates/round_001/candidate_0013.json`：在保留全画面 cluster map 的同时关闭重型 `color_segmentation` 和 `stereo_contour_distance`，三段固定 replay 均达到 `coverage=100%`、`unknown=0%`、p95 约 74-77ms 并通过 hard gate。它是速度基线，不是最终远距离粗距方案；后续应把双目粗距改成采样/低频路径，而不是每帧重开完整双目轮廓。
+
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：
 
 ```powershell

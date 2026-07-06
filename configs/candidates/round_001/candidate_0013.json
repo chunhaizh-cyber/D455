@@ -1,0 +1,24 @@
+{
+  "candidate_id": "candidate_0013",
+  "parent": "baseline/default",
+  "purpose": "Fast replay gate candidate: keep full-frame cluster map while disabling heavy color segmentation and stereo contour distance.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--no-color-segmentation",
+    "--no-stereo-contour-distance"
+  ],
+  "expected_effect": [
+    "Remove the dominant gray_prepare_ms cost from color segmentation and stereo contour distance.",
+    "Keep full-pixel fallback assignment through FarBackground remainder.",
+    "Trade far stereo contour distance for deterministic replay throughput."
+  ],
+  "risk": [
+    "Far contour rough distance is disabled for this fast candidate.",
+    "ImageOnlyContour coverage may drop because color segmentation is disabled.",
+    "Use as a speed baseline, not as the final far-distance solution."
+  ]
+}
