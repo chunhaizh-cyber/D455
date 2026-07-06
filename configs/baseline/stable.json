@@ -5,7 +5,6 @@
     "--no-realtime-30",
     "--pcl-clustering",
     "--quality-segmentation",
-    "--color-refine-depth-masks",
-    "--feature-profile=debug"
+    "--color-refine-depth-masks"
   ]
 }

@@ -1,45 +1,59 @@
 parameters:
   min_depth_mm:
     type: int
+    arg: "--min-depth-mm"
     values: [250]
   max_depth_mm:
     type: int
+    arg: "--max-depth-mm"
     values: [3000, 3500, 4000]
   depth_slice_mm:
     type: int
+    arg: "--depth-slice-mm"
     values: [200, 250, 300, 400]
   min_area_px:
     type: int
+    arg: "--min-area-px"
     values: [500, 700, 900, 1200]
   infrared_canny_low:
     type: int
+    arg: "--infrared-canny-low"
     values: [35, 45, 55]
   infrared_canny_high:
     type: int
+    arg: "--infrared-canny-high"
     values: [110, 130, 150]
   split_boundary_px:
     type: int
+    arg: "--split-boundary-px"
     values: [2, 3, 5]
   stable_contour_min_anchors:
     type: int
+    arg: "--stable-contour-min-anchors"
     values: [8, 12, 16, 24]
   pcl_cluster_tolerance_mm:
     type: int
+    arg: "--pcl-cluster-tolerance-mm"
     values: [25, 35, 50, 70]
   pcl_sample_step_px:
     type: int
+    arg: "--pcl-sample-step-px"
     values: [2, 3, 4]
   pcl_frame_interval:
     type: int
+    arg: "--pcl-frame-interval"
     values: [1, 2, 3]
   track_confirm_frames:
     type: int
+    arg: "--track-confirm-frames"
     values: [2, 3, 4]
   track_miss_frames:
     type: int
+    arg: "--track-miss-frames"
     values: [3, 5, 8]
   track_smooth_percent:
     type: int
+    arg: "--track-smooth-percent"
     values: [55, 65, 75]
 
 run_modes:
@@ -49,7 +63,3 @@ run_modes:
     args: ["--pcl-sample-step-px=2", "--pcl-frame-interval=1"]
   no_pcl:
     args: ["--no-pcl-clustering"]
-  feature_light:
-    args: ["--feature-profile=light"]
-  feature_debug:
-    args: ["--feature-profile=debug"]

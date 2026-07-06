@@ -6,9 +6,10 @@ import re
 from pathlib import Path
 
 
-def parse_values(text):
+def parse_parameters(text):
     params = {}
     current = None
+    current_data = None
     in_parameters = False
     for line in text.splitlines():
         if line.strip() == "parameters:":
@@ -21,9 +22,15 @@ def parse_values(text):
         m_key = re.match(r"^  ([A-Za-z0-9_]+):\s*$", line)
         if m_key:
             current = m_key.group(1)
+            current_data = {"arg": f"--{current.replace('_', '-')}", "values": []}
+            params[current] = current_data
+            continue
+        m_arg = re.match(r"^    arg:\s*\"?([^\"\s]+)\"?\s*$", line)
+        if current and current_data is not None and m_arg:
+            current_data["arg"] = m_arg.group(1)
             continue
         m_values = re.match(r"^    values:\s*\[(.*)\]\s*$", line)
-        if current and m_values:
+        if current and current_data is not None and m_values:
             raw = [x.strip() for x in m_values.group(1).split(",") if x.strip()]
             values = []
             for x in raw:
@@ -31,8 +38,9 @@ def parse_values(text):
                     values.append(int(x))
                 except ValueError:
                     values.append(x.strip('"\''))
-            params[current] = values
+            current_data["values"] = values
             current = None
+            current_data = None
     return params
 
 
@@ -51,7 +59,7 @@ def main():
     args = parser.parse_args()
 
     random.seed(args.seed)
-    params = parse_values(Path(args.search_space).read_text(encoding="utf-8"))
+    params = parse_parameters(Path(args.search_space).read_text(encoding="utf-8"))
     parent = load_parent(args.parent)
     parent_args = list(parent.get("args", []))
     out = Path(args.out)
@@ -63,8 +71,9 @@ def main():
         args_list = list(parent_args)
         expected = []
         for name in changed:
-            value = random.choice(params[name])
-            args_list.append(f"--{name.replace('_', '-')}={value}")
+            param = params[name]
+            value = random.choice(param["values"])
+            args_list.append(f"{param['arg']}={value}")
             expected.append(f"test {name}={value}")
         candidate_id = f"candidate_{index:04d}"
         data = {

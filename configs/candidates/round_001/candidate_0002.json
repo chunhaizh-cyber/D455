@@ -1,0 +1,28 @@
+{
+  "candidate_id": "candidate_0002",
+  "parent": "baseline/default",
+  "purpose": "Generated candidate for measured parameter search.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--infrared-canny-low=55",
+    "--pcl-frame-interval=1",
+    "--track-smooth-percent=65",
+    "--infrared-canny-high=110",
+    "--pcl-cluster-tolerance-mm=70"
+  ],
+  "expected_effect": [
+    "test infrared_canny_low=55",
+    "test pcl_frame_interval=1",
+    "test track_smooth_percent=65",
+    "test infrared_canny_high=110",
+    "test pcl_cluster_tolerance_mm=70"
+  ],
+  "risk": [
+    "May overfit current train cases.",
+    "Requires run_score.json comparison before use."
+  ]
+}

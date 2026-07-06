@@ -49,6 +49,8 @@ analysis_runs/<run_id>/notes.md
 
 自动实验闭环见 `docs/AUTOMATED_EXPERIMENT_LOOP.md`。闭环原则是“程序自己跑，评判集自己打分，Codex 只根据证据提出下一轮参数、运行方式或代码改动”。第一阶段只开放配置候选：`configs/baseline/` 保存基线，`configs/candidates/` 保存候选，`eval/` 保存 case、搜索空间、权重和阈值，`scripts/score_run.py` / `scripts/select_winners.py` / `scripts/make_codex_handoff.py` 生成 `run_score.json`、排行榜和 `.codex_handoff/round_xxx.md`。在 replay 输入真正实现前，`scripts/run_batch.py` 只用于生成 dry-run 命令计划，不代表已完成评测。
 
+自动优化 Round 001 已先落地为配置候选和干跑计划：候选位于 `configs/candidates/round_001/`，计划位于 `.codex_handoff/round_001_plan/command_plan.csv`，交接记录为 `.codex_handoff/round_001.md`。这一轮只确认候选生成和命令规划可复现，不宣称画面分割质量提升；真正的下一步是补齐 `datasets/` 确定性回放输入或实现可复跑 replay，然后由 `run_score.json` 和排行榜决定是否保留候选。当前候选生成脚本会从 `eval/search_space.yaml` 的 `arg` 字段读取真实 D455 命令行参数，基线配置不再携带尚未实现的 `--feature-profile=*` 开关。
+
 ## 下一阶段工程化路线
 
 当前项目已经进入工程化、可验证、可复现实验阶段。后续优先级不再是继续把所有能力塞进 `D455.cpp`，而是先建立可拆分、可回放、可量化的实验骨架：

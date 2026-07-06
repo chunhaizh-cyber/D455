@@ -1,0 +1,28 @@
+{
+  "candidate_id": "candidate_0005",
+  "parent": "baseline/default",
+  "purpose": "Generated candidate for measured parameter search.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--depth-slice-mm=300",
+    "--min-area-px=1200",
+    "--pcl-cluster-tolerance-mm=50",
+    "--track-smooth-percent=75",
+    "--min-depth-mm=250"
+  ],
+  "expected_effect": [
+    "test depth_slice_mm=300",
+    "test min_area_px=1200",
+    "test pcl_cluster_tolerance_mm=50",
+    "test track_smooth_percent=75",
+    "test min_depth_mm=250"
+  ],
+  "risk": [
+    "May overfit current train cases.",
+    "Requires run_score.json comparison before use."
+  ]
+}

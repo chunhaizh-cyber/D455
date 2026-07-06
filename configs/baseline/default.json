@@ -6,7 +6,6 @@
     "--quality-segmentation",
     "--color-segmentation",
     "--color-refine-depth-masks",
-    "--stereo-contour-distance",
-    "--feature-profile=normal"
+    "--stereo-contour-distance"
   ]
 }
