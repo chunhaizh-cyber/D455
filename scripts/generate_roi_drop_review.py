@@ -11,6 +11,18 @@ def read_json(path):
         return json.load(f)
 
 
+def read_run_score_metrics(run_dir):
+    path = Path(run_dir) / "run_score.json"
+    if not path.exists():
+        return {}
+    try:
+        score = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    metrics = score.get("metrics")
+    return metrics if isinstance(metrics, dict) else {}
+
+
 def frame_id_from_path(path):
     name = Path(path).name
     marker = "_frame_"
@@ -83,6 +95,7 @@ def main():
 
     baseline = metadata_by_frame(args.baseline_run)
     filtered = metadata_by_frame(args.filtered_run)
+    filtered_metrics = read_run_score_metrics(args.filtered_run)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -93,11 +106,12 @@ def main():
         base_regions = base_item["meta"].get("color_regions", [])
         filtered_regions = filtered_item["meta"].get("color_regions", [])
         for region in base_regions:
-            if int(region.get("estimated_distance_mm") or 0) > 0:
-                continue
             if is_matching_region(region, filtered_regions, args.match_iou_min, args.match_center_max_px):
                 continue
             bbox = region.get("bbox_2d", [0, 0, 0, 0])
+            estimated_distance_mm = int(region.get("estimated_distance_mm") or 0)
+            matched_stereo_points = int(region.get("matched_stereo_points") or 0)
+            stereo_evidence = estimated_distance_mm > 0 or matched_stereo_points > 0
             rows.append({
                 "frame_id": frame_id,
                 "baseline_region_id": region.get("id", ""),
@@ -108,8 +122,10 @@ def main():
                 "bbox_h": bbox[3],
                 "center_x": region.get("center_2d", ["", ""])[0],
                 "center_y": region.get("center_2d", ["", ""])[1],
-                "estimated_distance_mm": region.get("estimated_distance_mm", 0),
-                "matched_stereo_points": region.get("matched_stereo_points", 0),
+                "estimated_distance_mm": estimated_distance_mm,
+                "matched_stereo_points": matched_stereo_points,
+                "stereo_evidence": int(stereo_evidence),
+                "review_priority": "high_target_risk" if stereo_evidence else "fragment_review",
                 "source_color": str(dataset_color_path(args.case_dir, frame_id)),
                 "baseline_overlay": overlay_path_for(base_item["path"]),
                 "filtered_overlay": overlay_path_for(filtered_item["path"]),
@@ -128,6 +144,8 @@ def main():
         "center_y",
         "estimated_distance_mm",
         "matched_stereo_points",
+        "stereo_evidence",
+        "review_priority",
         "source_color",
         "baseline_overlay",
         "filtered_overlay",
@@ -138,19 +156,31 @@ def main():
         writer.writerows(rows)
 
     total_pixels = sum(int(row["pixel_count"]) for row in rows)
+    stereo_rows = [row for row in rows if int(row["stereo_evidence"]) > 0]
+    no_stereo_rows = [row for row in rows if int(row["stereo_evidence"]) <= 0]
     unique_frames = sorted({int(row["frame_id"]) for row in rows})
+    runtime_drop_count = int(filtered_metrics.get("color_contour_refresh_roi_stereo_dropped_count") or 0)
+    runtime_drop_pixels = int(filtered_metrics.get("color_contour_refresh_roi_stereo_dropped_pixels") or 0)
     summary = {
+        "runtime_roi_stereo_dropped_count": runtime_drop_count,
+        "runtime_roi_stereo_dropped_pixels": runtime_drop_pixels,
+        "missing_baseline_region_count": len(rows),
+        "missing_baseline_region_pixels": total_pixels,
         "dropped_fragment_count": len(rows),
         "dropped_fragment_pixels": total_pixels,
+        "dropped_stereo_region_count": len(stereo_rows),
+        "dropped_stereo_region_pixels": sum(int(row["pixel_count"]) for row in stereo_rows),
+        "dropped_no_stereo_region_count": len(no_stereo_rows),
+        "dropped_no_stereo_region_pixels": sum(int(row["pixel_count"]) for row in no_stereo_rows),
         "frames_with_drops": unique_frames,
         "frame_count_with_drops": len(unique_frames),
         "baseline_run": str(args.baseline_run),
         "filtered_run": str(args.filtered_run),
         "case_dir": str(args.case_dir),
-        "review_status": "needs_visual_review" if rows else "no_dropped_fragments",
+        "review_status": "target_risk_needs_visual_review" if stereo_rows else ("needs_visual_review" if rows else "no_dropped_fragments"),
         "acceptance_note": (
-            "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays "
-            "to decide whether dropped fragments are only revealed background/no-stereo fragments."
+            "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays. "
+            "Any dropped stereo-bearing region is high priority because it can indicate target loss."
         ),
     }
     (out / "g3_summary.json").write_text(
@@ -163,20 +193,25 @@ def main():
         "",
         f"- baseline_run: `{args.baseline_run}`",
         f"- filtered_run: `{args.filtered_run}`",
-        f"- dropped_fragment_count: {len(rows)}",
-        f"- dropped_fragment_pixels: {total_pixels}",
+        f"- runtime_roi_stereo_dropped_count: {runtime_drop_count}",
+        f"- runtime_roi_stereo_dropped_pixels: {runtime_drop_pixels}",
+        f"- missing_baseline_region_count: {len(rows)}",
+        f"- missing_baseline_region_pixels: {total_pixels}",
+        f"- dropped_stereo_region_count: {len(stereo_rows)}",
+        f"- dropped_no_stereo_region_count: {len(no_stereo_rows)}",
         f"- frames_with_drops: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}",
-        "- review_status: needs_visual_review" if rows else "- review_status: no_dropped_fragments",
+        f"- review_status: {summary['review_status']}",
         "",
-        "G3 asks whether `--color-contour-refresh-roi-drop-stereo-failed` removes only no-stereo fragments, not real occlusion/reappear target contours.",
+        "G3 asks whether `--color-contour-refresh-roi-drop-stereo-failed` removes only unsafe fragments, not real occlusion/reappear target contours. Stereo-bearing dropped regions are treated as high-priority target-risk evidence.",
         "",
-        "| frame | region | pixels | bbox | source | baseline | filtered |",
-        "|---:|---:|---:|---|---|---|---|",
+        "| frame | region | pixels | bbox | stereo | priority | source | baseline | filtered |",
+        "|---:|---:|---:|---|---:|---|---|---|---|",
     ]
     for row in rows:
         bbox = f"{row['bbox_x']},{row['bbox_y']},{row['bbox_w']},{row['bbox_h']}"
         md_lines.append(
             f"| {row['frame_id']} | {row['baseline_region_id']} | {row['pixel_count']} | {bbox} | "
+            f"{row['stereo_evidence']} | {row['review_priority']} | "
             f"[source]({row['source_color']}) | [baseline]({row['baseline_overlay']}) | "
             f"[filtered]({row['filtered_overlay']}) |"
         )
@@ -191,6 +226,8 @@ def main():
             f"<td>{html.escape(str(row['baseline_region_id']))}</td>"
             f"<td>{html.escape(str(row['pixel_count']))}</td>"
             f"<td>{html.escape(bbox)}</td>"
+            f"<td>{html.escape(str(row['stereo_evidence']))}</td>"
+            f"<td>{html.escape(str(row['review_priority']))}</td>"
             f"<td><img src=\"{html.escape(row['source_color'])}\"></td>"
             f"<td><img src=\"{html.escape(row['baseline_overlay'])}\"></td>"
             f"<td><img src=\"{html.escape(row['filtered_overlay'])}\"></td>"
@@ -208,11 +245,11 @@ img {{ max-width: 260px; height: auto; display: block; }}
 </style>
 <h1>G3 ROI Drop Visual Review</h1>
 <div class="note">
-<p>Review whether dropped ROI fragments are only no-stereo background fragments. This report is an evidence package, not an automatic pass/fail decision.</p>
-<p>Dropped fragments: {len(rows)}; pixels: {total_pixels}; frames: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}.</p>
+<p>Review whether dropped ROI fragments are only no-stereo background fragments. Runtime drop counters come from run_score; missing baseline regions come from final-segmentation comparison. This report is an evidence package, not an automatic pass/fail decision.</p>
+<p>Runtime ROI stereo drops: {runtime_drop_count}; runtime pixels: {runtime_drop_pixels}; missing baseline regions: {len(rows)}; missing pixels: {total_pixels}; stereo-bearing missing regions: {len(stereo_rows)}; no-stereo missing regions: {len(no_stereo_rows)}; frames: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}.</p>
 </div>
 <table>
-<tr><th>Frame</th><th>Region</th><th>Pixels</th><th>BBox</th><th>Source color</th><th>Baseline overlay</th><th>Filtered overlay</th></tr>
+<tr><th>Frame</th><th>Region</th><th>Pixels</th><th>BBox</th><th>Stereo</th><th>Priority</th><th>Source color</th><th>Baseline overlay</th><th>Filtered overlay</th></tr>
 {''.join(html_rows)}
 </table>
 """

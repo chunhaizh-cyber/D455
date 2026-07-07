@@ -240,3 +240,18 @@ G3 drop review is now generated under `leaderboards/replay_local_motion_roi_ster
 Conclusion: G1 is closed by c3949ec and remains closed here. G2 is now measurable with two separated routes: `candidate_0033` passes through cached stereo reuse, while `candidate_0035` passes the direct-build specialty gate by filtering out revealed-background ROI fragments that still have no stereo evidence after the build attempt. G3 passes for this synthetic probe only. `candidate_0035` is `best_roi_stereo_direct_build` only; the filter can remove valid image-only ROI contours, so it must stay probe-only until a real `hand_occlusion_reappear` or equivalent occlusion case verifies the visual tradeoff.
 
 Current blocker is narrowed: `datasets/slow_pan_far_object` now exists locally and has produced a first motion smoke; `datasets/hand_occlusion_reappear` is still missing, so the motion gate is not complete.
+
+## Hand Occlusion Reappear Proxy 001
+
+`scripts/generate_hand_occlusion_reappear_proxy.py` now creates a controlled synthetic occlusion/reappear proxy from one reviewed D455 replay frame. It injects a stereo-bearing red/yellow target and a closer moving occluder into color/depth16/left IR/right IR. The default output is under `analysis_runs/generated_cases/hand_occlusion_reappear_proxy`, so generated data is not committed and does not replace the real `datasets/hand_occlusion_reappear` case.
+
+G3 review was also tightened: `scripts/generate_roi_drop_review.py` now reports both runtime ROI stereo drop counters from `run_score.json` and final-segmentation missing baseline regions. It also marks missing stereo-bearing regions as high-priority target-risk evidence.
+
+Run: `analysis_runs/replay_hand_occlusion_reappear_proxy_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | ROI count | ROI built | ROI failed | runtime dropped | missing baseline regions | stereo-bearing missing | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0034 | true | 93.637 | 69.0688 | 84.297 | 6 | 10 | 1 | 0 | - | - | direct-build baseline still has one ROI stereo failure |
+| candidate_0035 | true | 93.670 | 68.8496 | 77.678 | 6 | 10 | 0 | 1 / 9103 px | 0 | 0 | drop path triggered, but final segmentation did not lose a baseline region |
+
+Conclusion: this proxy strengthens G3 evidence but does not close the real occlusion gate. `candidate_0035` remains probe-only: no target loss was detected in the generated occlusion/reappear sequence, but a real hand/occlusion replay is still needed before production promotion.

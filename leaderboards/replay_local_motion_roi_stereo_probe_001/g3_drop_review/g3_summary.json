@@ -1,6 +1,14 @@
 {
+  "runtime_roi_stereo_dropped_count": 4,
+  "runtime_roi_stereo_dropped_pixels": 22952,
+  "missing_baseline_region_count": 4,
+  "missing_baseline_region_pixels": 22952,
   "dropped_fragment_count": 4,
   "dropped_fragment_pixels": 22952,
+  "dropped_stereo_region_count": 0,
+  "dropped_stereo_region_pixels": 0,
+  "dropped_no_stereo_region_count": 4,
+  "dropped_no_stereo_region_pixels": 22952,
   "frames_with_drops": [
     30,
     45,
@@ -12,5 +20,5 @@
   "filtered_run": "analysis_runs\\replay_local_motion_roi_stereo_probe_001\\local_motion_roi_stereo_probe_candidate_0035",
   "case_dir": "datasets\\local_motion_roi_stereo_probe",
   "review_status": "needs_visual_review",
-  "acceptance_note": "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays to decide whether dropped fragments are only revealed background/no-stereo fragments."
+  "acceptance_note": "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays. Any dropped stereo-bearing region is high priority because it can indicate target loss."
 }

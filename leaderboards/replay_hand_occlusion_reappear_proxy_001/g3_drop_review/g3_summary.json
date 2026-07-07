@@ -1,0 +1,19 @@
+{
+  "runtime_roi_stereo_dropped_count": 1,
+  "runtime_roi_stereo_dropped_pixels": 9103,
+  "missing_baseline_region_count": 0,
+  "missing_baseline_region_pixels": 0,
+  "dropped_fragment_count": 0,
+  "dropped_fragment_pixels": 0,
+  "dropped_stereo_region_count": 0,
+  "dropped_stereo_region_pixels": 0,
+  "dropped_no_stereo_region_count": 0,
+  "dropped_no_stereo_region_pixels": 0,
+  "frames_with_drops": [],
+  "frame_count_with_drops": 0,
+  "baseline_run": "analysis_runs\\replay_hand_occlusion_reappear_proxy_001\\hand_occlusion_reappear_proxy_candidate_0034",
+  "filtered_run": "analysis_runs\\replay_hand_occlusion_reappear_proxy_001\\hand_occlusion_reappear_proxy_candidate_0035",
+  "case_dir": "analysis_runs\\generated_cases\\hand_occlusion_reappear_proxy",
+  "review_status": "no_dropped_fragments",
+  "acceptance_note": "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays. Any dropped stereo-bearing region is high priority because it can indicate target loss."
+}

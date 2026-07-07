@@ -8,13 +8,14 @@
 
 ## Evidence
 
-The review package reports 4 dropped fragments, totaling 22952 pixels, on frames 30, 45, 90, and 105. All four records refer to the same baseline fragment:
+The review package reports 4 runtime ROI stereo drops, totaling 22952 pixels. The final-segmentation comparison also reports 4 missing baseline regions, on frames 30, 45, 90, and 105. All four records refer to the same baseline fragment:
 
 ```text
 bbox=[152,218,49,142]
 pixel_count=5738
 estimated_distance_mm=0
 matched_stereo_points=0
+stereo_evidence=0
 ```
 
 Visual inspection of frame 30 compared:
