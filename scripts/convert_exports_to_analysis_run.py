@@ -83,6 +83,9 @@ FRAME_FIELDS = [
     "color_contour_refresh_roi_after_padding_h",
     "color_contour_refresh_roi_after_padding_pixels",
     "color_contour_refresh_roi_max_pixels",
+    "color_contour_refresh_roi_component_count",
+    "color_contour_refresh_roi_selected_component_count",
+    "color_contour_refresh_roi_component_clamped",
     "color_contour_refresh_roi_rejected_empty",
     "color_contour_refresh_roi_rejected_large",
     "color_contour_refresh_roi_region_count",
@@ -455,6 +458,15 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         ),
         "color_contour_refresh_roi_max_pixels": as_int(
             profile_row.get("color_contour_refresh_roi_max_pixels")
+        ),
+        "color_contour_refresh_roi_component_count": as_int(
+            profile_row.get("color_contour_refresh_roi_component_count")
+        ),
+        "color_contour_refresh_roi_selected_component_count": as_int(
+            profile_row.get("color_contour_refresh_roi_selected_component_count")
+        ),
+        "color_contour_refresh_roi_component_clamped": as_int(
+            profile_row.get("color_contour_refresh_roi_component_clamped")
         ),
         "color_contour_refresh_roi_rejected_empty": as_int(
             profile_row.get("color_contour_refresh_roi_rejected_empty")

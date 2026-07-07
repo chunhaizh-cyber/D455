@@ -112,7 +112,15 @@ def attach_sample_frames(rows, out, max_frames):
             path.unlink()
     sampled = []
     seen_frames = set()
-    for row in rows:
+    sample_rows = sorted(
+        rows,
+        key=lambda row: (
+            0 if row.get("review_priority") == "high_target_risk" else 1,
+            int(row.get("frame_id") or 0),
+            -int(row.get("pixel_count") or 0),
+        ),
+    )
+    for row in sample_rows:
         frame_id = int(row["frame_id"])
         if frame_id in seen_frames:
             continue

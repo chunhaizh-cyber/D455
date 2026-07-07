@@ -173,6 +173,7 @@ struct SegmentationConfig
     int colorContourRefreshMinGapFrames = 0;
     int colorContourRefreshRoiPaddingPixels = 48;
     int colorContourRefreshMaxRoiAreaPercent = 35;
+    int colorContourRefreshRoiMinComponentPixels = 12;
     int colorContourRefreshMotionDeltaPercent = 25;
     int colorContourRefreshUnknownPercent = 5;
     int stereoContourMinDisparityTenthsPx = 5;
@@ -224,6 +225,7 @@ struct SegmentationConfig
     bool asyncColorContourRefresh = false;
     bool asyncColorContourLowPriority = false;
     bool colorContourRefreshMotionRoi = false;
+    bool colorContourRefreshRoiComponentClamp = false;
     bool colorContourRefreshRoiDropStereoFailed = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
@@ -453,6 +455,9 @@ struct ColorContourRefreshStats
     int roiAfterPaddingH = 0;
     int roiAfterPaddingPixels = 0;
     int roiMaxPixels = 0;
+    int roiComponentCount = 0;
+    int roiSelectedComponentCount = 0;
+    bool roiComponentClamped = false;
     bool roiRejectedEmpty = false;
     bool roiRejectedLarge = false;
     int roiRefreshedRegionCount = 0;
@@ -788,6 +793,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--color-contour-refresh-min-gap-frames=", config.colorContourRefreshMinGapFrames) ||
             parseIntOption(arg, "--color-contour-refresh-roi-padding-px=", config.colorContourRefreshRoiPaddingPixels) ||
             parseIntOption(arg, "--color-contour-refresh-max-roi-area-percent=", config.colorContourRefreshMaxRoiAreaPercent) ||
+            parseIntOption(arg, "--color-contour-refresh-roi-min-component-px=", config.colorContourRefreshRoiMinComponentPixels) ||
             parseIntOption(arg, "--color-contour-refresh-motion-delta-percent=", config.colorContourRefreshMotionDeltaPercent) ||
             parseIntOption(arg, "--color-contour-refresh-unknown-percent=", config.colorContourRefreshUnknownPercent) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
@@ -1141,6 +1147,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--color-contour-refresh-motion-roi")
         {
             config.colorContourRefreshMotionRoi = true;
+            continue;
+        }
+        if (arg == "--color-contour-refresh-roi-component-clamp")
+        {
+            config.colorContourRefreshRoiComponentClamp = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-refresh-roi-component-clamp")
+        {
+            config.colorContourRefreshRoiComponentClamp = false;
             continue;
         }
         if (arg == "--no-color-contour-refresh-motion-roi")
@@ -6258,6 +6274,9 @@ cv::Rect colorContourMotionRefreshRoi(
     cv::Rect* motionBBox = nullptr,
     cv::Rect* afterPaddingRoi = nullptr,
     int* maxRoiPixelsOut = nullptr,
+    int* componentCountOut = nullptr,
+    int* selectedComponentCountOut = nullptr,
+    bool* componentClampedOut = nullptr,
     bool* rejectedEmpty = nullptr,
     bool* rejectedLarge = nullptr)
 {
@@ -6280,6 +6299,18 @@ cv::Rect colorContourMotionRefreshRoi(
     if (maxRoiPixelsOut)
     {
         *maxRoiPixelsOut = 0;
+    }
+    if (componentCountOut)
+    {
+        *componentCountOut = 0;
+    }
+    if (selectedComponentCountOut)
+    {
+        *selectedComponentCountOut = 0;
+    }
+    if (componentClampedOut)
+    {
+        *componentClampedOut = false;
     }
     if (rejectedEmpty)
     {
@@ -6312,10 +6343,22 @@ cv::Rect colorContourMotionRefreshRoi(
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(diff, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     cv::Rect smallRoi;
+    std::vector<cv::Rect> componentRois;
+    componentRois.reserve(contours.size());
+    const int minComponentPixels = std::max(1, config.colorContourRefreshRoiMinComponentPixels);
     for (const std::vector<cv::Point>& contour : contours)
     {
         const cv::Rect contourRoi = cv::boundingRect(contour);
+        if (contourRoi.area() < minComponentPixels)
+        {
+            continue;
+        }
+        componentRois.push_back(contourRoi);
         smallRoi = smallRoi.empty() ? contourRoi : (smallRoi | contourRoi);
+    }
+    if (componentCountOut)
+    {
+        *componentCountOut = static_cast<int>(componentRois.size());
     }
     if (smallRoi.empty())
     {
@@ -6328,33 +6371,91 @@ cv::Rect colorContourMotionRefreshRoi(
 
     const double scaleX = static_cast<double>(frameSize.width) / static_cast<double>(currentSignature.cols);
     const double scaleY = static_cast<double>(frameSize.height) / static_cast<double>(currentSignature.rows);
-    cv::Rect roi(
-        static_cast<int>(std::floor(smallRoi.x * scaleX)),
-        static_cast<int>(std::floor(smallRoi.y * scaleY)),
-        static_cast<int>(std::ceil((smallRoi.x + smallRoi.width) * scaleX)) -
-            static_cast<int>(std::floor(smallRoi.x * scaleX)),
-        static_cast<int>(std::ceil((smallRoi.y + smallRoi.height) * scaleY)) -
-            static_cast<int>(std::floor(smallRoi.y * scaleY)));
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+    const auto scaleSmallRect = [&](const cv::Rect& smallRect) -> cv::Rect
+    {
+        return cv::Rect(
+            static_cast<int>(std::floor(smallRect.x * scaleX)),
+            static_cast<int>(std::floor(smallRect.y * scaleY)),
+            static_cast<int>(std::ceil((smallRect.x + smallRect.width) * scaleX)) -
+                static_cast<int>(std::floor(smallRect.x * scaleX)),
+            static_cast<int>(std::ceil((smallRect.y + smallRect.height) * scaleY)) -
+                static_cast<int>(std::floor(smallRect.y * scaleY))) & frameRect;
+    };
+    cv::Rect roiBeforePadding = scaleSmallRect(smallRoi);
+    cv::Rect roiAfterPadding = expandedRect(roiBeforePadding, std::max(0, config.colorContourRefreshRoiPaddingPixels), frameSize);
+    const int framePixels = std::max(1, frameSize.width * frameSize.height);
+    const int maxRoiPixels = framePixels * std::clamp(config.colorContourRefreshMaxRoiAreaPercent, 1, 100) / 100;
+    if (config.colorContourRefreshRoiComponentClamp)
+    {
+        if (roiAfterPadding.area() > maxRoiPixels)
+        {
+            std::sort(
+                componentRois.begin(),
+                componentRois.end(),
+                [](const cv::Rect& lhs, const cv::Rect& rhs)
+                {
+                    return lhs.area() > rhs.area();
+                });
+            cv::Rect selectedBeforePadding;
+            cv::Rect selectedAfterPadding;
+            int selectedCount = 0;
+            for (const cv::Rect& componentRoi : componentRois)
+            {
+                const cv::Rect componentBeforePadding = scaleSmallRect(componentRoi);
+                const cv::Rect componentAfterPadding =
+                    expandedRect(componentBeforePadding, std::max(0, config.colorContourRefreshRoiPaddingPixels), frameSize);
+                if (componentAfterPadding.empty() || componentAfterPadding.area() > maxRoiPixels)
+                {
+                    continue;
+                }
+                const cv::Rect mergedAfterPadding =
+                    selectedAfterPadding.empty() ? componentAfterPadding : (selectedAfterPadding | componentAfterPadding);
+                if (!selectedAfterPadding.empty() && mergedAfterPadding.area() > maxRoiPixels)
+                {
+                    continue;
+                }
+                selectedBeforePadding =
+                    selectedBeforePadding.empty() ? componentBeforePadding : (selectedBeforePadding | componentBeforePadding);
+                selectedAfterPadding = mergedAfterPadding;
+                ++selectedCount;
+            }
+            if (!selectedAfterPadding.empty())
+            {
+                roiBeforePadding = selectedBeforePadding;
+                roiAfterPadding = selectedAfterPadding;
+                if (selectedComponentCountOut)
+                {
+                    *selectedComponentCountOut = selectedCount;
+                }
+                if (componentClampedOut)
+                {
+                    *componentClampedOut = true;
+                }
+            }
+        }
+    }
     if (motionBBox)
     {
-        *motionBBox = roi & cv::Rect(0, 0, frameSize.width, frameSize.height);
+        *motionBBox = roiBeforePadding & frameRect;
     }
-    roi = expandedRect(roi, std::max(0, config.colorContourRefreshRoiPaddingPixels), frameSize);
     if (afterPaddingRoi)
     {
-        *afterPaddingRoi = roi;
+        *afterPaddingRoi = roiAfterPadding;
     }
     if (candidatePixels)
     {
-        *candidatePixels = roi.area();
+        *candidatePixels = roiAfterPadding.area();
     }
-    const int framePixels = std::max(1, frameSize.width * frameSize.height);
-    const int maxRoiPixels = framePixels * std::clamp(config.colorContourRefreshMaxRoiAreaPercent, 1, 100) / 100;
     if (maxRoiPixelsOut)
     {
         *maxRoiPixelsOut = maxRoiPixels;
     }
-    if (roi.empty())
+    if (selectedComponentCountOut && *selectedComponentCountOut == 0 && !roiAfterPadding.empty())
+    {
+        *selectedComponentCountOut = static_cast<int>(componentRois.size());
+    }
+    if (roiAfterPadding.empty())
     {
         if (rejectedEmpty)
         {
@@ -6362,7 +6463,7 @@ cv::Rect colorContourMotionRefreshRoi(
         }
         return cv::Rect();
     }
-    if (roi.area() > maxRoiPixels)
+    if (roiAfterPadding.area() > maxRoiPixels)
     {
         if (rejectedLarge)
         {
@@ -6370,7 +6471,7 @@ cv::Rect colorContourMotionRefreshRoi(
         }
         return cv::Rect();
     }
-    return roi;
+    return roiAfterPadding;
 }
 
 void sortAndLimitColorContourRegions(
@@ -9427,6 +9528,9 @@ public:
             << colorContourRefreshStats.roiAfterPaddingH << ','
             << colorContourRefreshStats.roiAfterPaddingPixels << ','
             << colorContourRefreshStats.roiMaxPixels << ','
+            << colorContourRefreshStats.roiComponentCount << ','
+            << colorContourRefreshStats.roiSelectedComponentCount << ','
+            << (colorContourRefreshStats.roiComponentClamped ? 1 : 0) << ','
             << (colorContourRefreshStats.roiRejectedEmpty ? 1 : 0) << ','
             << (colorContourRefreshStats.roiRejectedLarge ? 1 : 0) << ','
             << colorContourRefreshStats.roiRefreshedRegionCount << ','
@@ -9500,6 +9604,9 @@ private:
             << "color_contour_refresh_roi_after_padding_h,"
             << "color_contour_refresh_roi_after_padding_pixels,"
             << "color_contour_refresh_roi_max_pixels,"
+            << "color_contour_refresh_roi_component_count,"
+            << "color_contour_refresh_roi_selected_component_count,"
+            << "color_contour_refresh_roi_component_clamped,"
             << "color_contour_refresh_roi_rejected_empty,"
             << "color_contour_refresh_roi_rejected_large,"
             << "color_contour_refresh_roi_region_count,"
@@ -12162,8 +12269,11 @@ void printUsage()
         << "  --no-color-contour-refresh-motion-roi\n"
         << "  --color-contour-refresh-roi-drop-stereo-failed\n"
         << "  --no-color-contour-refresh-roi-drop-stereo-failed\n"
+        << "  --color-contour-refresh-roi-component-clamp\n"
+        << "  --no-color-contour-refresh-roi-component-clamp\n"
         << "  --color-contour-refresh-roi-padding-px=48\n"
         << "  --color-contour-refresh-max-roi-area-percent=35\n"
+        << "  --color-contour-refresh-roi-min-component-px=12\n"
         << "  --color-contour-refresh-on-motion\n"
         << "  --color-contour-refresh-motion-delta-percent=25\n"
         << "  --color-contour-refresh-on-unknown-spike\n"
@@ -12528,6 +12638,9 @@ int runReplayDirectory(
                         &motionRoiBBox,
                         &motionRoiAfterPadding,
                         &colorContourRefreshStats.roiMaxPixels,
+                        &colorContourRefreshStats.roiComponentCount,
+                        &colorContourRefreshStats.roiSelectedComponentCount,
+                        &colorContourRefreshStats.roiComponentClamped,
                         &colorContourRefreshStats.roiRejectedEmpty,
                         &colorContourRefreshStats.roiRejectedLarge)
                     : cv::Rect();
@@ -13521,6 +13634,9 @@ int main(int argc, char** argv)
                             &motionRoiBBox,
                             &motionRoiAfterPadding,
                             &colorContourRefreshStats.roiMaxPixels,
+                            &colorContourRefreshStats.roiComponentCount,
+                            &colorContourRefreshStats.roiSelectedComponentCount,
+                            &colorContourRefreshStats.roiComponentClamped,
                             &colorContourRefreshStats.roiRejectedEmpty,
                             &colorContourRefreshStats.roiRejectedLarge)
                         : cv::Rect();

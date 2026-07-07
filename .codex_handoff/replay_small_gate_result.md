@@ -290,3 +290,39 @@ roi_rejected_large_count=7
 ```
 
 Conclusion: the real capture removes the immediate G3 red-line concern for this case, but it does not promote `candidate_0035`. The ROI detector is not seeing too many moving pixels; it is merging sparse hand/edge motion into one large union bbox, then padding pushes it near full-frame and over the ROI cap. Local ROI direct-build still lacks a real positive proof. `candidate_0030` remains the better motion bucket candidate on this replay, and the next ROI step should split motion into connected components / tiles or separate motion, far-loss, and unknown ROI sources before rebuilding.
+
+## Hand Occlusion ROI Component Clamp 002
+
+`--color-contour-refresh-roi-component-clamp` was added as a narrow probe. It is disabled by default. When enabled, `colorContourMotionRefreshRoi()` still computes the full union ROI for diagnostics, but if that union exceeds the ROI cap it sorts motion connected components by area and selects the largest components whose merged padded ROI stays under the cap. The profile/leaderboard now expose `color_refresh_roi_component_count`, `color_refresh_roi_selected_component_count`, and `color_refresh_roi_component_clamped_count`.
+
+Run: `analysis_runs/replay_hand_occlusion_roi_component_clamp_002`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | >100ms | ROI count | ROI p95 | rejected large | component clamped | runtime drop | G3 vs 0035 | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| candidate_0030 | true | 93.250 | 71.6524 | 82.719 | 0 | 0 | - | 0 | 0 | 0 | n/a | still best real hand-occlusion candidate |
+| candidate_0036 | true | 92.865 | 74.2186 | 90.838 | 0 | 7 | 72576 | 0 | 7 | 6 / 48285px | red | component clamp works, but drop policy removes risky regions |
+| candidate_0037 | true | 91.652 | 82.3128 | 102.278 | 1 | 7 | 72576 | 0 | 7 | 0 | red | no runtime drop, but single selected ROI still misses stereo-bearing baseline regions |
+| candidate_0035 | true | 90.574 | 89.5036 | 116.421 | 2 | 0 | 303744 | 7 | 0 | 0 | baseline | full union ROI still rejected as too large |
+
+G3 result for `candidate_0035` vs `candidate_0036`:
+
+```text
+g3_status=red
+dropped_stereo_region_count=4
+dropped_no_stereo_region_count=12
+runtime_roi_stereo_dropped_count=6
+runtime_roi_stereo_dropped_pixels=48285
+sampled_frames=[60]
+```
+
+G3 result for `candidate_0035` vs `candidate_0037`:
+
+```text
+g3_status=red
+dropped_stereo_region_count=3
+dropped_no_stereo_region_count=6
+runtime_roi_stereo_dropped_count=0
+sampled_frames=[60]
+```
+
+Conclusion: component clamp is a useful causal probe but not a production strategy. It proves the oversized ROI came from sparse components being unioned into a near-full-frame bbox, and it removes `rejected_large`; however, selecting only one capped ROI skips other motion/stereo-bearing regions. `candidate_0030` remains the real hand-occlusion motion bucket candidate. The next implementation should support true multi-ROI or sliced refresh, or preserve cache evidence for unselected components instead of treating one component-clamped ROI as complete.

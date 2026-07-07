@@ -1,0 +1,41 @@
+{
+  "candidate_id": "candidate_0037",
+  "parent": "candidate_0034",
+  "purpose": "ROI component-clamp safety probe: reduce oversized sparse-motion ROI without dropping stereo-failed refreshed fragments.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-component-clamp",
+    "--color-contour-refresh-roi-min-component-px=12",
+    "--color-contour-refresh-roi-padding-px=48",
+    "--color-contour-refresh-max-roi-area-percent=35",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=3",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-max-roi-area-percent=35",
+    "--stereo-contour-max-regions-per-frame=16",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000"
+  ],
+  "expected_effect": [
+    "Keep the ROI area reduction of candidate_0036 while avoiding G3 red caused by dropping refreshed fragments.",
+    "Separate ROI localization quality from the fragment drop policy.",
+    "Accept that refreshed ROI regions may include image-only fragments until G2 direct-build is improved."
+  ],
+  "risk": [
+    "ROI stereo failed counts may return because no-stereo refreshed fragments are preserved.",
+    "A single selected ROI can still leave some distant motion components stale.",
+    "This is a safety probe, not a production promotion candidate."
+  ]
+}

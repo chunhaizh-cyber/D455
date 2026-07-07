@@ -1,0 +1,39 @@
+{
+  "g3_status": "red",
+  "g3_red_reasons": [
+    "dropped_stereo_region_count > 0"
+  ],
+  "g3_warning_reasons": [
+    "dropped_no_stereo_region_count > 0"
+  ],
+  "runtime_roi_stereo_dropped_count": 0,
+  "runtime_roi_stereo_dropped_pixels": 0,
+  "runtime_drop_pixels_warning": 20000,
+  "contour_lost_event_count": 0,
+  "missing_baseline_region_count": 9,
+  "missing_baseline_region_pixels": 241685,
+  "dropped_fragment_count": 9,
+  "dropped_fragment_pixels": 241685,
+  "dropped_stereo_region_count": 3,
+  "dropped_stereo_region_pixels": 77228,
+  "dropped_no_stereo_region_count": 6,
+  "dropped_no_stereo_region_pixels": 164457,
+  "frames_with_drops": [
+    15,
+    30,
+    45,
+    60,
+    75,
+    90
+  ],
+  "frame_count_with_drops": 6,
+  "baseline_run": "analysis_runs\\replay_hand_occlusion_roi_component_clamp_002\\hand_occlusion_reappear_candidate_0035",
+  "filtered_run": "analysis_runs\\replay_hand_occlusion_roi_component_clamp_002\\hand_occlusion_reappear_candidate_0037",
+  "case_dir": "datasets\\hand_occlusion_reappear",
+  "sample_frames_dir": "leaderboards\\replay_hand_occlusion_roi_component_clamp_002\\g3_drop_review_candidate_0037\\sample_frames",
+  "sampled_frames": [
+    60
+  ],
+  "review_status": "target_risk_needs_visual_review",
+  "acceptance_note": "g3_status is an automatic gate: red blocks promotion, warning requires visual review, pass means no missing baseline region, no stereo-bearing drop, and no contour-lost event. Inspect source/baseline/filtered overlays before promoting any drop policy."
+}
