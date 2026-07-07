@@ -352,3 +352,31 @@ frames_with_drops=[15, 45, 75]
 ```
 
 Conclusion: multi-ROI is now mechanically wired and `candidate_0040` proves the previous G3 red was largely caused by too-tight ROI budget, not by unavoidable direct-build/drop behavior. It is still an upper-bound probe, not a production candidate: 70% total ROI budget is too close to full-frame refresh, max frame time still exceeds 100ms once, and G3 remains warning due to no-stereo missing fragments. `candidate_0030` stays the real hand-occlusion motion bucket best. The next ROI work should tune between 35% and 70%, separate motion/far-loss/unknown ROI sources, or slice multi-ROI refresh across frames.
+
+## Hand Occlusion ROI Area Threshold 001
+
+G3 review now prefers label-map pixel overlap from `final_segmentation_frame_*_ids.png`, then falls back to bbox IoU / center distance. This prevents label-id changes or split/merge shape changes from being counted as dropped regions when the baseline pixels remain assigned or a matching geometry still exists.
+
+Run: `analysis_runs/replay_hand_occlusion_roi_area_threshold_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | p95 ms | max ms | ROI p95 | G3 | note |
+|---|---:|---:|---:|---:|---:|---|---|
+| candidate_0046 | true | 93.386 | 70.7440 | 94.391 | 182016.0 | warning | best score among narrowed ROI budgets; no stereo-bearing drop, but no-stereo fragments remain |
+| candidate_0040 | true | 92.886 | 74.0818 | 105.859 | 214828.8 | pass | only automatic G3 pass; still a wide 70% upper-bound probe |
+| candidate_0045 | true | 92.486 | 76.7488 | 96.478 | 182016.0 | warning | same no-stereo warning as 0046 |
+| candidate_0044 | true | 92.434 | 77.0920 | 102.684 | 182016.0 | warning | same no-stereo warning as 0046 |
+| candidate_0035 | true | 89.868 | 94.2102 | 122.810 | 303744.0 | baseline | single union ROI still too large |
+
+Conclusion: the safe threshold is not a simple score winner. `candidate_0046` is faster and smaller than 0040, but G3 is warning because two no-stereo fragments are missing. `candidate_0040` is the only automatic G3 pass, but it uses a 70% ROI budget and still has a max over 100ms in this run. Both stay ROI probes.
+
+## Slow Pan ROI Budget Check 001
+
+Run: `analysis_runs/replay_slow_pan_roi_budget_check_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | p95 ms | max ms | near | far | ROI count | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0030 | true | 93.390 | 70.7170 | 85.811 | 20 | 10 | 0 | remains slow-pan motion bucket best |
+| candidate_0041 | true | 81.288 | 98.0776 | 128.595 | 16 | 6 | 2 | low-threshold multi-ROI probe degrades slow-pan |
+| candidate_0040 | true | 81.108 | 99.2818 | 116.919 | 16 | 6 | 2 | wide multi-ROI also degrades slow-pan |
+
+Conclusion: hand-occlusion ROI probes cannot be promoted to motion overall. The next production direction is source-aware triggering or separate camera-pan handling, not simply lowering motion threshold and widening multi-ROI.

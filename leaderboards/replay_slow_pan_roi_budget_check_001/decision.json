@@ -1,0 +1,15 @@
+{
+  "run_id": "replay_slow_pan_roi_budget_check_001",
+  "decision": "candidate_0030_remains_motion_bucket_best",
+  "promotion": false,
+  "reason": [
+    "candidate_0040 and candidate_0041 reduce near and far scores on slow_pan_far_object",
+    "candidate_0040 and candidate_0041 have p95 close to 100ms and max over 100ms",
+    "candidate_0030 remains higher score and lower latency"
+  ],
+  "next_direction": [
+    "source-aware ROI trigger",
+    "camera-pan suppression before local ROI refresh",
+    "do not use 3 percent motion threshold globally"
+  ]
+}

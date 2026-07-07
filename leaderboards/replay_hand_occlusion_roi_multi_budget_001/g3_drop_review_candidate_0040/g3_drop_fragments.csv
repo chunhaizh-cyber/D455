@@ -1,0 +1,1 @@
+frame_id,baseline_region_id,pixel_count,bbox_x,bbox_y,bbox_w,bbox_h,center_x,center_y,estimated_distance_mm,matched_stereo_points,stereo_evidence,pixel_overlap_percent,pixel_overlap_pixels,baseline_label_pixels,review_priority,source_color,baseline_overlay,filtered_overlay

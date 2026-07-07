@@ -1,0 +1,11 @@
+slot,candidate_id,total_score,near_score,far_score,performance_score,unknown_p50,frame_ms_p95,run_id
+best_overall,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_far_retention,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_realtime,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_low_unknown,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_low_merge,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_low_split,candidate_0030,93.39,20.0,10.0,4.39,0.0,70.71699999999998,slow_pan_far_object_candidate_0030
+best_roi_refresh,candidate_0041,81.288,16.0,6.0,0.288,0.0,98.07759999999999,slow_pan_far_object_candidate_0041
+best_roi_stereo_preservation,no_pass_candidate,,,,,,,
+best_roi_stereo_rebuild,no_pass_candidate,,,,,,,
+best_roi_stereo_direct_build,no_pass_candidate,,,,,,,

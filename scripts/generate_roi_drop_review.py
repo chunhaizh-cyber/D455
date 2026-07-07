@@ -6,6 +6,9 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 
 def read_json(path):
     with Path(path).open("r", encoding="utf-8-sig") as f:
@@ -74,6 +77,38 @@ def is_matching_region(region, candidates, iou_min, center_max):
         if center_distance(bbox, candidate_bbox) <= center_max:
             return True
     return False
+
+
+def ids_path_for(metadata_path):
+    return Path(str(metadata_path).replace("_metadata.json", "_ids.png"))
+
+
+def read_label_map(path):
+    path = Path(path)
+    if not path.exists():
+        return None
+    return np.array(Image.open(path))
+
+
+def pixel_overlap_match(region, baseline_ids, filtered_ids, min_percent):
+    if baseline_ids is None or filtered_ids is None or baseline_ids.shape != filtered_ids.shape:
+        return None
+    try:
+        region_id = int(region.get("id"))
+    except (TypeError, ValueError):
+        return None
+    baseline_mask = baseline_ids == region_id
+    baseline_pixels = int(baseline_mask.sum())
+    if baseline_pixels <= 0:
+        return None
+    retained_pixels = int((filtered_ids[baseline_mask] > 0).sum())
+    retained_percent = retained_pixels * 100.0 / baseline_pixels
+    return {
+        "matched": retained_percent >= min_percent,
+        "retained_pixels": retained_pixels,
+        "baseline_pixels": baseline_pixels,
+        "retained_percent": retained_percent,
+    }
 
 
 def overlay_path_for(metadata_path):
@@ -163,6 +198,7 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--match-iou-min", type=float, default=0.05)
     parser.add_argument("--match-center-max-px", type=float, default=120.0)
+    parser.add_argument("--pixel-overlap-min-percent", type=float, default=50.0)
     parser.add_argument("--max-sample-frames", type=int, default=1)
     parser.add_argument("--runtime-drop-pixels-warning", type=int, default=20000)
     parser.add_argument("--no-copy-sample-frames", action="store_true")
@@ -180,7 +216,17 @@ def main():
         filtered_item = filtered[frame_id]
         base_regions = base_item["meta"].get("color_regions", [])
         filtered_regions = filtered_item["meta"].get("color_regions", [])
+        baseline_ids = read_label_map(ids_path_for(base_item["path"]))
+        filtered_ids = read_label_map(ids_path_for(filtered_item["path"]))
         for region in base_regions:
+            overlap = pixel_overlap_match(
+                region,
+                baseline_ids,
+                filtered_ids,
+                args.pixel_overlap_min_percent,
+            )
+            if overlap is not None and overlap["matched"]:
+                continue
             if is_matching_region(region, filtered_regions, args.match_iou_min, args.match_center_max_px):
                 continue
             bbox = region.get("bbox_2d", [0, 0, 0, 0])
@@ -200,6 +246,9 @@ def main():
                 "estimated_distance_mm": estimated_distance_mm,
                 "matched_stereo_points": matched_stereo_points,
                 "stereo_evidence": int(stereo_evidence),
+                "pixel_overlap_percent": "" if overlap is None else f"{overlap['retained_percent']:.3f}",
+                "pixel_overlap_pixels": "" if overlap is None else overlap["retained_pixels"],
+                "baseline_label_pixels": "" if overlap is None else overlap["baseline_pixels"],
                 "review_priority": "high_target_risk" if stereo_evidence else "fragment_review",
                 "source_color": str(dataset_color_path(args.case_dir, frame_id)),
                 "baseline_overlay": overlay_path_for(base_item["path"]),
@@ -220,6 +269,9 @@ def main():
         "estimated_distance_mm",
         "matched_stereo_points",
         "stereo_evidence",
+        "pixel_overlap_percent",
+        "pixel_overlap_pixels",
+        "baseline_label_pixels",
         "review_priority",
         "source_color",
         "baseline_overlay",
@@ -313,8 +365,8 @@ def main():
         "",
         "G3 asks whether `--color-contour-refresh-roi-drop-stereo-failed` removes only unsafe fragments, not real occlusion/reappear target contours. Stereo-bearing dropped regions are a hard red signal; no-stereo drops and oversized runtime drops are warnings that require visual review.",
         "",
-        "| frame | region | pixels | bbox | stereo | priority | source | baseline | filtered |",
-        "|---:|---:|---:|---|---:|---|---|---|---|",
+        "| frame | region | pixels | bbox | stereo | overlap % | priority | source | baseline | filtered |",
+        "|---:|---:|---:|---|---:|---:|---|---|---|---|",
     ]
     for row in rows:
         bbox = f"{row['bbox_x']},{row['bbox_y']},{row['bbox_w']},{row['bbox_h']}"
@@ -323,7 +375,7 @@ def main():
         filtered_link = row.get("sample_filtered_overlay") or row["filtered_overlay"]
         md_lines.append(
             f"| {row['frame_id']} | {row['baseline_region_id']} | {row['pixel_count']} | {bbox} | "
-            f"{row['stereo_evidence']} | {row['review_priority']} | "
+            f"{row['stereo_evidence']} | {row.get('pixel_overlap_percent', '')} | {row['review_priority']} | "
             f"[source]({source_link}) | [baseline]({baseline_link}) | "
             f"[filtered]({filtered_link}) |"
         )
@@ -342,6 +394,7 @@ def main():
             f"<td>{html.escape(str(row['pixel_count']))}</td>"
             f"<td>{html.escape(bbox)}</td>"
             f"<td>{html.escape(str(row['stereo_evidence']))}</td>"
+            f"<td>{html.escape(str(row.get('pixel_overlap_percent', '')))}</td>"
             f"<td>{html.escape(str(row['review_priority']))}</td>"
             f"<td><img src=\"{html.escape(source_link)}\"></td>"
             f"<td><img src=\"{html.escape(baseline_link)}\"></td>"
@@ -364,7 +417,7 @@ img {{ max-width: 260px; height: auto; display: block; }}
 <p>Runtime ROI stereo drops: {runtime_drop_count}; runtime pixels: {runtime_drop_pixels}; contour-lost events: {contour_lost_events}; missing baseline regions: {len(rows)}; missing pixels: {total_pixels}; stereo-bearing missing regions: {len(stereo_rows)}; no-stereo missing regions: {len(no_stereo_rows)}; frames: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}.</p>
 </div>
 <table>
-<tr><th>Frame</th><th>Region</th><th>Pixels</th><th>BBox</th><th>Stereo</th><th>Priority</th><th>Source color</th><th>Baseline overlay</th><th>Filtered overlay</th></tr>
+<tr><th>Frame</th><th>Region</th><th>Pixels</th><th>BBox</th><th>Stereo</th><th>Overlap %</th><th>Priority</th><th>Source color</th><th>Baseline overlay</th><th>Filtered overlay</th></tr>
 {''.join(html_rows)}
 </table>
 """

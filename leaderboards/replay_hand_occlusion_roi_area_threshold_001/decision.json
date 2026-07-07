@@ -1,0 +1,19 @@
+{
+  "run_id": "replay_hand_occlusion_roi_area_threshold_001",
+  "decision": "no_motion_promotion",
+  "g3_review_update": "label_map_pixel_overlap_plus_geometry_fallback",
+  "automatic_g3_pass_probe": "candidate_0040",
+  "smaller_warning_probe": "candidate_0046",
+  "motion_bucket_best": "candidate_0030",
+  "promotion": false,
+  "reason": [
+    "candidate_0040 is the only automatic G3 pass but uses a wide 70 percent ROI budget",
+    "candidate_0046 is faster and smaller but remains G3 warning due to no-stereo missing fragments",
+    "slow-pan check shows low-threshold multi-ROI probes do not generalize to motion overall"
+  ],
+  "next_direction": [
+    "source-aware ROI trigger",
+    "separate camera pan from local occlusion or reappear",
+    "avoid lowering motion threshold globally"
+  ]
+}
