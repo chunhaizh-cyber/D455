@@ -3,7 +3,7 @@
 - case_id: `local_motion_roi_stereo_probe`
 - baseline: `candidate_0034`
 - filtered: `candidate_0035`
-- review status: `synthetic_probe_pass`
+- review status: `synthetic_probe_warning`
 - production status: `not_promoted`
 
 ## Evidence
@@ -28,6 +28,6 @@ The dropped fragment is a thin wall/background fragment to the left of the synth
 
 ## Decision
 
-G3 passes for this synthetic probe only: `candidate_0035` does not delete the generated target in the reviewed local-motion stereo case.
+G3 is a warning for this synthetic probe: `candidate_0035` does not delete the generated target in the reviewed local-motion stereo case, but it does drop no-stereo fragments and the runtime dropped pixel count exceeds the warning threshold.
 
 Do not promote `candidate_0035` to production. The drop policy still needs a real occlusion/reappear replay, because a real image-only ROI fragment might be meaningful even when it has no stereo evidence.

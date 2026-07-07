@@ -34,9 +34,10 @@ candidate_0034:
   roi_stereo_failed_count=1
 ```
 
-The upgraded G3 report separates runtime drop counters from final-segmentation comparison:
+The upgraded G3 report separates runtime drop counters from final-segmentation comparison and assigns an automatic status:
 
 ```text
+g3_status=pass
 runtime_roi_stereo_dropped_count=1
 runtime_roi_stereo_dropped_pixels=9103
 missing_baseline_region_count=0

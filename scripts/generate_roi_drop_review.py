@@ -3,6 +3,7 @@ import argparse
 import csv
 import html
 import json
+import shutil
 from pathlib import Path
 
 
@@ -83,6 +84,69 @@ def dataset_color_path(case_dir, frame_id):
     return Path(case_dir) / "frames" / f"{int(frame_id):06d}_color.png"
 
 
+def copy_sample_image(source, dest):
+    source = Path(source)
+    if not source.exists():
+        return ""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, dest)
+    return dest.as_posix()
+
+
+def relative_link(path, base_dir):
+    if not path:
+        return ""
+    path = Path(path)
+    try:
+        return path.relative_to(base_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def attach_sample_frames(rows, out, max_frames):
+    if max_frames <= 0:
+        return []
+    sample_dir = out / "sample_frames"
+    if sample_dir.exists():
+        for path in sample_dir.glob("*.png"):
+            path.unlink()
+    sampled = []
+    seen_frames = set()
+    for row in rows:
+        frame_id = int(row["frame_id"])
+        if frame_id in seen_frames:
+            continue
+        seen_frames.add(frame_id)
+        if len(sampled) >= max_frames:
+            break
+        prefix = f"frame_{frame_id:06d}_region_{row['baseline_region_id']}"
+        for key, suffix in [
+            ("source_color", "source_color.png"),
+            ("baseline_overlay", "baseline_overlay.png"),
+            ("filtered_overlay", "filtered_overlay.png"),
+        ]:
+            copied = copy_sample_image(row[key], sample_dir / f"{prefix}_{suffix}")
+            if copied:
+                row[f"sample_{key}"] = relative_link(copied, out)
+        sampled.append(frame_id)
+    return sampled
+
+
+def g3_status(stereo_drop_count, no_stereo_drop_count, missing_count, contour_lost_events, runtime_drop_pixels, warning_pixels):
+    if stereo_drop_count > 0:
+        return "red"
+    if (
+        missing_count == 0 and
+        stereo_drop_count == 0 and
+        contour_lost_events == 0 and
+        runtime_drop_pixels <= warning_pixels
+    ):
+        return "pass"
+    if no_stereo_drop_count > 0 or runtime_drop_pixels > warning_pixels or contour_lost_events > 0:
+        return "warning"
+    return "warning" if missing_count > 0 else "pass"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-run", required=True, help="Run without drop filtering, such as candidate_0034.")
@@ -91,6 +155,9 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--match-iou-min", type=float, default=0.05)
     parser.add_argument("--match-center-max-px", type=float, default=120.0)
+    parser.add_argument("--max-sample-frames", type=int, default=1)
+    parser.add_argument("--runtime-drop-pixels-warning", type=int, default=20000)
+    parser.add_argument("--no-copy-sample-frames", action="store_true")
     args = parser.parse_args()
 
     baseline = metadata_by_frame(args.baseline_run)
@@ -161,9 +228,36 @@ def main():
     unique_frames = sorted({int(row["frame_id"]) for row in rows})
     runtime_drop_count = int(filtered_metrics.get("color_contour_refresh_roi_stereo_dropped_count") or 0)
     runtime_drop_pixels = int(filtered_metrics.get("color_contour_refresh_roi_stereo_dropped_pixels") or 0)
+    contour_lost_events = int(filtered_metrics.get("contour_lost_event_count") or 0)
+    sampled_frames = []
+    if rows and not args.no_copy_sample_frames:
+        sampled_frames = attach_sample_frames(rows, out, args.max_sample_frames)
+    status = g3_status(
+        len(stereo_rows),
+        len(no_stereo_rows),
+        len(rows),
+        contour_lost_events,
+        runtime_drop_pixels,
+        args.runtime_drop_pixels_warning,
+    )
+    warning_reasons = []
+    red_reasons = []
+    if stereo_rows:
+        red_reasons.append("dropped_stereo_region_count > 0")
+    if no_stereo_rows:
+        warning_reasons.append("dropped_no_stereo_region_count > 0")
+    if runtime_drop_pixels > args.runtime_drop_pixels_warning:
+        warning_reasons.append(f"runtime_roi_stereo_dropped_pixels > {args.runtime_drop_pixels_warning}")
+    if contour_lost_events > 0:
+        warning_reasons.append("contour_lost_event_count > 0")
     summary = {
+        "g3_status": status,
+        "g3_red_reasons": red_reasons,
+        "g3_warning_reasons": warning_reasons,
         "runtime_roi_stereo_dropped_count": runtime_drop_count,
         "runtime_roi_stereo_dropped_pixels": runtime_drop_pixels,
+        "runtime_drop_pixels_warning": args.runtime_drop_pixels_warning,
+        "contour_lost_event_count": contour_lost_events,
         "missing_baseline_region_count": len(rows),
         "missing_baseline_region_pixels": total_pixels,
         "dropped_fragment_count": len(rows),
@@ -177,10 +271,13 @@ def main():
         "baseline_run": str(args.baseline_run),
         "filtered_run": str(args.filtered_run),
         "case_dir": str(args.case_dir),
+        "sample_frames_dir": str(out / "sample_frames") if sampled_frames else "",
+        "sampled_frames": sampled_frames,
         "review_status": "target_risk_needs_visual_review" if stereo_rows else ("needs_visual_review" if rows else "no_dropped_fragments"),
         "acceptance_note": (
-            "G3 is not automatically pass/fail. Inspect source/baseline/filtered overlays. "
-            "Any dropped stereo-bearing region is high priority because it can indicate target loss."
+            "g3_status is an automatic gate: red blocks promotion, warning requires visual review, "
+            "pass means no missing baseline region, no stereo-bearing drop, and no contour-lost event. "
+            "Inspect source/baseline/filtered overlays before promoting any drop policy."
         ),
     }
     (out / "g3_summary.json").write_text(
@@ -193,8 +290,12 @@ def main():
         "",
         f"- baseline_run: `{args.baseline_run}`",
         f"- filtered_run: `{args.filtered_run}`",
+        f"- g3_status: `{status}`",
+        f"- g3_red_reasons: {', '.join(red_reasons) if red_reasons else 'none'}",
+        f"- g3_warning_reasons: {', '.join(warning_reasons) if warning_reasons else 'none'}",
         f"- runtime_roi_stereo_dropped_count: {runtime_drop_count}",
         f"- runtime_roi_stereo_dropped_pixels: {runtime_drop_pixels}",
+        f"- contour_lost_event_count: {contour_lost_events}",
         f"- missing_baseline_region_count: {len(rows)}",
         f"- missing_baseline_region_pixels: {total_pixels}",
         f"- dropped_stereo_region_count: {len(stereo_rows)}",
@@ -202,24 +303,30 @@ def main():
         f"- frames_with_drops: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}",
         f"- review_status: {summary['review_status']}",
         "",
-        "G3 asks whether `--color-contour-refresh-roi-drop-stereo-failed` removes only unsafe fragments, not real occlusion/reappear target contours. Stereo-bearing dropped regions are treated as high-priority target-risk evidence.",
+        "G3 asks whether `--color-contour-refresh-roi-drop-stereo-failed` removes only unsafe fragments, not real occlusion/reappear target contours. Stereo-bearing dropped regions are a hard red signal; no-stereo drops and oversized runtime drops are warnings that require visual review.",
         "",
         "| frame | region | pixels | bbox | stereo | priority | source | baseline | filtered |",
         "|---:|---:|---:|---|---:|---|---|---|---|",
     ]
     for row in rows:
         bbox = f"{row['bbox_x']},{row['bbox_y']},{row['bbox_w']},{row['bbox_h']}"
+        source_link = row.get("sample_source_color") or row["source_color"]
+        baseline_link = row.get("sample_baseline_overlay") or row["baseline_overlay"]
+        filtered_link = row.get("sample_filtered_overlay") or row["filtered_overlay"]
         md_lines.append(
             f"| {row['frame_id']} | {row['baseline_region_id']} | {row['pixel_count']} | {bbox} | "
             f"{row['stereo_evidence']} | {row['review_priority']} | "
-            f"[source]({row['source_color']}) | [baseline]({row['baseline_overlay']}) | "
-            f"[filtered]({row['filtered_overlay']}) |"
+            f"[source]({source_link}) | [baseline]({baseline_link}) | "
+            f"[filtered]({filtered_link}) |"
         )
     (out / "g3_drop_review.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     html_rows = []
     for row in rows:
         bbox = f"{row['bbox_x']},{row['bbox_y']},{row['bbox_w']},{row['bbox_h']}"
+        source_link = row.get("sample_source_color") or row["source_color"]
+        baseline_link = row.get("sample_baseline_overlay") or row["baseline_overlay"]
+        filtered_link = row.get("sample_filtered_overlay") or row["filtered_overlay"]
         html_rows.append(
             "<tr>"
             f"<td>{html.escape(str(row['frame_id']))}</td>"
@@ -228,9 +335,9 @@ def main():
             f"<td>{html.escape(bbox)}</td>"
             f"<td>{html.escape(str(row['stereo_evidence']))}</td>"
             f"<td>{html.escape(str(row['review_priority']))}</td>"
-            f"<td><img src=\"{html.escape(row['source_color'])}\"></td>"
-            f"<td><img src=\"{html.escape(row['baseline_overlay'])}\"></td>"
-            f"<td><img src=\"{html.escape(row['filtered_overlay'])}\"></td>"
+            f"<td><img src=\"{html.escape(source_link)}\"></td>"
+            f"<td><img src=\"{html.escape(baseline_link)}\"></td>"
+            f"<td><img src=\"{html.escape(filtered_link)}\"></td>"
             "</tr>"
         )
     html_doc = f"""<!doctype html>
@@ -245,8 +352,8 @@ img {{ max-width: 260px; height: auto; display: block; }}
 </style>
 <h1>G3 ROI Drop Visual Review</h1>
 <div class="note">
-<p>Review whether dropped ROI fragments are only no-stereo background fragments. Runtime drop counters come from run_score; missing baseline regions come from final-segmentation comparison. This report is an evidence package, not an automatic pass/fail decision.</p>
-<p>Runtime ROI stereo drops: {runtime_drop_count}; runtime pixels: {runtime_drop_pixels}; missing baseline regions: {len(rows)}; missing pixels: {total_pixels}; stereo-bearing missing regions: {len(stereo_rows)}; no-stereo missing regions: {len(no_stereo_rows)}; frames: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}.</p>
+<p>G3 status: <strong>{html.escape(status)}</strong>. Red blocks promotion; warning requires visual review; pass means no missing baseline region, no stereo-bearing drop, and no contour-lost event.</p>
+<p>Runtime ROI stereo drops: {runtime_drop_count}; runtime pixels: {runtime_drop_pixels}; contour-lost events: {contour_lost_events}; missing baseline regions: {len(rows)}; missing pixels: {total_pixels}; stereo-bearing missing regions: {len(stereo_rows)}; no-stereo missing regions: {len(no_stereo_rows)}; frames: {', '.join(str(x) for x in unique_frames) if unique_frames else 'none'}.</p>
 </div>
 <table>
 <tr><th>Frame</th><th>Region</th><th>Pixels</th><th>BBox</th><th>Stereo</th><th>Priority</th><th>Source color</th><th>Baseline overlay</th><th>Filtered overlay</th></tr>
