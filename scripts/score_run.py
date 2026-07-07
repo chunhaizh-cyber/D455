@@ -270,6 +270,9 @@ def score_run(run_dir, config):
     color_refresh_roi_rejected_large_count = sum(
         int(row_float(r, "color_contour_refresh_roi_rejected_large") > 0) for r in timing_rows
     )
+    color_refresh_roi_rejected_refresh_skipped_count = sum(
+        int(row_float(r, "color_contour_refresh_roi_rejected_refresh_skipped") > 0) for r in timing_rows
+    )
     color_refresh_roi_region_count = sum(
         int(row_float(r, "color_contour_refresh_roi_region_count")) for r in timing_rows
     )
@@ -441,6 +444,8 @@ def score_run(run_dir, config):
             "color_contour_refresh_roi_component_clamped_count": color_refresh_roi_component_clamped_count,
             "color_contour_refresh_roi_rejected_empty_count": color_refresh_roi_rejected_empty_count,
             "color_contour_refresh_roi_rejected_large_count": color_refresh_roi_rejected_large_count,
+            "color_contour_refresh_roi_rejected_refresh_skipped_count":
+                color_refresh_roi_rejected_refresh_skipped_count,
             "color_contour_refresh_roi_region_count": color_refresh_roi_region_count,
             "color_contour_refresh_roi_stereo_reuse_count": color_refresh_roi_stereo_reuse_count,
             "color_contour_refresh_roi_stereo_built_count": color_refresh_roi_stereo_built_count,

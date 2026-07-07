@@ -380,3 +380,37 @@ Run: `analysis_runs/replay_slow_pan_roi_budget_check_001`, `--max-frames-overrid
 | candidate_0040 | true | 81.108 | 99.2818 | 116.919 | 16 | 6 | 2 | wide multi-ROI also degrades slow-pan |
 
 Conclusion: hand-occlusion ROI probes cannot be promoted to motion overall. The next production direction is source-aware triggering or separate camera-pan handling, not simply lowering motion threshold and widening multi-ROI.
+
+## Rejected Motion ROI Skip 001
+
+`--color-contour-refresh-skip-rejected-motion-roi` was added as a conservative camera-pan proxy gate. It is disabled by default. When a refresh is caused only by motion, has an existing color-contour cache, and the motion ROI is empty or rejected as too large, the refresh reuses cache instead of falling back to full-frame color-contour extraction. Startup, interval, unknown-spike, and far-loss refreshes are not skipped. The profile/leaderboard expose `color_contour_refresh_roi_rejected_refresh_skipped_count`.
+
+Slow-pan run: `analysis_runs/replay_slow_pan_roi_reject_skip_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | p95 ms | max ms | >100ms | near | far | rejected large | skipped rejected ROI | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0030 | true | 92.903 | 73.9692 | 97.300 | 0 | 20 | 10 | 3 | 0 | still best slow-pan candidate |
+| candidate_0047 | true | 92.387 | 77.4062 | 108.006 | 1 | 20 | 10 | 6 | 6 | skip gate restores 0041 quality but still has one >100ms frame |
+| candidate_0041 | true | 81.272 | 98.1834 | 130.769 | 4 | 16 | 6 | 5 | 0 | low-threshold multi-ROI without skip still degrades slow-pan |
+
+Hand-occlusion run: `analysis_runs/replay_hand_occlusion_roi_reject_skip_001`, same replay/export settings.
+
+| candidate | pass | score | p95 ms | max ms | >100ms | ROI count | rejected large | skipped rejected ROI | contour lost | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| candidate_0030 | true | 92.727 | 75.1416 | 96.982 | 0 | 0 | 0 | 0 | 0 | remains best real hand-occlusion score |
+| candidate_0047 | true | 92.355 | 77.6220 | 109.274 | 2 | 7 | 0 | 0 | 0 | valid local ROI path still runs; no rejected-ROI skip in this case |
+| candidate_0041 | true | 91.234 | 85.0978 | 102.416 | 1 | 7 | 0 | 0 | 0 | lower score than 0047 |
+| candidate_0035 | true | 90.204 | 91.9690 | 125.983 | 4 | 0 | 7 | 0 | 0 | baseline single-union ROI rejection probe |
+
+G3 result for `candidate_0035` vs `candidate_0047`:
+
+```text
+g3_status=warning
+dropped_stereo_region_count=0
+dropped_no_stereo_region_count=1
+runtime_roi_stereo_dropped_count=0
+contour_lost_event_count=0
+frames_with_drops=[105]
+```
+
+Visual spot-check of the generated sample frame shows a no-stereo background/wall fragment difference, not a stereo-bearing target drop. Conclusion: the rejected-motion-ROI skip gate is a useful replay-compatible proxy for camera-pan suppression and fixes the worst 0041 slow-pan quality regression, but it does not beat `candidate_0030` and should remain probe-only. The next production step is to combine this image-derived evidence with live IMU/pose diagnostics for a true camera-motion gate.

@@ -88,6 +88,7 @@ FRAME_FIELDS = [
     "color_contour_refresh_roi_component_clamped",
     "color_contour_refresh_roi_rejected_empty",
     "color_contour_refresh_roi_rejected_large",
+    "color_contour_refresh_roi_rejected_refresh_skipped",
     "color_contour_refresh_roi_region_count",
     "color_contour_refresh_roi_stereo_reuse_count",
     "color_contour_refresh_roi_stereo_built_count",
@@ -473,6 +474,9 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         ),
         "color_contour_refresh_roi_rejected_large": as_int(
             profile_row.get("color_contour_refresh_roi_rejected_large")
+        ),
+        "color_contour_refresh_roi_rejected_refresh_skipped": as_int(
+            profile_row.get("color_contour_refresh_roi_rejected_refresh_skipped")
         ),
         "color_contour_refresh_roi_region_count": as_int(
             profile_row.get("color_contour_refresh_roi_region_count")

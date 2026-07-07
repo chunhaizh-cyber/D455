@@ -229,6 +229,7 @@ struct SegmentationConfig
     bool colorContourRefreshRoiComponentClamp = false;
     bool colorContourRefreshRoiMultiComponent = false;
     bool colorContourRefreshRoiDropStereoFailed = false;
+    bool colorContourRefreshSkipRejectedMotionRoi = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
@@ -462,6 +463,7 @@ struct ColorContourRefreshStats
     bool roiComponentClamped = false;
     bool roiRejectedEmpty = false;
     bool roiRejectedLarge = false;
+    bool roiRejectedRefreshSkipped = false;
     int roiRefreshedRegionCount = 0;
     int roiStereoReuseCount = 0;
     int roiStereoBuiltCount = 0;
@@ -1185,6 +1187,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-color-contour-refresh-roi-drop-stereo-failed")
         {
             config.colorContourRefreshRoiDropStereoFailed = false;
+            continue;
+        }
+        if (arg == "--color-contour-refresh-skip-rejected-motion-roi")
+        {
+            config.colorContourRefreshSkipRejectedMotionRoi = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-refresh-skip-rejected-motion-roi")
+        {
+            config.colorContourRefreshSkipRejectedMotionRoi = false;
             continue;
         }
         if (arg == "--color-contour-refresh-on-motion")
@@ -9658,6 +9670,7 @@ public:
             << (colorContourRefreshStats.roiComponentClamped ? 1 : 0) << ','
             << (colorContourRefreshStats.roiRejectedEmpty ? 1 : 0) << ','
             << (colorContourRefreshStats.roiRejectedLarge ? 1 : 0) << ','
+            << (colorContourRefreshStats.roiRejectedRefreshSkipped ? 1 : 0) << ','
             << colorContourRefreshStats.roiRefreshedRegionCount << ','
             << colorContourRefreshStats.roiStereoReuseCount << ','
             << colorContourRefreshStats.roiStereoBuiltCount << ','
@@ -9734,6 +9747,7 @@ private:
             << "color_contour_refresh_roi_component_clamped,"
             << "color_contour_refresh_roi_rejected_empty,"
             << "color_contour_refresh_roi_rejected_large,"
+            << "color_contour_refresh_roi_rejected_refresh_skipped,"
             << "color_contour_refresh_roi_region_count,"
             << "color_contour_refresh_roi_stereo_reuse_count,"
             << "color_contour_refresh_roi_stereo_built_count,"
@@ -12394,6 +12408,8 @@ void printUsage()
         << "  --no-color-contour-refresh-motion-roi\n"
         << "  --color-contour-refresh-roi-drop-stereo-failed\n"
         << "  --no-color-contour-refresh-roi-drop-stereo-failed\n"
+        << "  --color-contour-refresh-skip-rejected-motion-roi\n"
+        << "  --no-color-contour-refresh-skip-rejected-motion-roi\n"
         << "  --color-contour-refresh-roi-component-clamp\n"
         << "  --no-color-contour-refresh-roi-component-clamp\n"
         << "  --color-contour-refresh-roi-multi-component\n"
@@ -12786,7 +12802,26 @@ int runReplayDirectory(
             colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
             colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
             colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
-            if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
+            const bool skipRejectedMotionRoiRefresh =
+                config.colorContourRefreshSkipRejectedMotionRoi &&
+                refreshBecauseOfMotion &&
+                !refreshBecauseOfStartup &&
+                !colorContourRefreshStats.reasonInterval &&
+                !colorContourRefreshStats.reasonUnknownSpike &&
+                !colorContourRefreshStats.reasonFarLoss &&
+                hasColorContourRegionCache &&
+                refreshRois.empty() &&
+                (colorContourRefreshStats.roiRejectedEmpty ||
+                    colorContourRefreshStats.roiRejectedLarge);
+            if (skipRejectedMotionRoiRefresh)
+            {
+                colorContourRegions = cachedColorContourRegions;
+                colorContourRefreshStats.cacheReused = true;
+                colorContourRefreshStats.roiRejectedRefreshSkipped = true;
+                colorContourRefreshStats.stereoReuseCount =
+                    countStereoDistanceValidRegions(colorContourRegions);
+            }
+            else if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
             {
                 if (!asyncColorContourWorker->hasPendingWork())
                 {
@@ -13785,7 +13820,26 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
                 colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
                 colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
-                if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
+                const bool skipRejectedMotionRoiRefresh =
+                    config.colorContourRefreshSkipRejectedMotionRoi &&
+                    refreshBecauseOfMotion &&
+                    !refreshBecauseOfStartup &&
+                    !colorContourRefreshStats.reasonInterval &&
+                    !colorContourRefreshStats.reasonUnknownSpike &&
+                    !colorContourRefreshStats.reasonFarLoss &&
+                    hasColorContourRegionCache &&
+                    refreshRois.empty() &&
+                    (colorContourRefreshStats.roiRejectedEmpty ||
+                        colorContourRefreshStats.roiRejectedLarge);
+                if (skipRejectedMotionRoiRefresh)
+                {
+                    colorContourRegions = cachedColorContourRegions;
+                    colorContourRefreshStats.cacheReused = true;
+                    colorContourRefreshStats.roiRejectedRefreshSkipped = true;
+                    colorContourRefreshStats.stereoReuseCount =
+                        countStereoDistanceValidRegions(colorContourRegions);
+                }
+                else if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
                 {
                     if (!asyncColorContourWorker->hasPendingWork())
                     {
