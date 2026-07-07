@@ -255,3 +255,28 @@ Run: `analysis_runs/replay_hand_occlusion_reappear_proxy_001`, `--max-frames-ove
 | candidate_0035 | true | 93.670 | 68.8496 | 77.678 | 6 | 10 | 0 | 1 / 9103 px | 0 | 0 | drop path triggered, but final segmentation did not lose a baseline region |
 
 Conclusion: this proxy strengthens G3 evidence but does not close the real occlusion gate. `candidate_0035` remains probe-only: proxy G3 status is pass and no target loss was detected in the generated occlusion/reappear sequence, but a real hand/occlusion replay is still needed before production promotion. The older local-motion stereo probe is now classified as G3 warning, not pass, because the dropped fragments are no-stereo background fragments and runtime dropped pixels exceed the warning threshold.
+
+## Real Hand Occlusion Reappear 001
+
+`datasets/hand_occlusion_reappear` was captured locally with 120 color/depth16/left-IR/right-IR frames and finalized with `reviewed=true` by `eval/cases.yaml` contract. The raw dataset remains local and is not committed.
+
+Run: `analysis_runs/replay_hand_occlusion_reappear_real_001`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | >100ms | contour lost | far score | ROI rejected large | runtime drop | G3 status | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| candidate_0030 | true | 92.562 | 76.2424 | 85.739 | 0 | 0 | 10.0 | 0 | 0 | n/a | best current real hand-occlusion score; still no ROI refresh |
+| candidate_0035 | true | 89.184 | 98.7730 | 132.654 | 5 | 0 | 10.0 | 7 | 0 | pass | no G3 deletion, but ROI rejected as too large |
+| candidate_0034 | false | 89.000 | 101.6394 | 128.824 | 7 | 0 | 10.0 | 7 | 0 | baseline | hard fail: p95 > 100 |
+
+G3 result for `candidate_0034` vs `candidate_0035`:
+
+```text
+g3_status=pass
+runtime_roi_stereo_dropped_count=0
+missing_baseline_region_count=0
+dropped_stereo_region_count=0
+dropped_no_stereo_region_count=0
+contour_lost_event_count=0
+```
+
+Conclusion: the real capture removes the immediate G3 red-line concern for this case, but it does not promote `candidate_0035`. The ROI detector treated the hand-occlusion motion as near full-frame (`roi_candidate_pixels_p95=303744`, rejected large 7 times), so local ROI direct-build still lacks a real positive proof. `candidate_0030` remains the better motion bucket candidate on this replay.
