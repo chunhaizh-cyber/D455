@@ -1,0 +1,18 @@
+{
+  "run_id": "replay_hand_occlusion_roi_multi_component_002",
+  "decision": "candidate_0030_remains_motion_bucket_best",
+  "roi_probe": "candidate_0040",
+  "roi_probe_status": "upper_bound_probe_only",
+  "promotion": false,
+  "reason": [
+    "candidate_0040 removes stereo-bearing G3 red drops",
+    "candidate_0040 still has G3 warning due to no-stereo missing baseline fragments",
+    "candidate_0040 uses a wide 70% ROI area budget and still has one frame over 100ms",
+    "candidate_0030 remains the best real hand-occlusion score and has no over-100ms frames"
+  ],
+  "next_direction": [
+    "tune multi-ROI area budget between 35 and 70 percent",
+    "separate motion, far-loss, and unknown ROI sources",
+    "evaluate sliced multi-ROI refresh to avoid latency spikes"
+  ]
+}

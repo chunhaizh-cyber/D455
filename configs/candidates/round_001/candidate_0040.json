@@ -1,0 +1,43 @@
+{
+  "candidate_id": "candidate_0040",
+  "parent": "candidate_0038",
+  "purpose": "Wide multi-ROI coverage probe: raise the multi-component ROI budget to test whether G3 red is caused by a too-tight area/component cap.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-component-clamp",
+    "--color-contour-refresh-roi-multi-component",
+    "--color-contour-refresh-max-component-rois=32",
+    "--color-contour-refresh-roi-min-component-px=12",
+    "--color-contour-refresh-roi-padding-px=48",
+    "--color-contour-refresh-max-roi-area-percent=70",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=3",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-max-roi-area-percent=35",
+    "--stereo-contour-max-regions-per-frame=16",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000"
+  ],
+  "expected_effect": [
+    "Determine whether candidate_0038 failed G3 because max_component_rois=8 and 35% total ROI area were too restrictive.",
+    "Keep no-drop safety policy while covering more separated motion components.",
+    "Expose the performance cost of wide multi-ROI refresh before designing sliced refresh."
+  ],
+  "risk": [
+    "A 70% ROI budget can approach full-frame refresh cost.",
+    "This is a diagnostic upper-bound probe, not a promotion candidate.",
+    "If G3 still fails, the next step should be source-aware ROI or visual baseline alignment rather than more area."
+  ]
+}

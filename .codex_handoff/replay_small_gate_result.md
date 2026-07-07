@@ -326,3 +326,29 @@ sampled_frames=[60]
 ```
 
 Conclusion: component clamp is a useful causal probe but not a production strategy. It proves the oversized ROI came from sparse components being unioned into a near-full-frame bbox, and it removes `rejected_large`; however, selecting only one capped ROI skips other motion/stereo-bearing regions. `candidate_0030` remains the real hand-occlusion motion bucket candidate. The next implementation should support true multi-ROI or sliced refresh, or preserve cache evidence for unselected components instead of treating one component-clamped ROI as complete.
+
+## Hand Occlusion ROI Multi Component 002
+
+`--color-contour-refresh-roi-multi-component` was added as the next ROI probe. It is disabled by default. When enabled with component clamp, `colorContourMotionRefreshRoi()` outputs a list of padded component ROIs instead of one selected bbox, and the color-contour refresh path extracts/merges regions against that ROI list. `--color-contour-refresh-max-component-rois` limits component count, while `--color-contour-refresh-max-roi-area-percent` caps the summed ROI area in multi-component mode.
+
+Run: `analysis_runs/replay_hand_occlusion_roi_multi_component_002`, `--max-frames-override=120`, `--analysis-export-every-n=15`, `--ignore-first-n-frames=15`.
+
+| candidate | pass | score | profile p95 ms | max ms | >100ms | ROI count | ROI p95 | selected components | clamped | runtime drop | G3 vs 0035 | note |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| candidate_0030 | true | 93.407 | 70.6062 | 88.089 | 0 | 0 | - | 0 | 0 | 0 | n/a | remains best real hand-occlusion score |
+| candidate_0040 | true | 92.987 | 73.4076 | 110.430 | 1 | 7 | 214828.8 | 18 | 5 | 0 | warning | wide upper-bound multi-ROI; no stereo-bearing G3 drop, but no-stereo fragments still missing |
+| candidate_0038 | true | 92.732 | 75.1086 | 101.176 | 1 | 7 | 87820.8 | 17 | 7 | 0 | red | tight 8-ROI/35% budget still misses stereo-bearing baseline regions |
+| candidate_0035 | true | 90.113 | 92.5756 | 117.130 | 5 | 0 | 303744.0 | 25 | 0 | 0 | baseline | single union ROI still rejected as too large |
+
+G3 result for `candidate_0035` vs `candidate_0040`:
+
+```text
+g3_status=warning
+dropped_stereo_region_count=0
+dropped_no_stereo_region_count=3
+runtime_roi_stereo_dropped_count=0
+missing_baseline_region_count=3
+frames_with_drops=[15, 45, 75]
+```
+
+Conclusion: multi-ROI is now mechanically wired and `candidate_0040` proves the previous G3 red was largely caused by too-tight ROI budget, not by unavoidable direct-build/drop behavior. It is still an upper-bound probe, not a production candidate: 70% total ROI budget is too close to full-frame refresh, max frame time still exceeds 100ms once, and G3 remains warning due to no-stereo missing fragments. `candidate_0030` stays the real hand-occlusion motion bucket best. The next ROI work should tune between 35% and 70%, separate motion/far-loss/unknown ROI sources, or slice multi-ROI refresh across frames.

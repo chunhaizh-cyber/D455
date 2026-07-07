@@ -174,6 +174,7 @@ struct SegmentationConfig
     int colorContourRefreshRoiPaddingPixels = 48;
     int colorContourRefreshMaxRoiAreaPercent = 35;
     int colorContourRefreshRoiMinComponentPixels = 12;
+    int colorContourRefreshMaxComponentRois = 8;
     int colorContourRefreshMotionDeltaPercent = 25;
     int colorContourRefreshUnknownPercent = 5;
     int stereoContourMinDisparityTenthsPx = 5;
@@ -226,6 +227,7 @@ struct SegmentationConfig
     bool asyncColorContourLowPriority = false;
     bool colorContourRefreshMotionRoi = false;
     bool colorContourRefreshRoiComponentClamp = false;
+    bool colorContourRefreshRoiMultiComponent = false;
     bool colorContourRefreshRoiDropStereoFailed = false;
     bool colorContourRefreshOnMotion = false;
     bool colorContourRefreshOnUnknownSpike = false;
@@ -794,6 +796,7 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--color-contour-refresh-roi-padding-px=", config.colorContourRefreshRoiPaddingPixels) ||
             parseIntOption(arg, "--color-contour-refresh-max-roi-area-percent=", config.colorContourRefreshMaxRoiAreaPercent) ||
             parseIntOption(arg, "--color-contour-refresh-roi-min-component-px=", config.colorContourRefreshRoiMinComponentPixels) ||
+            parseIntOption(arg, "--color-contour-refresh-max-component-rois=", config.colorContourRefreshMaxComponentRois) ||
             parseIntOption(arg, "--color-contour-refresh-motion-delta-percent=", config.colorContourRefreshMotionDeltaPercent) ||
             parseIntOption(arg, "--color-contour-refresh-unknown-percent=", config.colorContourRefreshUnknownPercent) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
@@ -1152,6 +1155,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--color-contour-refresh-roi-component-clamp")
         {
             config.colorContourRefreshRoiComponentClamp = true;
+            continue;
+        }
+        if (arg == "--color-contour-refresh-roi-multi-component")
+        {
+            config.colorContourRefreshRoiMultiComponent = true;
+            continue;
+        }
+        if (arg == "--no-color-contour-refresh-roi-multi-component")
+        {
+            config.colorContourRefreshRoiMultiComponent = false;
             continue;
         }
         if (arg == "--no-color-contour-refresh-roi-component-clamp")
@@ -6264,6 +6277,28 @@ std::vector<ColorContourRegion> extractColorContourRegionsInRoi(
     return regions;
 }
 
+int sumRectAreas(const std::vector<cv::Rect>& rois)
+{
+    int total = 0;
+    for (const cv::Rect& roi : rois)
+    {
+        total += std::max(0, roi.area());
+    }
+    return total;
+}
+
+bool intersectsAnyRect(const cv::Rect& roi, const std::vector<cv::Rect>& rois)
+{
+    for (const cv::Rect& candidate : rois)
+    {
+        if (!(roi & candidate).empty())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 cv::Rect colorContourMotionRefreshRoi(
     const cv::Mat& currentSignature,
     const cv::Mat& previousSignature,
@@ -6277,6 +6312,7 @@ cv::Rect colorContourMotionRefreshRoi(
     int* componentCountOut = nullptr,
     int* selectedComponentCountOut = nullptr,
     bool* componentClampedOut = nullptr,
+    std::vector<cv::Rect>* refreshRoisOut = nullptr,
     bool* rejectedEmpty = nullptr,
     bool* rejectedLarge = nullptr)
 {
@@ -6311,6 +6347,10 @@ cv::Rect colorContourMotionRefreshRoi(
     if (componentClampedOut)
     {
         *componentClampedOut = false;
+    }
+    if (refreshRoisOut)
+    {
+        refreshRoisOut->clear();
     }
     if (rejectedEmpty)
     {
@@ -6397,11 +6437,19 @@ cv::Rect colorContourMotionRefreshRoi(
                 {
                     return lhs.area() > rhs.area();
                 });
+            std::vector<cv::Rect> selectedAfterPaddingRois;
             cv::Rect selectedBeforePadding;
-            cv::Rect selectedAfterPadding;
+            cv::Rect selectedAfterPaddingUnion;
+            int selectedArea = 0;
             int selectedCount = 0;
+            const int maxComponentRois = std::max(1, config.colorContourRefreshMaxComponentRois);
             for (const cv::Rect& componentRoi : componentRois)
             {
+                if (config.colorContourRefreshRoiMultiComponent &&
+                    selectedCount >= maxComponentRois)
+                {
+                    break;
+                }
                 const cv::Rect componentBeforePadding = scaleSmallRect(componentRoi);
                 const cv::Rect componentAfterPadding =
                     expandedRect(componentBeforePadding, std::max(0, config.colorContourRefreshRoiPaddingPixels), frameSize);
@@ -6409,21 +6457,42 @@ cv::Rect colorContourMotionRefreshRoi(
                 {
                     continue;
                 }
-                const cv::Rect mergedAfterPadding =
-                    selectedAfterPadding.empty() ? componentAfterPadding : (selectedAfterPadding | componentAfterPadding);
-                if (!selectedAfterPadding.empty() && mergedAfterPadding.area() > maxRoiPixels)
+                if (config.colorContourRefreshRoiMultiComponent)
                 {
-                    continue;
+                    if (selectedArea + componentAfterPadding.area() > maxRoiPixels)
+                    {
+                        continue;
+                    }
+                    selectedAfterPaddingRois.push_back(componentAfterPadding);
+                    selectedArea += componentAfterPadding.area();
+                    selectedAfterPaddingUnion = selectedAfterPaddingUnion.empty()
+                        ? componentAfterPadding
+                        : (selectedAfterPaddingUnion | componentAfterPadding);
+                }
+                else
+                {
+                    const cv::Rect mergedAfterPadding =
+                        selectedAfterPaddingUnion.empty()
+                            ? componentAfterPadding
+                            : (selectedAfterPaddingUnion | componentAfterPadding);
+                    if (!selectedAfterPaddingUnion.empty() && mergedAfterPadding.area() > maxRoiPixels)
+                    {
+                        continue;
+                    }
+                    selectedAfterPaddingUnion = mergedAfterPadding;
                 }
                 selectedBeforePadding =
                     selectedBeforePadding.empty() ? componentBeforePadding : (selectedBeforePadding | componentBeforePadding);
-                selectedAfterPadding = mergedAfterPadding;
                 ++selectedCount;
             }
-            if (!selectedAfterPadding.empty())
+            if (!selectedAfterPaddingUnion.empty())
             {
                 roiBeforePadding = selectedBeforePadding;
-                roiAfterPadding = selectedAfterPadding;
+                roiAfterPadding = selectedAfterPaddingUnion;
+                if (refreshRoisOut && config.colorContourRefreshRoiMultiComponent)
+                {
+                    *refreshRoisOut = selectedAfterPaddingRois;
+                }
                 if (selectedComponentCountOut)
                 {
                     *selectedComponentCountOut = selectedCount;
@@ -6443,9 +6512,13 @@ cv::Rect colorContourMotionRefreshRoi(
     {
         *afterPaddingRoi = roiAfterPadding;
     }
+    const int effectiveCandidatePixels =
+        config.colorContourRefreshRoiMultiComponent && refreshRoisOut && !refreshRoisOut->empty()
+            ? sumRectAreas(*refreshRoisOut)
+            : roiAfterPadding.area();
     if (candidatePixels)
     {
-        *candidatePixels = roiAfterPadding.area();
+        *candidatePixels = effectiveCandidatePixels;
     }
     if (maxRoiPixelsOut)
     {
@@ -6463,13 +6536,17 @@ cv::Rect colorContourMotionRefreshRoi(
         }
         return cv::Rect();
     }
-    if (roiAfterPadding.area() > maxRoiPixels)
+    if (effectiveCandidatePixels > maxRoiPixels)
     {
         if (rejectedLarge)
         {
             *rejectedLarge = true;
         }
         return cv::Rect();
+    }
+    if (refreshRoisOut && refreshRoisOut->empty())
+    {
+        refreshRoisOut->push_back(roiAfterPadding);
     }
     return roiAfterPadding;
 }
@@ -6493,6 +6570,29 @@ void sortAndLimitColorContourRegions(
     {
         regions[index].id = static_cast<int>(index + 1);
     }
+}
+
+std::vector<ColorContourRegion> extractColorContourRegionsInRois(
+    const cv::Mat& colorBgr,
+    const SegmentationConfig& config,
+    const std::vector<cv::Rect>& refreshRois)
+{
+    if (refreshRois.empty())
+    {
+        return extractColorContourRegions(colorBgr, config);
+    }
+
+    std::vector<ColorContourRegion> regions;
+    for (const cv::Rect& roi : refreshRois)
+    {
+        std::vector<ColorContourRegion> roiRegions = extractColorContourRegionsInRoi(colorBgr, config, roi);
+        regions.insert(
+            regions.end(),
+            std::make_move_iterator(roiRegions.begin()),
+            std::make_move_iterator(roiRegions.end()));
+    }
+    sortAndLimitColorContourRegions(regions, config);
+    return regions;
 }
 
 bool hasMatchingStereoRegion(
@@ -6520,7 +6620,7 @@ bool hasMatchingStereoRegion(
 std::vector<ColorContourRegion> mergeColorContourRoiRefresh(
     const std::vector<ColorContourRegion>& cachedRegions,
     std::vector<ColorContourRegion> refreshedRegions,
-    const cv::Rect& refreshRoi,
+    const std::vector<cv::Rect>& refreshRois,
     const SegmentationConfig& config,
     int* preservedStereoCount = nullptr)
 {
@@ -6528,7 +6628,7 @@ std::vector<ColorContourRegion> mergeColorContourRoiRefresh(
     {
         *preservedStereoCount = 0;
     }
-    if (refreshRoi.empty())
+    if (refreshRois.empty())
     {
         sortAndLimitColorContourRegions(refreshedRegions, config);
         return refreshedRegions;
@@ -6537,7 +6637,7 @@ std::vector<ColorContourRegion> mergeColorContourRoiRefresh(
     std::vector<ColorContourRegion> merged;
     for (const ColorContourRegion& cached : cachedRegions)
     {
-        const bool outsideRefreshRoi = (cached.roi & refreshRoi).empty();
+        const bool outsideRefreshRoi = !intersectsAnyRect(cached.roi, refreshRois);
         const bool keepOverlappingStereoEvidence =
             !outsideRefreshRoi &&
             cached.estimatedDistanceMm > 0 &&
@@ -6557,6 +6657,26 @@ std::vector<ColorContourRegion> mergeColorContourRoiRefresh(
     }
     sortAndLimitColorContourRegions(merged, config);
     return merged;
+}
+
+std::vector<ColorContourRegion> mergeColorContourRoiRefresh(
+    const std::vector<ColorContourRegion>& cachedRegions,
+    std::vector<ColorContourRegion> refreshedRegions,
+    const cv::Rect& refreshRoi,
+    const SegmentationConfig& config,
+    int* preservedStereoCount = nullptr)
+{
+    std::vector<cv::Rect> refreshRois;
+    if (!refreshRoi.empty())
+    {
+        refreshRois.push_back(refreshRoi);
+    }
+    return mergeColorContourRoiRefresh(
+        cachedRegions,
+        std::move(refreshedRegions),
+        refreshRois,
+        config,
+        preservedStereoCount);
 }
 
 int countStereoDistanceValidRegions(const std::vector<ColorContourRegion>& regions)
@@ -6661,6 +6781,7 @@ struct AsyncColorContourRefreshTask
     cv::Mat colorBgr;
     cv::Mat motionSignature;
     cv::Rect refreshRoi;
+    std::vector<cv::Rect> refreshRois;
     SegmentationConfig config;
 };
 
@@ -6670,6 +6791,7 @@ struct AsyncColorContourRefreshResult
     std::vector<ColorContourRegion> regions;
     cv::Mat motionSignature;
     cv::Rect refreshRoi;
+    std::vector<cv::Rect> refreshRois;
     double workerMs = 0.0;
 };
 
@@ -6700,6 +6822,7 @@ public:
         const cv::Mat& colorBgr,
         const cv::Mat& motionSignature,
         const cv::Rect& refreshRoi,
+        const std::vector<cv::Rect>& refreshRois,
         const SegmentationConfig& config)
     {
         AsyncColorContourRefreshTask task;
@@ -6707,6 +6830,7 @@ public:
         task.colorBgr = colorBgr.clone();
         task.motionSignature = motionSignature.clone();
         task.refreshRoi = refreshRoi;
+        task.refreshRois = refreshRois;
         task.config = config;
 
         bool droppedPending = false;
@@ -6769,10 +6893,11 @@ private:
             result.frameId = task.frameId;
             result.motionSignature = task.motionSignature;
             result.refreshRoi = task.refreshRoi;
-            result.regions = extractColorContourRegionsInRoi(
+            result.refreshRois = task.refreshRois;
+            result.regions = extractColorContourRegionsInRois(
                 task.colorBgr,
                 task.config,
-                task.refreshRoi);
+                task.refreshRois);
             result.workerMs = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
 
@@ -12271,9 +12396,12 @@ void printUsage()
         << "  --no-color-contour-refresh-roi-drop-stereo-failed\n"
         << "  --color-contour-refresh-roi-component-clamp\n"
         << "  --no-color-contour-refresh-roi-component-clamp\n"
+        << "  --color-contour-refresh-roi-multi-component\n"
+        << "  --no-color-contour-refresh-roi-multi-component\n"
         << "  --color-contour-refresh-roi-padding-px=48\n"
         << "  --color-contour-refresh-max-roi-area-percent=35\n"
         << "  --color-contour-refresh-roi-min-component-px=12\n"
+        << "  --color-contour-refresh-max-component-rois=8\n"
         << "  --color-contour-refresh-on-motion\n"
         << "  --color-contour-refresh-motion-delta-percent=25\n"
         << "  --color-contour-refresh-on-unknown-spike\n"
@@ -12566,14 +12694,14 @@ int runReplayDirectory(
                 colorContourRefreshStats.asyncWorkerMs = asyncResult.workerMs;
                 colorContourRefreshStats.stereoReuseCount =
                     reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
-                if (!asyncResult.refreshRoi.empty())
+                if (!asyncResult.refreshRois.empty())
                 {
                     updateRoiStereoRefreshStats(colorContourRefreshStats, asyncResult.regions);
                 }
                 cachedColorContourRegions = mergeColorContourRoiRefresh(
                     cachedColorContourRegions,
                     std::move(asyncResult.regions),
-                    asyncResult.refreshRoi,
+                    asyncResult.refreshRois,
                     config,
                     &colorContourRefreshStats.roiPreservedStereoCount);
                 cachedColorContourMotionSignature = asyncResult.motionSignature;
@@ -12626,6 +12754,7 @@ int runReplayDirectory(
             colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
             cv::Rect motionRoiBBox;
             cv::Rect motionRoiAfterPadding;
+            std::vector<cv::Rect> refreshRois;
             const cv::Rect refreshRoi =
                 refreshBecauseOfMotion && !refreshBecauseOfStartup
                     ? colorContourMotionRefreshRoi(
@@ -12641,6 +12770,7 @@ int runReplayDirectory(
                         &colorContourRefreshStats.roiComponentCount,
                         &colorContourRefreshStats.roiSelectedComponentCount,
                         &colorContourRefreshStats.roiComponentClamped,
+                        &refreshRois,
                         &colorContourRefreshStats.roiRejectedEmpty,
                         &colorContourRefreshStats.roiRejectedLarge)
                     : cv::Rect();
@@ -12655,7 +12785,7 @@ int runReplayDirectory(
             colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
             colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
             colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
-            colorContourRefreshStats.roiPixels = refreshRoi.area();
+            colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
             if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
             {
                 if (!asyncColorContourWorker->hasPendingWork())
@@ -12669,6 +12799,7 @@ int runReplayDirectory(
                         colorBgr,
                         submitSignature,
                         refreshRoi,
+                        refreshRois,
                         config);
                 }
                 colorContourRegions = cachedColorContourRegions;
@@ -12681,7 +12812,7 @@ int runReplayDirectory(
             else
             {
                 colorContourRefreshStats.refreshed = true;
-                colorContourRegions = extractColorContourRegionsInRoi(colorBgr, config, refreshRoi);
+                colorContourRegions = extractColorContourRegionsInRois(colorBgr, config, refreshRois);
                 const bool reuseCachedStereoThisRefresh =
                     config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
                 if (reuseCachedStereoThisRefresh)
@@ -12710,21 +12841,21 @@ int runReplayDirectory(
                         colorIntrinsics,
                         config);
                 }
-                if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
+                if (!refreshRois.empty() && config.colorContourRefreshRoiDropStereoFailed)
                 {
                     const DroppedColorContourStats droppedStats =
                         dropStereoFailedColorContourRegions(colorContourRegions);
                     colorContourRefreshStats.roiStereoDroppedCount = droppedStats.count;
                     colorContourRefreshStats.roiStereoDroppedPixels = droppedStats.pixels;
                 }
-                if (!refreshRoi.empty())
+                if (!refreshRois.empty())
                 {
                     updateRoiStereoRefreshStats(colorContourRefreshStats, colorContourRegions);
                 }
                 cachedColorContourRegions = mergeColorContourRoiRefresh(
                     cachedColorContourRegions,
                     colorContourRegions,
-                    refreshRoi,
+                    refreshRois,
                     config,
                     &colorContourRefreshStats.roiPreservedStereoCount);
                 colorContourRegions = cachedColorContourRegions;
@@ -13562,14 +13693,14 @@ int main(int argc, char** argv)
                     colorContourRefreshStats.asyncWorkerMs = asyncResult.workerMs;
                     colorContourRefreshStats.stereoReuseCount =
                         reuseCachedStereoDistances(asyncResult.regions, cachedColorContourRegions);
-                    if (!asyncResult.refreshRoi.empty())
+                    if (!asyncResult.refreshRois.empty())
                     {
                         updateRoiStereoRefreshStats(colorContourRefreshStats, asyncResult.regions);
                     }
                     cachedColorContourRegions = mergeColorContourRoiRefresh(
                         cachedColorContourRegions,
                         std::move(asyncResult.regions),
-                        asyncResult.refreshRoi,
+                        asyncResult.refreshRois,
                         config,
                         &colorContourRefreshStats.roiPreservedStereoCount);
                     cachedColorContourMotionSignature = asyncResult.motionSignature;
@@ -13622,6 +13753,7 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
                 cv::Rect motionRoiBBox;
                 cv::Rect motionRoiAfterPadding;
+                std::vector<cv::Rect> refreshRois;
                 const cv::Rect refreshRoi =
                     refreshBecauseOfMotion && !refreshBecauseOfStartup
                         ? colorContourMotionRefreshRoi(
@@ -13637,6 +13769,7 @@ int main(int argc, char** argv)
                             &colorContourRefreshStats.roiComponentCount,
                             &colorContourRefreshStats.roiSelectedComponentCount,
                             &colorContourRefreshStats.roiComponentClamped,
+                            &refreshRois,
                             &colorContourRefreshStats.roiRejectedEmpty,
                             &colorContourRefreshStats.roiRejectedLarge)
                         : cv::Rect();
@@ -13651,7 +13784,7 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
                 colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
                 colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
-                colorContourRefreshStats.roiPixels = refreshRoi.area();
+                colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
                 if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
                 {
                     if (!asyncColorContourWorker->hasPendingWork())
@@ -13665,6 +13798,7 @@ int main(int argc, char** argv)
                             colorBgr,
                             submitSignature,
                             refreshRoi,
+                            refreshRois,
                             config);
                     }
                     colorContourRegions = cachedColorContourRegions;
@@ -13677,7 +13811,7 @@ int main(int argc, char** argv)
                 else
                 {
                     colorContourRefreshStats.refreshed = true;
-                    colorContourRegions = extractColorContourRegionsInRoi(colorBgr, config, refreshRoi);
+                    colorContourRegions = extractColorContourRegionsInRois(colorBgr, config, refreshRois);
                     const bool reuseCachedStereoThisRefresh =
                         config.stereoContourReuseCachedOnRefresh && hasColorContourRegionCache;
                     if (reuseCachedStereoThisRefresh)
@@ -13716,21 +13850,21 @@ int main(int argc, char** argv)
                             colorIntrinsics,
                             config);
                     }
-                    if (!refreshRoi.empty() && config.colorContourRefreshRoiDropStereoFailed)
+                    if (!refreshRois.empty() && config.colorContourRefreshRoiDropStereoFailed)
                     {
                         const DroppedColorContourStats droppedStats =
                             dropStereoFailedColorContourRegions(colorContourRegions);
                         colorContourRefreshStats.roiStereoDroppedCount = droppedStats.count;
                         colorContourRefreshStats.roiStereoDroppedPixels = droppedStats.pixels;
                     }
-                    if (!refreshRoi.empty())
+                    if (!refreshRois.empty())
                     {
                         updateRoiStereoRefreshStats(colorContourRefreshStats, colorContourRegions);
                     }
                     cachedColorContourRegions = mergeColorContourRoiRefresh(
                         cachedColorContourRegions,
                         colorContourRegions,
-                        refreshRoi,
+                        refreshRois,
                         config,
                         &colorContourRefreshStats.roiPreservedStereoCount);
                     colorContourRegions = cachedColorContourRegions;
