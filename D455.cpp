@@ -441,6 +441,18 @@ struct ColorContourRefreshStats
     bool roiRefresh = false;
     int roiPixels = 0;
     int roiCandidatePixels = 0;
+    int roiMotionMaskPixels = 0;
+    int roiMotionBBoxX = 0;
+    int roiMotionBBoxY = 0;
+    int roiMotionBBoxW = 0;
+    int roiMotionBBoxH = 0;
+    int roiMotionBBoxPixels = 0;
+    int roiAfterPaddingX = 0;
+    int roiAfterPaddingY = 0;
+    int roiAfterPaddingW = 0;
+    int roiAfterPaddingH = 0;
+    int roiAfterPaddingPixels = 0;
+    int roiMaxPixels = 0;
     bool roiRejectedEmpty = false;
     bool roiRejectedLarge = false;
     int roiRefreshedRegionCount = 0;
@@ -6242,12 +6254,32 @@ cv::Rect colorContourMotionRefreshRoi(
     const cv::Size& frameSize,
     const SegmentationConfig& config,
     int* candidatePixels = nullptr,
+    int* motionMaskPixels = nullptr,
+    cv::Rect* motionBBox = nullptr,
+    cv::Rect* afterPaddingRoi = nullptr,
+    int* maxRoiPixelsOut = nullptr,
     bool* rejectedEmpty = nullptr,
     bool* rejectedLarge = nullptr)
 {
     if (candidatePixels)
     {
         *candidatePixels = 0;
+    }
+    if (motionMaskPixels)
+    {
+        *motionMaskPixels = 0;
+    }
+    if (motionBBox)
+    {
+        *motionBBox = cv::Rect();
+    }
+    if (afterPaddingRoi)
+    {
+        *afterPaddingRoi = cv::Rect();
+    }
+    if (maxRoiPixelsOut)
+    {
+        *maxRoiPixelsOut = 0;
     }
     if (rejectedEmpty)
     {
@@ -6272,6 +6304,10 @@ cv::Rect colorContourMotionRefreshRoi(
     const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::morphologyEx(diff, diff, cv::MORPH_CLOSE, kernel);
     cv::dilate(diff, diff, kernel);
+    if (motionMaskPixels)
+    {
+        *motionMaskPixels = cv::countNonZero(diff);
+    }
 
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(diff, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
@@ -6299,13 +6335,25 @@ cv::Rect colorContourMotionRefreshRoi(
             static_cast<int>(std::floor(smallRoi.x * scaleX)),
         static_cast<int>(std::ceil((smallRoi.y + smallRoi.height) * scaleY)) -
             static_cast<int>(std::floor(smallRoi.y * scaleY)));
+    if (motionBBox)
+    {
+        *motionBBox = roi & cv::Rect(0, 0, frameSize.width, frameSize.height);
+    }
     roi = expandedRect(roi, std::max(0, config.colorContourRefreshRoiPaddingPixels), frameSize);
+    if (afterPaddingRoi)
+    {
+        *afterPaddingRoi = roi;
+    }
     if (candidatePixels)
     {
         *candidatePixels = roi.area();
     }
     const int framePixels = std::max(1, frameSize.width * frameSize.height);
     const int maxRoiPixels = framePixels * std::clamp(config.colorContourRefreshMaxRoiAreaPercent, 1, 100) / 100;
+    if (maxRoiPixelsOut)
+    {
+        *maxRoiPixelsOut = maxRoiPixels;
+    }
     if (roi.empty())
     {
         if (rejectedEmpty)
@@ -9367,6 +9415,18 @@ public:
             << (colorContourRefreshStats.roiRefresh ? 1 : 0) << ','
             << colorContourRefreshStats.roiPixels << ','
             << colorContourRefreshStats.roiCandidatePixels << ','
+            << colorContourRefreshStats.roiMotionMaskPixels << ','
+            << colorContourRefreshStats.roiMotionBBoxX << ','
+            << colorContourRefreshStats.roiMotionBBoxY << ','
+            << colorContourRefreshStats.roiMotionBBoxW << ','
+            << colorContourRefreshStats.roiMotionBBoxH << ','
+            << colorContourRefreshStats.roiMotionBBoxPixels << ','
+            << colorContourRefreshStats.roiAfterPaddingX << ','
+            << colorContourRefreshStats.roiAfterPaddingY << ','
+            << colorContourRefreshStats.roiAfterPaddingW << ','
+            << colorContourRefreshStats.roiAfterPaddingH << ','
+            << colorContourRefreshStats.roiAfterPaddingPixels << ','
+            << colorContourRefreshStats.roiMaxPixels << ','
             << (colorContourRefreshStats.roiRejectedEmpty ? 1 : 0) << ','
             << (colorContourRefreshStats.roiRejectedLarge ? 1 : 0) << ','
             << colorContourRefreshStats.roiRefreshedRegionCount << ','
@@ -9428,6 +9488,18 @@ private:
             << "color_contour_refresh_cooldown_skipped,"
             << "color_contour_refresh_roi,color_contour_refresh_roi_pixels,"
             << "color_contour_refresh_roi_candidate_pixels,"
+            << "color_contour_refresh_roi_motion_mask_pixels,"
+            << "color_contour_refresh_roi_motion_bbox_x,"
+            << "color_contour_refresh_roi_motion_bbox_y,"
+            << "color_contour_refresh_roi_motion_bbox_w,"
+            << "color_contour_refresh_roi_motion_bbox_h,"
+            << "color_contour_refresh_roi_motion_bbox_pixels,"
+            << "color_contour_refresh_roi_after_padding_x,"
+            << "color_contour_refresh_roi_after_padding_y,"
+            << "color_contour_refresh_roi_after_padding_w,"
+            << "color_contour_refresh_roi_after_padding_h,"
+            << "color_contour_refresh_roi_after_padding_pixels,"
+            << "color_contour_refresh_roi_max_pixels,"
             << "color_contour_refresh_roi_rejected_empty,"
             << "color_contour_refresh_roi_rejected_large,"
             << "color_contour_refresh_roi_region_count,"
@@ -12442,6 +12514,8 @@ int runReplayDirectory(
             colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
             colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
             colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
+            cv::Rect motionRoiBBox;
+            cv::Rect motionRoiAfterPadding;
             const cv::Rect refreshRoi =
                 refreshBecauseOfMotion && !refreshBecauseOfStartup
                     ? colorContourMotionRefreshRoi(
@@ -12450,9 +12524,23 @@ int runReplayDirectory(
                         colorBgr.size(),
                         config,
                         &colorContourRefreshStats.roiCandidatePixels,
+                        &colorContourRefreshStats.roiMotionMaskPixels,
+                        &motionRoiBBox,
+                        &motionRoiAfterPadding,
+                        &colorContourRefreshStats.roiMaxPixels,
                         &colorContourRefreshStats.roiRejectedEmpty,
                         &colorContourRefreshStats.roiRejectedLarge)
                     : cv::Rect();
+            colorContourRefreshStats.roiMotionBBoxX = motionRoiBBox.x;
+            colorContourRefreshStats.roiMotionBBoxY = motionRoiBBox.y;
+            colorContourRefreshStats.roiMotionBBoxW = motionRoiBBox.width;
+            colorContourRefreshStats.roiMotionBBoxH = motionRoiBBox.height;
+            colorContourRefreshStats.roiMotionBBoxPixels = motionRoiBBox.area();
+            colorContourRefreshStats.roiAfterPaddingX = motionRoiAfterPadding.x;
+            colorContourRefreshStats.roiAfterPaddingY = motionRoiAfterPadding.y;
+            colorContourRefreshStats.roiAfterPaddingW = motionRoiAfterPadding.width;
+            colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
+            colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
             colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
             colorContourRefreshStats.roiPixels = refreshRoi.area();
             if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)
@@ -13419,6 +13507,8 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.reasonMotion = refreshBecauseOfMotion;
                 colorContourRefreshStats.reasonUnknownSpike = refreshColorContourFromUnknownSpikeNextFrame;
                 colorContourRefreshStats.reasonFarLoss = refreshColorContourFromFarLossNextFrame;
+                cv::Rect motionRoiBBox;
+                cv::Rect motionRoiAfterPadding;
                 const cv::Rect refreshRoi =
                     refreshBecauseOfMotion && !refreshBecauseOfStartup
                         ? colorContourMotionRefreshRoi(
@@ -13427,9 +13517,23 @@ int main(int argc, char** argv)
                             colorBgr.size(),
                             config,
                             &colorContourRefreshStats.roiCandidatePixels,
+                            &colorContourRefreshStats.roiMotionMaskPixels,
+                            &motionRoiBBox,
+                            &motionRoiAfterPadding,
+                            &colorContourRefreshStats.roiMaxPixels,
                             &colorContourRefreshStats.roiRejectedEmpty,
                             &colorContourRefreshStats.roiRejectedLarge)
                         : cv::Rect();
+                colorContourRefreshStats.roiMotionBBoxX = motionRoiBBox.x;
+                colorContourRefreshStats.roiMotionBBoxY = motionRoiBBox.y;
+                colorContourRefreshStats.roiMotionBBoxW = motionRoiBBox.width;
+                colorContourRefreshStats.roiMotionBBoxH = motionRoiBBox.height;
+                colorContourRefreshStats.roiMotionBBoxPixels = motionRoiBBox.area();
+                colorContourRefreshStats.roiAfterPaddingX = motionRoiAfterPadding.x;
+                colorContourRefreshStats.roiAfterPaddingY = motionRoiAfterPadding.y;
+                colorContourRefreshStats.roiAfterPaddingW = motionRoiAfterPadding.width;
+                colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
+                colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
                 colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
                 colorContourRefreshStats.roiPixels = refreshRoi.area();
                 if (asyncColorContourWorker && hasColorContourRegionCache && !refreshBecauseOfStartup)

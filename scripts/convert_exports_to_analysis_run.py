@@ -71,6 +71,18 @@ FRAME_FIELDS = [
     "color_contour_refresh_roi",
     "color_contour_refresh_roi_pixels",
     "color_contour_refresh_roi_candidate_pixels",
+    "color_contour_refresh_roi_motion_mask_pixels",
+    "color_contour_refresh_roi_motion_bbox_x",
+    "color_contour_refresh_roi_motion_bbox_y",
+    "color_contour_refresh_roi_motion_bbox_w",
+    "color_contour_refresh_roi_motion_bbox_h",
+    "color_contour_refresh_roi_motion_bbox_pixels",
+    "color_contour_refresh_roi_after_padding_x",
+    "color_contour_refresh_roi_after_padding_y",
+    "color_contour_refresh_roi_after_padding_w",
+    "color_contour_refresh_roi_after_padding_h",
+    "color_contour_refresh_roi_after_padding_pixels",
+    "color_contour_refresh_roi_max_pixels",
     "color_contour_refresh_roi_rejected_empty",
     "color_contour_refresh_roi_rejected_large",
     "color_contour_refresh_roi_region_count",
@@ -407,6 +419,42 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "color_contour_refresh_roi_pixels": as_int(profile_row.get("color_contour_refresh_roi_pixels")),
         "color_contour_refresh_roi_candidate_pixels": as_int(
             profile_row.get("color_contour_refresh_roi_candidate_pixels")
+        ),
+        "color_contour_refresh_roi_motion_mask_pixels": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_mask_pixels")
+        ),
+        "color_contour_refresh_roi_motion_bbox_x": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_bbox_x")
+        ),
+        "color_contour_refresh_roi_motion_bbox_y": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_bbox_y")
+        ),
+        "color_contour_refresh_roi_motion_bbox_w": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_bbox_w")
+        ),
+        "color_contour_refresh_roi_motion_bbox_h": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_bbox_h")
+        ),
+        "color_contour_refresh_roi_motion_bbox_pixels": as_int(
+            profile_row.get("color_contour_refresh_roi_motion_bbox_pixels")
+        ),
+        "color_contour_refresh_roi_after_padding_x": as_int(
+            profile_row.get("color_contour_refresh_roi_after_padding_x")
+        ),
+        "color_contour_refresh_roi_after_padding_y": as_int(
+            profile_row.get("color_contour_refresh_roi_after_padding_y")
+        ),
+        "color_contour_refresh_roi_after_padding_w": as_int(
+            profile_row.get("color_contour_refresh_roi_after_padding_w")
+        ),
+        "color_contour_refresh_roi_after_padding_h": as_int(
+            profile_row.get("color_contour_refresh_roi_after_padding_h")
+        ),
+        "color_contour_refresh_roi_after_padding_pixels": as_int(
+            profile_row.get("color_contour_refresh_roi_after_padding_pixels")
+        ),
+        "color_contour_refresh_roi_max_pixels": as_int(
+            profile_row.get("color_contour_refresh_roi_max_pixels")
         ),
         "color_contour_refresh_roi_rejected_empty": as_int(
             profile_row.get("color_contour_refresh_roi_rejected_empty")

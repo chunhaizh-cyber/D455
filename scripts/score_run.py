@@ -239,6 +239,22 @@ def score_run(run_dir, config):
         [r.get("color_contour_refresh_roi_candidate_pixels") for r in timing_rows],
         95,
     )
+    color_refresh_roi_motion_mask_pixels_p95 = positive_percentile(
+        [r.get("color_contour_refresh_roi_motion_mask_pixels") for r in timing_rows],
+        95,
+    )
+    color_refresh_roi_motion_bbox_pixels_p95 = positive_percentile(
+        [r.get("color_contour_refresh_roi_motion_bbox_pixels") for r in timing_rows],
+        95,
+    )
+    color_refresh_roi_after_padding_pixels_p95 = positive_percentile(
+        [r.get("color_contour_refresh_roi_after_padding_pixels") for r in timing_rows],
+        95,
+    )
+    color_refresh_roi_max_pixels_p50 = positive_percentile(
+        [r.get("color_contour_refresh_roi_max_pixels") for r in timing_rows],
+        50,
+    )
     color_refresh_roi_rejected_empty_count = sum(
         int(row_float(r, "color_contour_refresh_roi_rejected_empty") > 0) for r in timing_rows
     )
@@ -407,6 +423,10 @@ def score_run(run_dir, config):
             "color_contour_refresh_roi_count": color_refresh_roi_count,
             "color_contour_refresh_roi_pixels_p95": color_refresh_roi_pixels_p95,
             "color_contour_refresh_roi_candidate_pixels_p95": color_refresh_roi_candidate_pixels_p95,
+            "color_contour_refresh_roi_motion_mask_pixels_p95": color_refresh_roi_motion_mask_pixels_p95,
+            "color_contour_refresh_roi_motion_bbox_pixels_p95": color_refresh_roi_motion_bbox_pixels_p95,
+            "color_contour_refresh_roi_after_padding_pixels_p95": color_refresh_roi_after_padding_pixels_p95,
+            "color_contour_refresh_roi_max_pixels_p50": color_refresh_roi_max_pixels_p50,
             "color_contour_refresh_roi_rejected_empty_count": color_refresh_roi_rejected_empty_count,
             "color_contour_refresh_roi_rejected_large_count": color_refresh_roi_rejected_large_count,
             "color_contour_refresh_roi_region_count": color_refresh_roi_region_count,

@@ -264,9 +264,9 @@ Run: `analysis_runs/replay_hand_occlusion_reappear_real_001`, `--max-frames-over
 
 | candidate | pass | score | profile p95 ms | max ms | >100ms | contour lost | far score | ROI rejected large | runtime drop | G3 status | note |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
-| candidate_0030 | true | 92.562 | 76.2424 | 85.739 | 0 | 0 | 10.0 | 0 | 0 | n/a | best current real hand-occlusion score; still no ROI refresh |
-| candidate_0035 | true | 89.184 | 98.7730 | 132.654 | 5 | 0 | 10.0 | 7 | 0 | pass | no G3 deletion, but ROI rejected as too large |
-| candidate_0034 | false | 89.000 | 101.6394 | 128.824 | 7 | 0 | 10.0 | 7 | 0 | baseline | hard fail: p95 > 100 |
+| candidate_0030 | true | 93.584 | 69.4254 | 88.561 | 0 | 0 | 10.0 | 0 | 0 | n/a | best current real hand-occlusion score; still no ROI refresh |
+| candidate_0035 | true | 89.994 | 93.3696 | 105.051 | 1 | 0 | 10.0 | 7 | 0 | pass | no G3 deletion, but ROI rejected as too large |
+| candidate_0034 | true | 90.191 | 92.0580 | 113.279 | 4 | 0 | 10.0 | 7 | 0 | baseline | passes hard gate but still has over-100ms spikes |
 
 G3 result for `candidate_0034` vs `candidate_0035`:
 
@@ -279,4 +279,14 @@ dropped_no_stereo_region_count=0
 contour_lost_event_count=0
 ```
 
-Conclusion: the real capture removes the immediate G3 red-line concern for this case, but it does not promote `candidate_0035`. The ROI detector treated the hand-occlusion motion as near full-frame (`roi_candidate_pixels_p95=303744`, rejected large 7 times), so local ROI direct-build still lacks a real positive proof. `candidate_0030` remains the better motion bucket candidate on this replay.
+The ROI source diagnostics added after the first real run show why the ROI becomes too large:
+
+```text
+roi_motion_mask_pixels_p95=1668.3
+roi_motion_bbox_pixels_p95=296832.0
+roi_after_padding_pixels_p95=303744.0
+roi_max_pixels_p50=107520.0
+roi_rejected_large_count=7
+```
+
+Conclusion: the real capture removes the immediate G3 red-line concern for this case, but it does not promote `candidate_0035`. The ROI detector is not seeing too many moving pixels; it is merging sparse hand/edge motion into one large union bbox, then padding pushes it near full-frame and over the ROI cap. Local ROI direct-build still lacks a real positive proof. `candidate_0030` remains the better motion bucket candidate on this replay, and the next ROI step should split motion into connected components / tiles or separate motion, far-loss, and unknown ROI sources before rebuilding.

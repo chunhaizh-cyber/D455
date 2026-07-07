@@ -14,29 +14,35 @@ Key leaderboard metrics:
 
 ```text
 candidate_0030:
-  score=92.562
+  score=93.584
   pass=true
-  frame_ms_p95=76.2424
-  frame_ms_max=85.739
+  frame_ms_p95=69.4254
+  frame_ms_max=88.561
+  over_100ms_count=0
   contour_lost_events=0
   far_score=10.0
 
 candidate_0035:
-  score=89.184
+  score=89.994
   pass=true
-  frame_ms_p95=98.773
-  frame_ms_max=132.654
-  over_100ms_count=5
+  frame_ms_p95=93.3696
+  frame_ms_max=105.051
+  over_100ms_count=1
   contour_lost_events=0
   roi_rejected_large_count=7
   roi_candidate_pixels_p95=303744
+  roi_motion_mask_pixels_p95=1668.3
+  roi_motion_bbox_pixels_p95=296832.0
+  roi_after_padding_pixels_p95=303744.0
+  roi_max_pixels_p50=107520.0
   roi_stereo_dropped_count=0
 
 candidate_0034:
-  score=89.000
-  pass=false
-  frame_ms_p95=101.6394
-  hard_fail=total_frame_ms_p95 > 100
+  score=90.191
+  pass=true
+  frame_ms_p95=92.0580
+  frame_ms_max=113.279
+  over_100ms_count=4
   roi_rejected_large_count=7
 ```
 
@@ -55,4 +61,4 @@ contour_lost_event_count=0
 
 G3 red-line check passes on this real capture: `candidate_0035` did not drop stereo-bearing or no-stereo baseline regions, and no contour-lost event was recorded.
 
-Do not promote `candidate_0035`. On the real hand-occlusion capture, the ROI path did not become local: all seven ROI candidates were rejected as too large, so candidate_0035 mostly exercised full-frame refresh behavior and ran close to the 100ms hard budget. `candidate_0030` remains the better motion bucket candidate for this replay.
+Do not promote `candidate_0035`. On the real hand-occlusion capture, the ROI path did not become local: all seven ROI candidates were rejected as too large. The new source diagnostics show that the motion mask itself is small, but sparse motion pixels are merged into one large bbox before padding. This points to ROI construction quality, not drop safety, as the next bottleneck. `candidate_0030` remains the better motion bucket candidate for this replay.
