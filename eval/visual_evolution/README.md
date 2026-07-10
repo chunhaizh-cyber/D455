@@ -25,3 +25,16 @@
 python scripts\validate_visual_evolution_records.py --root eval\visual_evolution
 python scripts\validate_visual_evolution_records.py --root eval\visual_evolution --check-evidence --analysis-runs analysis_runs
 ```
+
+## 需求候选生成
+
+从标准运行包生成候选，默认不写入 `requirements.jsonl`：
+
+```powershell
+python scripts\derive_visual_requirements.py `
+  --runs analysis_runs\replay_hand_occlusion_reappear_real_001\hand_occlusion_reappear_candidate_0035 `
+  --out $env:TEMP\d455_requirement_candidates.json `
+  --min-occurrences 2
+```
+
+只有显式增加 `--register`，并且候选达到 `--min-occurrences`，才会追加到正式需求库。单次运行默认只能形成候选，不能直接确认稳定需求。
