@@ -65,3 +65,22 @@ python scripts\prepare_visual_task.py `
 ```
 
 任务元数据由 `run_batch.py` 写入 converter 命令和 `command_plan.csv`，converter 再写入 `run_manifest.json` 与 `config_snapshot.json`；这些字段不会传给 D455.exe。旧命令不带元数据参数时保持兼容。
+
+## 任务评估
+
+`compare_runs.py` 会读取 `eval/score_weights.yaml` 的 `regression_gate`。当前评分器的 `spatial_quality` 和 `far_retention` 分别作为 `near_score`、`far_score` 的兼容来源，并在结果中记录来源。`evaluate_visual_task.py` 还会拒绝没有独立留出/影子证据或复用固定 `run_id` 的任务：
+
+```powershell
+python scripts\compare_runs.py `
+  --baseline analysis_runs\...\run_score.json `
+  --candidate analysis_runs\...\run_score.json `
+  --enforce
+
+python scripts\evaluate_visual_task.py `
+  --task $env:TEMP\d455_task.json `
+  --baseline analysis_runs\...\run_score.json `
+  --candidate analysis_runs\...\run_score.json `
+  --out $env:TEMP\d455_task_evaluation.json
+```
+
+任务结果为 `insufficient_evidence` 时不能晋级；固定回放、留出回放和影子运行必须使用不同的运行编号。
