@@ -146,6 +146,19 @@ analysis_runs/<run_id>/
   stability_summary.json
 ```
 
+逐像素深度空间噪声和多帧收敛使用：
+
+```powershell
+python .\StaticStabilityProbe\analyze_depth_stability.py `
+  --dataset=datasets\static_stability_depth_spatial_013 `
+  --out-dir=analysis_runs\static_stability_depth_spatial_analysis_013 `
+  --frames=600 `
+  --reference-start=300 `
+  --saturated-depth-value=65535
+```
+
+输出包括 `depth_stability_summary.json`、`spatial_region_metrics.csv`、`window_convergence.csv`、`hole_run_lengths.csv`，以及有效率、深度中位数、MAD、标准差、最长孔洞和边缘跳变候选图。前300帧用于构造1/2/3/4/5/8/16/32帧估计，后300帧中位数只作为重复性参考，不是真实距离真值。
+
 逐帧指标同时包含相对参考帧和相对前帧的：
 
 - 彩图、左右 IR 的平均绝对差和超阈值像素比例；
@@ -156,6 +169,8 @@ analysis_runs/<run_id>/
 - 深度平均/p95绝对差、有效像素闪烁率；
 - 视差平均/p95绝对差、有效视差闪烁率；
 - 原始和派生结果哈希。
+
+深度有效值定义为 `0 < depth_mm < 65535`。`0` 是无效深度，`65535` 是转换到16位毫米图后的饱和值；两者都不能作为远距离稳定深度参与平均、有效率或孔洞统计。
 
 固定 `--intensity-difference-threshold=5` 的超阈值比例只描述原始灰度变化，不能直接比较亮度工作点相差很大的两段采集。归一化强度指标先把每个 IR 像素除以该帧 IR 均值，再计算平均绝对差并以百分比输出；归一化梯度指标对该浮点图执行 Sobel，再比较梯度幅值。`stability_summary.json/run_statistics` 另外保存左右 IR 均值、标准差、变异系数、前60帧均值、后60帧均值和首尾漂移百分比。
 

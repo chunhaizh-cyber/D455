@@ -637,7 +637,15 @@ ProcessedFrame processFrameStateless(const FrameBundle& frame)
     }
     if (!frame.depthMm16.empty())
     {
-        cv::compare(frame.depthMm16, 0, processed.depthValidMask, cv::CMP_GT);
+        cv::Mat greaterThanZero;
+        cv::Mat belowSaturation;
+        cv::compare(frame.depthMm16, 0, greaterThanZero, cv::CMP_GT);
+        cv::compare(
+            frame.depthMm16,
+            std::numeric_limits<uint16_t>::max(),
+            belowSaturation,
+            cv::CMP_LT);
+        cv::bitwise_and(greaterThanZero, belowSaturation, processed.depthValidMask);
     }
     if (!frame.irLeft.empty() && !frame.irRight.empty() && frame.irLeft.size() == frame.irRight.size())
     {

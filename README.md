@@ -30,6 +30,8 @@
 
 2026-07-10 已完成 Auto1→Locked1→Auto2→Locked2 各600帧交叉测试。两次 Auto 的左右IR均值约为53/60，两次 Locked 约为162/161，说明亮度工作点跃迁随控制模式重复出现；归一化后，两次 Locked 的 IR 均值 CV 约0.12%，低于 Auto 的0.47%/0.64%，锁定控制也降低了本场景的彩图和深度波动。后续同步专项测试确认：关闭 Stereo AE 后沿用读回曝光33000会使 depth/左右IR从30Hz降为15Hz，RGB仍为30Hz；RGB-only 锁定不会降帧。显式使用 `--stereo-exposure=30000` 的两次短测均恢复四路30Hz和100%同步接受，并保持较低相邻帧与深度波动，但固定参考帧的IR结构漂移尚未稳定复现，因此30000目前是“30Hz手动曝光实验配置”，不是最终全局最优配置。
 
+第三阶段使用曝光30000重新采集600帧，完成逐像素空间噪声、多帧收敛和孔洞连续长度测试，结果见 `资料/D455深度空间噪声与多帧收敛测试报告_v0.1.md`。有效深度现在明确排除 `0` 和毫米转换饱和值 `65535`。当前场景中，持续有效内部像素的简单平均将p95重复性误差从单帧约40.25mm降到3帧约24.42mm、5帧约20.30mm、32帧约13.09mm；但边缘跳变候选即使32帧处理后p95仍超过160mm，禁止直接平均。三帧历史保持可覆盖约75.17%的已恢复孔洞事件，只能维持归属连续性，不能升级为当前帧精确深度。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
