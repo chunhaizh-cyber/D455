@@ -24,7 +24,7 @@
 
 ## 云端分析协议
 
-仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，特征采集性能策略见 `docs/FEATURE_OPTIMIZATION.md`，运行索引见 `docs/RUN_INDEX.md`。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
+仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，特征采集性能策略见 `docs/FEATURE_OPTIMIZATION.md`，运行索引见 `docs/RUN_INDEX.md`。需求、特征值、中文方法函数和实现流程的资料说明见 `资料/需求特征值方法流程说明.md`。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
 
 ```text
 analysis_runs/<run_id>/run_manifest.json
