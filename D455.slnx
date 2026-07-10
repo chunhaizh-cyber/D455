@@ -3,4 +3,5 @@
     <Platform Name="x64" />
   </Configurations>
   <Project Path="D455.vcxproj" Id="adce9a1d-ad0a-4246-b072-3a43b81d35dc" />
+  <Project Path="StaticStabilityProbe/StaticStabilityProbe.vcxproj" Id="7c84ba43-1b3a-4c36-a90e-4b217b058b2f" />
 </Solution>

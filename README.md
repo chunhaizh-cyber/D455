@@ -22,6 +22,19 @@
 
 每轮结束时如果项目文件有变动，必须自动完成云端同步：先运行相关校验，再只暂存本轮有意变更的项目文件，提交并推送当前分支到 `origin`。不要自动同步真实录制视频、实际运行大数据、构建产物、密钥或无关用户改动；如果校验失败，则停止推送并说明阻塞原因。
 
+## 双目静态稳定性子项目
+
+`StaticStabilityProbe/` 是独立于主分割程序的第一层稳定性测试项目，用于回答“同一原始帧重复处理是否确定”和“静态场景连续原始帧的 color/depth/左右IR/视差差异有多大”。它不复用 `D455.cpp` 的 tracker、轮廓缓存、时序滤波和最终归簇状态，每帧都独立执行相同处理；操作协议和指标定义见 `StaticStabilityProbe/README.md`。
+
+子项目支持三条路径：实时采集会保存真实内外参、传感器选项、逐流帧号/时间戳和未对齐四路原始帧；目录 replay 会生成逐帧差异 CSV；同帧 repeat 会用派生结果哈希检查软件确定性。`--lock-controls` 在预热后锁定当前曝光、增益和白平衡，并在结束或异常退出时恢复原设置；`compare_stability.py` 用于对比自动控制和锁定控制的 p50/p95/max 差异。第一轮100次同帧烟测已得到 `unique_derived_hash_count=1` 和完全一致率100%；连续回放和真实D455短采集链路也已通过，但这些烟测不代替固定场景下的正式 E1 自动控制600帧与 E2 锁定控制600帧实验。
+
+```powershell
+msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+.\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
+.\x64\Release\StaticStabilityProbe.exe --capture-dir=datasets\static_stability_auto_001 --out-dir=analysis_runs\static_stability_auto_001 --frames=600 --warmup-frames=300
+.\x64\Release\StaticStabilityProbe.exe --capture-dir=datasets\static_stability_locked_001 --out-dir=analysis_runs\static_stability_locked_001 --frames=600 --warmup-frames=300 --settle-frames=30 --lock-controls
+```
+
 ## 云端分析协议
 
 P0-P6 已建立 `eval/visual_evolution/` 记录契约、历史样例、校验器、需求候选生成器、适用方法查询、单目标任务筹办、任务级评估、显式晋级、回退和适用方法选择脚本；`run_batch.py` 与 converter 已能传递需求/任务/方法元数据而不改变 D455.exe 参数。`compare_runs.py` 已执行 regression gate，`evaluate_visual_task.py` 现在会按 fixed/holdout/shadow 的同场景基线分别比较，并要求同一候选跨分片通过。独立 `datasets/hand_occlusion_reappear_holdout` 已于 2026-07-10 采集并完成 0030/0034/0035 评分；任务级裁决为 `fail`，没有方法获准晋级，P7 实时影子继续阻塞。
