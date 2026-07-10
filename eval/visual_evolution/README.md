@@ -38,3 +38,28 @@ python scripts\derive_visual_requirements.py `
 ```
 
 只有显式增加 `--register`，并且候选达到 `--min-occurrences`，才会追加到正式需求库。单次运行默认只能形成候选，不能直接确认稳定需求。
+
+## 任务筹办与方法查询
+
+按适用桶查询方法：
+
+```powershell
+python scripts\select_visual_methods.py `
+  --applicability-bucket local_motion_roi `
+  --include-probes `
+  --out $env:TEMP\d455_methods.json
+```
+
+生成单目标任务时必须显式指定基线和输入 case。没有独立留出 case 时，输出任务会保持 `blocked_missing_holdout`：
+
+```powershell
+python scripts\prepare_visual_task.py `
+  --requirement-id visual-need-hand-occlusion-local-refresh `
+  --applicability-bucket hand_occlusion_reappear `
+  --baseline-method-id method-candidate-0030 `
+  --candidate-method-id method-candidate-0030 `
+  --candidate-method-id method-candidate-0034 `
+  --candidate-method-id method-candidate-0035 `
+  --case-id hand_occlusion_reappear `
+  --out $env:TEMP\d455_task.json
+```
