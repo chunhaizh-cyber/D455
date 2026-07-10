@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://d455.local/eval/visual-evolution/schema.json",
+  "title": "D455 visual capability evolution records",
+  "oneOf": [
+    { "$ref": "#/$defs/requirement" },
+    { "$ref": "#/$defs/task" },
+    { "$ref": "#/$defs/method" },
+    { "$ref": "#/$defs/promotion" },
+    { "$ref": "#/$defs/rollback" }
+  ],
+  "$defs": {
+    "common": {
+      "type": "object",
+      "required": ["record_type", "schema_version", "record_id", "status", "created_at"],
+      "properties": {
+        "record_type": { "type": "string" },
+        "schema_version": { "type": "integer", "const": 1 },
+        "record_id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "created_at": { "type": "string", "minLength": 10 },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["run_id"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "case_id": { "type": "string" },
+        "split": { "enum": ["train", "validation", "test", "shadow", "historical"] },
+        "frame_ids": { "type": "array", "items": { "type": "integer" } },
+        "score_path": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "requirement": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "record_type": { "const": "requirement" },
+            "status": { "enum": ["candidate", "confirmed", "satisfied", "blocked", "closed"] },
+            "goal": { "type": "string", "minLength": 1 },
+            "target_feature": { "type": "string", "minLength": 1 },
+            "current_value": { "type": "object" },
+            "target_value": { "type": "object" },
+            "dedupe_key": { "type": "string", "minLength": 1 },
+            "source_evidence": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+            "protection_conditions": { "type": "object" }
+          },
+          "required": ["goal", "target_feature", "current_value", "target_value", "dedupe_key", "source_evidence", "protection_conditions"]
+        }
+      ]
+    },
+    "task": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "record_type": { "const": "task" },
+            "status": { "enum": ["prepared", "practicing", "trying", "directed_learning", "evaluating", "blocked_missing_holdout", "completed", "failed"] },
+            "requirement_id": { "type": "string", "minLength": 1 },
+            "primary_goal": { "type": "string", "minLength": 1 },
+            "baseline_method_id": { "type": "string", "minLength": 1 },
+            "candidate_method_ids": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "string" } },
+            "input_cases": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+            "resource_budget": { "type": "object" },
+            "validation_contract": { "type": "object" },
+            "fallback_conditions": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["requirement_id", "primary_goal", "baseline_method_id", "candidate_method_ids", "input_cases", "resource_budget", "validation_contract", "fallback_conditions"]
+        }
+      ]
+    },
+    "method": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "record_type": { "const": "method" },
+            "status": { "enum": ["probe_only", "candidate", "replay_only", "shadow", "promoted", "paused", "rolled_back"] },
+            "method_id": { "type": "string", "minLength": 1 },
+            "method_version": { "type": "string", "minLength": 1 },
+            "method_type": { "enum": ["atomic", "composite_candidate", "governance"] },
+            "applicability_buckets": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "applicability_conditions": { "type": "object" },
+            "input_evidence": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "output_transitions": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "failure_receipt": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "fallback_path": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+            "cost": { "type": "object" },
+            "configuration_ref": { "type": "string", "minLength": 1 },
+            "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+          },
+          "required": ["method_id", "method_version", "method_type", "applicability_buckets", "applicability_conditions", "input_evidence", "output_transitions", "failure_receipt", "fallback_path", "cost", "configuration_ref"]
+        }
+      ]
+    },
+    "promotion": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "record_type": { "const": "promotion" },
+            "status": { "enum": ["replay_only", "approved", "rolled_back"] },
+            "method_id": { "type": "string", "minLength": 1 },
+            "method_version": { "type": "string", "minLength": 1 },
+            "applicability_bucket": { "type": "string", "minLength": 1 },
+            "requirement_id": { "type": "string", "minLength": 1 },
+            "task_id": { "type": "string", "minLength": 1 },
+            "fixed_runs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+            "holdout_runs": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+            "shadow_runs": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+            "guard_conditions": { "type": "object" }
+          },
+          "required": ["method_id", "method_version", "applicability_bucket", "requirement_id", "task_id", "fixed_runs", "holdout_runs", "shadow_runs", "guard_conditions"]
+        }
+      ]
+    },
+    "rollback": {
+      "allOf": [
+        { "$ref": "#/$defs/common" },
+        {
+          "type": "object",
+          "properties": {
+            "record_type": { "const": "rollback" },
+            "status": { "enum": ["recorded", "resolved"] },
+            "method_id": { "type": "string", "minLength": 1 },
+            "method_version": { "type": "string", "minLength": 1 },
+            "applicability_bucket": { "type": "string", "minLength": 1 },
+            "replacement_method_id": { "type": "string", "minLength": 1 },
+            "triggered_by": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence" } },
+            "failure_metrics": { "type": "object" },
+            "reason": { "type": "string", "minLength": 1 }
+          },
+          "required": ["method_id", "method_version", "applicability_bucket", "replacement_method_id", "triggered_by", "failure_metrics", "reason"]
+        }
+      ]
+    }
+  }
+}
