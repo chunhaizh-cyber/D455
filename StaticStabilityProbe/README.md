@@ -68,6 +68,33 @@ x64/Release/StaticStabilityProbe.exe
 .\x64\Release\StaticStabilityProbe.exe --reset-auto-controls
 ```
 
+需要做单变量测试时使用：
+
+```powershell
+# 只锁定 Stereo AE，RGB 保持自动
+.\x64\Release\StaticStabilityProbe.exe `
+  --capture-dir=datasets\static_stability_stereo_lock `
+  --out-dir=analysis_runs\static_stability_stereo_lock `
+  --frames=180 --warmup-frames=300 --settle-frames=30 `
+  --lock-stereo-controls
+
+# 只锁定 RGB AE/AWB，Stereo 保持自动
+.\x64\Release\StaticStabilityProbe.exe `
+  --capture-dir=datasets\static_stability_rgb_lock `
+  --out-dir=analysis_runs\static_stability_rgb_lock `
+  --frames=180 --warmup-frames=300 --settle-frames=30 `
+  --lock-rgb-controls
+
+# 固定 Stereo 曝光；数值单位使用 RealSense 选项读回单位
+.\x64\Release\StaticStabilityProbe.exe `
+  --capture-dir=datasets\static_stability_stereo_exp30000 `
+  --out-dir=analysis_runs\static_stability_stereo_exp30000 `
+  --frames=180 --warmup-frames=300 --settle-frames=30 `
+  --stereo-exposure=30000
+```
+
+本设备在曝光33000关闭 Stereo AE 时会降到约15Hz；30000短测可维持30Hz。该值只适用于当前设备和场景的实验基线，其他设备必须重新测量。
+
 ### 目录回放
 
 ```powershell
@@ -101,6 +128,8 @@ datasets/<case_id>/
   sensor_options_after_capture.json
   sensor_options_restored.json       # 使用固定控制时存在
   frame_metadata.csv
+  settle_rejected_frame_metadata.csv
+  rejected_frame_metadata.csv
   case_manifest.json
   frames/
     000000_color.png
@@ -132,7 +161,9 @@ analysis_runs/<run_id>/
 
 `frame_metadata.csv` 额外记录 color/depth/左右IR 各自的硬件帧号、时间戳，以及设备实际提供的逐帧曝光、增益、白平衡和激光功率字段，用于区分传感器变化、自动控制变化和不同步取帧。
 
-实时采集只接受四路帧号都相对上一接受帧前进、左右 IR 帧号相同，且四路时间戳跨度不超过 `--max-stream-timestamp-delta-ms=50` 的 frameset。被拒绝数量写入 manifest 的 `skipped_unsynchronized_framesets`，并分别记录 `skipped_streams_not_advanced_framesets`、`skipped_stereo_pair_mismatch_framesets`、`skipped_timestamp_span_framesets` 和 `sync_acceptance_percent`，避免把重复旧 IR 帧误判为传感器稳定。三个原因计数是独立命中数，同一 frameset 同时违反多条门禁时可以重叠，不能直接相加代替总拒绝数。
+实时采集只接受四路帧号都相对上一接受帧前进、左右 IR 帧号相同，且四路时间戳跨度不超过 `--max-stream-timestamp-delta-ms=50` 的 frameset。控制切换后的 settle 不再只等待固定数量的 SDK frameset，而是累计取得 `--settle-frames=N` 个同步帧组后才开始正式记录；过渡期拒绝写入 `settle_rejected_frame_metadata.csv`，正式阶段拒绝写入 `rejected_frame_metadata.csv`。manifest 分别保存 settle 和 capture 的检查数、拒绝数及接受率。三个正式拒绝原因计数是独立命中数，同一 frameset 同时违反多条门禁时可以重叠，不能直接相加代替总拒绝数。
+
+保存原始帧时，实时循环只执行同步门禁和PNG写盘；SGBM及全部稳定性指标在相机停止后从保存帧离线计算。这样重计算不会改变 SDK frameset 的返回节奏。`--no-save-frames` 仍只能边采边分析，适合短烟测，不用于正式传感器节奏测试。
 
 第一轮阈值只用于描述分布，不直接判定传感器合格。正式阈值应在 E1/E2 固定场景结果出来后，根据 p50/p95/max 和空间分区特征确定。
 
@@ -145,7 +176,9 @@ analysis_runs/<run_id>/
 - 两次 Auto 的 IR 均值约53/60，两次 Locked 约162/161；锁定模式的高亮工作点可重复，不能再用固定5灰度阈值单独判断 IR 稳定性。
 - 归一化结果中，Locked 的左右 IR 均值 CV 约0.12%，Auto 为0.47%/0.64%；归一化强度和梯度差也在两轮中一致下降。
 - 新增归一化浮点派生结果后，同一帧重复处理100次仍为1种派生哈希、完全一致率100%。
-- Locked2 拒绝637个不同步候选后才取得600个合格帧组；已接收帧仍满足同步门禁，但拒绝原因需要用新增分项计数再次采集确认。
+- 同步专项已确认上述拒绝主要来自控制切换后的IR旧帧和 Stereo 15Hz/RGB 30Hz的节奏差；不是已接收数据内部失步。
+- Auto与RGB-only锁定均保持四路约30Hz；Stereo-only在读回曝光33000时降为约15Hz。
+- `--stereo-exposure=30000` 两次短测均恢复30Hz、正式阶段0拒绝；相邻帧与深度指标改善，但长期IR结构漂移仍需更多验证。
 - `compare_stability.py` 通过自比较烟测，能够生成同口径 p50/p95/max 差值和改善比例。
 
 ## 边界

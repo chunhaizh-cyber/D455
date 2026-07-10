@@ -37,11 +37,14 @@ struct ProbeConfig
     int repeatFrame = -1;
     int repeatCount = 100;
     bool lockControls = false;
+    bool lockStereoControls = false;
+    bool lockRgbControls = false;
     bool saveFrames = true;
     int intensityDiffThreshold = 5;
     int depthDiffThresholdMm = 20;
     double disparityDiffThresholdPx = 1.0;
     double maxStreamTimestampDeltaMs = 50.0;
+    std::optional<float> stereoExposure;
     std::optional<float> emitterEnabled;
     std::optional<float> laserPower;
 };
@@ -277,7 +280,14 @@ ProbeConfig parseConfig(int argc, char** argv)
     config.disparityDiffThresholdPx = std::max(0.0, parseDouble(optionValue(argc, argv, "--disparity-diff-threshold-px="), config.disparityDiffThresholdPx, "--disparity-diff-threshold-px"));
     config.maxStreamTimestampDeltaMs = std::max(0.0, parseDouble(optionValue(argc, argv, "--max-stream-timestamp-delta-ms="), config.maxStreamTimestampDeltaMs, "--max-stream-timestamp-delta-ms"));
     config.lockControls = hasFlag(argc, argv, "--lock-controls");
+    config.lockStereoControls = config.lockControls || hasFlag(argc, argv, "--lock-stereo-controls");
+    config.lockRgbControls = config.lockControls || hasFlag(argc, argv, "--lock-rgb-controls");
     config.saveFrames = !hasFlag(argc, argv, "--no-save-frames");
+    if (const auto value = optionValue(argc, argv, "--stereo-exposure="))
+    {
+        config.stereoExposure = static_cast<float>(parseDouble(value, 0.0, "--stereo-exposure"));
+        config.lockStereoControls = true;
+    }
     if (const auto value = optionValue(argc, argv, "--emitter-enabled="))
     {
         config.emitterEnabled = static_cast<float>(parseDouble(value, 1.0, "--emitter-enabled"));
@@ -310,7 +320,9 @@ void printHelp()
         << "Capture:\n"
         << "  StaticStabilityProbe.exe --capture-dir=datasets\\static_stability_auto_001 "
            "--out-dir=analysis_runs\\static_stability_auto_001 --frames=600\n"
-        << "  Add --lock-controls to freeze current exposure/gain/white-balance after warmup.\n\n"
+        << "  Add --lock-controls to freeze Stereo and RGB controls after warmup.\n"
+        << "  Use --lock-stereo-controls or --lock-rgb-controls for isolated control tests.\n\n"
+        << "  Use --stereo-exposure=<sensor units> to test a fixed Stereo exposure.\n\n"
         << "Replay:\n"
         << "  StaticStabilityProbe.exe --replay-dir=datasets\\static_stability_auto_001 "
            "--out-dir=analysis_runs\\static_stability_replay_001 --frames=600 --ignore-first-frames=0\n\n"
@@ -1276,17 +1288,31 @@ void applyRequestedControls(const rs2::device& device, const ProbeConfig& config
 {
     for (rs2::sensor sensor : device.query_sensors())
     {
+        const bool isStereoSensor =
+            sensor.supports(RS2_OPTION_EMITTER_ENABLED) || sensor.supports(RS2_OPTION_LASER_POWER);
+        const bool isRgbSensor =
+            sensor.supports(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE) || sensor.supports(RS2_OPTION_WHITE_BALANCE);
+        const bool lockThisSensor =
+            (isStereoSensor && config.lockStereoControls) ||
+            (isRgbSensor && config.lockRgbControls);
         std::optional<float> exposure;
         std::optional<float> gain;
         std::optional<float> whiteBalance;
         try { if (sensor.supports(RS2_OPTION_EXPOSURE)) exposure = sensor.get_option(RS2_OPTION_EXPOSURE); } catch (...) {}
         try { if (sensor.supports(RS2_OPTION_GAIN)) gain = sensor.get_option(RS2_OPTION_GAIN); } catch (...) {}
         try { if (sensor.supports(RS2_OPTION_WHITE_BALANCE)) whiteBalance = sensor.get_option(RS2_OPTION_WHITE_BALANCE); } catch (...) {}
-        if (config.lockControls)
+        if (lockThisSensor)
         {
             setOptionIfSupported(sensor, RS2_OPTION_ENABLE_AUTO_EXPOSURE, 0.0f);
             setOptionIfSupported(sensor, RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE, 0.0f);
-            if (exposure) setOptionIfSupported(sensor, RS2_OPTION_EXPOSURE, *exposure);
+            if (isStereoSensor && config.stereoExposure)
+            {
+                setOptionIfSupported(sensor, RS2_OPTION_EXPOSURE, *config.stereoExposure);
+            }
+            else if (exposure)
+            {
+                setOptionIfSupported(sensor, RS2_OPTION_EXPOSURE, *exposure);
+            }
             if (gain) setOptionIfSupported(sensor, RS2_OPTION_GAIN, *gain);
             if (whiteBalance) setOptionIfSupported(sensor, RS2_OPTION_WHITE_BALANCE, *whiteBalance);
         }
@@ -1405,13 +1431,81 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
     }
     writeSensorOptions(config.captureDir / "sensor_options_before_lock.json", device);
     std::unique_ptr<SensorOptionRestoreGuard> restoreGuard;
-    if (config.lockControls || config.emitterEnabled || config.laserPower)
+    int settleExaminedCompleteFramesets = 0;
+    int settleAcceptedSynchronizedFramesets = 0;
+    int settleRejectedUnsynchronizedFramesets = 0;
+    std::ofstream settleRejectedMetadata(
+        config.captureDir / "settle_rejected_frame_metadata.csv", std::ios::out | std::ios::trunc);
+    settleRejectedMetadata
+        << "attempt_index,depth_frame_number,color_frame_number,ir_left_frame_number,ir_right_frame_number,"
+           "depth_timestamp_ms,color_timestamp_ms,ir_left_timestamp_ms,ir_right_timestamp_ms,sync_timestamp_span_ms,"
+           "streams_not_advanced,stereo_pair_mismatch,timestamp_span_exceeded\n";
+    settleRejectedMetadata << std::fixed << std::setprecision(6);
+    if (config.lockStereoControls || config.lockRgbControls || config.emitterEnabled || config.laserPower)
     {
         restoreGuard = std::make_unique<SensorOptionRestoreGuard>(device);
         applyRequestedControls(device, config);
-        for (int index = 0; index < config.settleFrames; ++index)
+        uint64_t lastSettleDepthFrameNumber = 0;
+        uint64_t lastSettleColorFrameNumber = 0;
+        uint64_t lastSettleLeftFrameNumber = 0;
+        uint64_t lastSettleRightFrameNumber = 0;
+        const int maxSettleAttempts = std::max(config.settleFrames * 20, 300);
+        while (settleAcceptedSynchronizedFramesets < config.settleFrames)
         {
-            pipeline.wait_for_frames();
+            if (settleExaminedCompleteFramesets >= maxSettleAttempts)
+            {
+                throw std::runtime_error("streams did not recover synchronization during control settling");
+            }
+            const rs2::frameset frameSet = pipeline.wait_for_frames();
+            const rs2::video_frame color = frameSet.get_color_frame();
+            const rs2::depth_frame depth = frameSet.get_depth_frame();
+            const rs2::video_frame left = frameSet.get_infrared_frame(1);
+            const rs2::video_frame right = frameSet.get_infrared_frame(2);
+            if (!color || !depth || !left || !right)
+            {
+                continue;
+            }
+            const uint64_t depthFrameNumber = depth.get_frame_number();
+            const uint64_t colorFrameNumber = color.get_frame_number();
+            const uint64_t leftFrameNumber = left.get_frame_number();
+            const uint64_t rightFrameNumber = right.get_frame_number();
+            const std::array<double, 4> timestamps = {
+                depth.get_timestamp(), color.get_timestamp(), left.get_timestamp(), right.get_timestamp()
+            };
+            const auto [minimumTimestamp, maximumTimestamp] = std::minmax_element(timestamps.begin(), timestamps.end());
+            const double timestampSpanMs = *maximumTimestamp - *minimumTimestamp;
+            const bool streamsAdvanced =
+                depthFrameNumber > lastSettleDepthFrameNumber &&
+                colorFrameNumber > lastSettleColorFrameNumber &&
+                leftFrameNumber > lastSettleLeftFrameNumber &&
+                rightFrameNumber > lastSettleRightFrameNumber;
+            const bool stereoPairAligned = leftFrameNumber == rightFrameNumber;
+            const int attemptIndex = settleExaminedCompleteFramesets++;
+            if (!streamsAdvanced || !stereoPairAligned || timestampSpanMs > config.maxStreamTimestampDeltaMs)
+            {
+                ++settleRejectedUnsynchronizedFramesets;
+                settleRejectedMetadata
+                    << attemptIndex
+                    << ',' << depthFrameNumber
+                    << ',' << colorFrameNumber
+                    << ',' << leftFrameNumber
+                    << ',' << rightFrameNumber
+                    << ',' << depth.get_timestamp()
+                    << ',' << color.get_timestamp()
+                    << ',' << left.get_timestamp()
+                    << ',' << right.get_timestamp()
+                    << ',' << timestampSpanMs
+                    << ',' << (streamsAdvanced ? 0 : 1)
+                    << ',' << (stereoPairAligned ? 0 : 1)
+                    << ',' << (timestampSpanMs > config.maxStreamTimestampDeltaMs ? 1 : 0)
+                    << '\n';
+                continue;
+            }
+            lastSettleDepthFrameNumber = depthFrameNumber;
+            lastSettleColorFrameNumber = colorFrameNumber;
+            lastSettleLeftFrameNumber = leftFrameNumber;
+            lastSettleRightFrameNumber = rightFrameNumber;
+            ++settleAcceptedSynchronizedFramesets;
         }
     }
     writeSensorOptions(config.captureDir / "sensor_options_capture.json", device);
@@ -1419,12 +1513,20 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
     StabilityAnalyzer analyzer(config);
     std::ofstream frameMetadata(config.captureDir / "frame_metadata.csv", std::ios::out | std::ios::trunc);
     frameMetadata
-        << "capture_index,depth_frame_number,color_frame_number,ir_left_frame_number,ir_right_frame_number,"
+        << "capture_index,attempt_index,depth_frame_number,color_frame_number,ir_left_frame_number,ir_right_frame_number,"
            "depth_timestamp_ms,color_timestamp_ms,ir_left_timestamp_ms,ir_right_timestamp_ms,sync_timestamp_span_ms,"
            "depth_actual_exposure,color_actual_exposure,ir_left_actual_exposure,ir_right_actual_exposure,"
            "depth_gain,color_gain,ir_left_gain,ir_right_gain,color_white_balance,depth_laser_power\n";
     frameMetadata << std::fixed << std::setprecision(6);
+    std::ofstream rejectedFrameMetadata(
+        config.captureDir / "rejected_frame_metadata.csv", std::ios::out | std::ios::trunc);
+    rejectedFrameMetadata
+        << "attempt_index,depth_frame_number,color_frame_number,ir_left_frame_number,ir_right_frame_number,"
+           "depth_timestamp_ms,color_timestamp_ms,ir_left_timestamp_ms,ir_right_timestamp_ms,sync_timestamp_span_ms,"
+           "streams_not_advanced,stereo_pair_mismatch,timestamp_span_exceeded\n";
+    rejectedFrameMetadata << std::fixed << std::setprecision(6);
     int captured = 0;
+    int examinedCompleteFramesets = 0;
     int skippedUnsynchronized = 0;
     int skippedStreamsNotAdvanced = 0;
     int skippedStereoPairMismatch = 0;
@@ -1459,12 +1561,28 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
             leftFrameNumber > lastLeftFrameNumber &&
             rightFrameNumber > lastRightFrameNumber;
         const bool stereoPairAligned = leftFrameNumber == rightFrameNumber;
+        const int attemptIndex = examinedCompleteFramesets++;
         if (!streamsAdvanced || !stereoPairAligned || timestampSpanMs > config.maxStreamTimestampDeltaMs)
         {
             ++skippedUnsynchronized;
             skippedStreamsNotAdvanced += streamsAdvanced ? 0 : 1;
             skippedStereoPairMismatch += stereoPairAligned ? 0 : 1;
             skippedTimestampSpan += timestampSpanMs > config.maxStreamTimestampDeltaMs ? 1 : 0;
+            rejectedFrameMetadata
+                << attemptIndex
+                << ',' << depthFrameNumber
+                << ',' << colorFrameNumber
+                << ',' << leftFrameNumber
+                << ',' << rightFrameNumber
+                << ',' << depth.get_timestamp()
+                << ',' << color.get_timestamp()
+                << ',' << left.get_timestamp()
+                << ',' << right.get_timestamp()
+                << ',' << timestampSpanMs
+                << ',' << (streamsAdvanced ? 0 : 1)
+                << ',' << (stereoPairAligned ? 0 : 1)
+                << ',' << (timestampSpanMs > config.maxStreamTimestampDeltaMs ? 1 : 0)
+                << '\n';
             continue;
         }
         lastDepthFrameNumber = depthFrameNumber;
@@ -1480,6 +1598,7 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         frame.timestampMs = depth.get_timestamp();
         frameMetadata
             << captured
+            << ',' << attemptIndex
             << ',' << depth.get_frame_number()
             << ',' << color.get_frame_number()
             << ',' << left.get_frame_number()
@@ -1504,7 +1623,10 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         {
             saveFrameBundle(config.captureDir / "frames", captured, frame);
         }
-        analyzer.add(frame);
+        else
+        {
+            analyzer.add(frame);
+        }
         ++captured;
     }
     writeSensorOptions(config.captureDir / "sensor_options_after_capture.json", device);
@@ -1525,9 +1647,31 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         << "  \"format\": \"d455_static_stability_v1\",\n"
         << "  \"frame_count\": " << captured << ",\n"
         << "  \"raw_unaligned_streams\": true,\n"
-        << "  \"controls_locked\": " << (config.lockControls ? "true" : "false") << ",\n"
+        << "  \"controls_locked\": "
+        << (config.lockStereoControls && config.lockRgbControls ? "true" : "false") << ",\n"
+        << "  \"stereo_controls_locked\": " << (config.lockStereoControls ? "true" : "false") << ",\n"
+        << "  \"rgb_controls_locked\": " << (config.lockRgbControls ? "true" : "false") << ",\n"
+        << "  \"requested_stereo_exposure\": ";
+    if (config.stereoExposure)
+    {
+        manifest << *config.stereoExposure;
+    }
+    else
+    {
+        manifest << "null";
+    }
+    manifest << ",\n"
         << "  \"warmup_frames\": " << config.warmupFrames << ",\n"
         << "  \"settle_frames\": " << config.settleFrames << ",\n"
+        << "  \"settle_examined_complete_framesets\": " << settleExaminedCompleteFramesets << ",\n"
+        << "  \"settle_accepted_synchronized_framesets\": " << settleAcceptedSynchronizedFramesets << ",\n"
+        << "  \"settle_rejected_unsynchronized_framesets\": " << settleRejectedUnsynchronizedFramesets << ",\n"
+        << "  \"settle_sync_acceptance_percent\": "
+        << (settleExaminedCompleteFramesets == 0
+            ? 0.0
+            : 100.0 * static_cast<double>(settleAcceptedSynchronizedFramesets) /
+                static_cast<double>(settleExaminedCompleteFramesets)) << ",\n"
+        << "  \"examined_complete_framesets\": " << examinedCompleteFramesets << ",\n"
         << "  \"skipped_unsynchronized_framesets\": " << skippedUnsynchronized << ",\n"
         << "  \"skipped_streams_not_advanced_framesets\": " << skippedStreamsNotAdvanced << ",\n"
         << "  \"skipped_stereo_pair_mismatch_framesets\": " << skippedStereoPairMismatch << ",\n"
@@ -1540,9 +1684,20 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         << "  \"max_stream_timestamp_delta_ms\": " << config.maxStreamTimestampDeltaMs << ",\n"
         << "  \"calibration_file\": \"calibration.json\",\n"
         << "  \"frame_metadata_file\": \"frame_metadata.csv\",\n"
+        << "  \"settle_rejected_frame_metadata_file\": \"settle_rejected_frame_metadata.csv\",\n"
+        << "  \"rejected_frame_metadata_file\": \"rejected_frame_metadata.csv\",\n"
         << "  \"sensor_options_file\": \"sensor_options_capture.json\"\n"
         << "}\n";
-    return analyzer.metrics();
+    if (!config.saveFrames)
+    {
+        return analyzer.metrics();
+    }
+    StabilityAnalyzer offlineAnalyzer(config);
+    for (int index = 0; index < captured; ++index)
+    {
+        offlineAnalyzer.add(loadReplayFrame(config.captureDir / "frames", index));
+    }
+    return offlineAnalyzer.metrics();
 }
 
 std::vector<FrameMetrics> analyzeReplay(const ProbeConfig& config)
