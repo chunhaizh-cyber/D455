@@ -62,6 +62,10 @@ struct ProcessedFrame
     cv::Mat colorEdges;
     cv::Mat leftEdges;
     cv::Mat rightEdges;
+    cv::Mat irLeftMeanNormalized32f;
+    cv::Mat irRightMeanNormalized32f;
+    cv::Mat irLeftGradientNormalized32f;
+    cv::Mat irRightGradientNormalized32f;
     cv::Mat depthValidMask;
     cv::Mat disparity32f;
     cv::Mat disparityValidMask;
@@ -85,6 +89,18 @@ struct FrameMetrics
     double colorMean = 0.0;
     double irLeftMean = 0.0;
     double irRightMean = 0.0;
+    double irLeftMeanReferenceRelativePercent = 0.0;
+    double irLeftMeanPreviousRelativePercent = 0.0;
+    double irRightMeanReferenceRelativePercent = 0.0;
+    double irRightMeanPreviousRelativePercent = 0.0;
+    double irLeftNormalizedReferenceMeanAbsPercent = 0.0;
+    double irLeftNormalizedPreviousMeanAbsPercent = 0.0;
+    double irRightNormalizedReferenceMeanAbsPercent = 0.0;
+    double irRightNormalizedPreviousMeanAbsPercent = 0.0;
+    double irLeftGradientReferenceMeanAbsPercent = 0.0;
+    double irLeftGradientPreviousMeanAbsPercent = 0.0;
+    double irRightGradientReferenceMeanAbsPercent = 0.0;
+    double irRightGradientPreviousMeanAbsPercent = 0.0;
     double depthValidPercent = 0.0;
     double depthMeanMm = 0.0;
     double disparityValidPercent = 0.0;
@@ -436,6 +452,50 @@ DifferenceStats compareBinary(const cv::Mat& current, const cv::Mat& reference)
     return stats;
 }
 
+cv::Mat normalizeByMean(const cv::Mat& image)
+{
+    cv::Mat normalized;
+    if (image.empty())
+    {
+        return normalized;
+    }
+    const double mean = cv::mean(image)[0];
+    image.convertTo(normalized, CV_32F, 1.0 / std::max(mean, 1e-6));
+    return normalized;
+}
+
+cv::Mat normalizedGradientMagnitude(const cv::Mat& meanNormalized)
+{
+    cv::Mat magnitude;
+    if (meanNormalized.empty())
+    {
+        return magnitude;
+    }
+    cv::Mat gradientX;
+    cv::Mat gradientY;
+    cv::Sobel(meanNormalized, gradientX, CV_32F, 1, 0, 3);
+    cv::Sobel(meanNormalized, gradientY, CV_32F, 0, 1, 3);
+    cv::magnitude(gradientX, gradientY, magnitude);
+    return magnitude;
+}
+
+double meanAbsoluteDifferencePercent(const cv::Mat& current, const cv::Mat& reference)
+{
+    if (current.empty() || reference.empty() || current.size() != reference.size() ||
+        current.type() != reference.type())
+    {
+        return 0.0;
+    }
+    cv::Mat difference;
+    cv::absdiff(current, reference, difference);
+    return cv::mean(difference)[0] * 100.0;
+}
+
+double relativeDifferencePercent(double current, double reference)
+{
+    return 100.0 * std::abs(current - reference) / std::max(std::abs(reference), 1e-6);
+}
+
 DifferenceStats compareDepth(
     const cv::Mat& current,
     const cv::Mat& currentValid,
@@ -554,10 +614,14 @@ ProcessedFrame processFrameStateless(const FrameBundle& frame)
     if (!frame.irLeft.empty())
     {
         cv::Canny(frame.irLeft, processed.leftEdges, 60, 120);
+        processed.irLeftMeanNormalized32f = normalizeByMean(frame.irLeft);
+        processed.irLeftGradientNormalized32f = normalizedGradientMagnitude(processed.irLeftMeanNormalized32f);
     }
     if (!frame.irRight.empty())
     {
         cv::Canny(frame.irRight, processed.rightEdges, 60, 120);
+        processed.irRightMeanNormalized32f = normalizeByMean(frame.irRight);
+        processed.irRightGradientNormalized32f = normalizedGradientMagnitude(processed.irRightMeanNormalized32f);
     }
     if (!frame.depthMm16.empty())
     {
@@ -584,6 +648,10 @@ ProcessedFrame processFrameStateless(const FrameBundle& frame)
     hash = hashMat(hash, processed.colorEdges);
     hash = hashMat(hash, processed.leftEdges);
     hash = hashMat(hash, processed.rightEdges);
+    hash = hashMat(hash, processed.irLeftMeanNormalized32f);
+    hash = hashMat(hash, processed.irRightMeanNormalized32f);
+    hash = hashMat(hash, processed.irLeftGradientNormalized32f);
+    hash = hashMat(hash, processed.irRightGradientNormalized32f);
     hash = hashMat(hash, processed.depthValidMask);
     hash = hashMat(hash, processed.disparity32f);
     processed.derivedHash = hashMat(hash, processed.disparityValidMask);
@@ -607,6 +675,30 @@ FrameMetrics measureFrame(
     metrics.colorMean = processed.colorGray.empty() ? 0.0 : cv::mean(processed.colorGray)[0];
     metrics.irLeftMean = frame.irLeft.empty() ? 0.0 : cv::mean(frame.irLeft)[0];
     metrics.irRightMean = frame.irRight.empty() ? 0.0 : cv::mean(frame.irRight)[0];
+    const double referenceIrLeftMean = referenceFrame.irLeft.empty() ? 0.0 : cv::mean(referenceFrame.irLeft)[0];
+    const double previousIrLeftMean = previousFrame.irLeft.empty() ? 0.0 : cv::mean(previousFrame.irLeft)[0];
+    const double referenceIrRightMean = referenceFrame.irRight.empty() ? 0.0 : cv::mean(referenceFrame.irRight)[0];
+    const double previousIrRightMean = previousFrame.irRight.empty() ? 0.0 : cv::mean(previousFrame.irRight)[0];
+    metrics.irLeftMeanReferenceRelativePercent = relativeDifferencePercent(metrics.irLeftMean, referenceIrLeftMean);
+    metrics.irLeftMeanPreviousRelativePercent = relativeDifferencePercent(metrics.irLeftMean, previousIrLeftMean);
+    metrics.irRightMeanReferenceRelativePercent = relativeDifferencePercent(metrics.irRightMean, referenceIrRightMean);
+    metrics.irRightMeanPreviousRelativePercent = relativeDifferencePercent(metrics.irRightMean, previousIrRightMean);
+    metrics.irLeftNormalizedReferenceMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irLeftMeanNormalized32f, reference.irLeftMeanNormalized32f);
+    metrics.irLeftNormalizedPreviousMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irLeftMeanNormalized32f, previous.irLeftMeanNormalized32f);
+    metrics.irRightNormalizedReferenceMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irRightMeanNormalized32f, reference.irRightMeanNormalized32f);
+    metrics.irRightNormalizedPreviousMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irRightMeanNormalized32f, previous.irRightMeanNormalized32f);
+    metrics.irLeftGradientReferenceMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irLeftGradientNormalized32f, reference.irLeftGradientNormalized32f);
+    metrics.irLeftGradientPreviousMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irLeftGradientNormalized32f, previous.irLeftGradientNormalized32f);
+    metrics.irRightGradientReferenceMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irRightGradientNormalized32f, reference.irRightGradientNormalized32f);
+    metrics.irRightGradientPreviousMeanAbsPercent = meanAbsoluteDifferencePercent(
+        processed.irRightGradientNormalized32f, previous.irRightGradientNormalized32f);
     metrics.depthValidPercent = percentOfPixels(processed.depthValidMask);
     metrics.depthMeanMm = validMean(frame.depthMm16, processed.depthValidMask);
     metrics.disparityValidPercent = percentOfPixels(processed.disparityValidMask);
@@ -711,6 +803,12 @@ void writeMetricsCsv(const std::filesystem::path& path, const std::vector<FrameM
         throw std::runtime_error("cannot write " + path.string());
     }
     out << "frame_index,source_frame_number,timestamp_ms,color_mean,ir_left_mean,ir_right_mean,"
+           "ir_left_mean_ref_relative_percent,ir_left_mean_prev_relative_percent,"
+           "ir_right_mean_ref_relative_percent,ir_right_mean_prev_relative_percent,"
+           "ir_left_normalized_ref_mean_abs_percent,ir_left_normalized_prev_mean_abs_percent,"
+           "ir_right_normalized_ref_mean_abs_percent,ir_right_normalized_prev_mean_abs_percent,"
+           "ir_left_gradient_ref_mean_abs_percent,ir_left_gradient_prev_mean_abs_percent,"
+           "ir_right_gradient_ref_mean_abs_percent,ir_right_gradient_prev_mean_abs_percent,"
            "depth_valid_percent,depth_mean_mm,disparity_valid_percent,disparity_mean_px";
     const std::array<const char*, 11> prefixes = {
         "color_ref", "color_prev", "color_edge_ref", "ir_left_ref", "ir_left_prev",
@@ -733,6 +831,18 @@ void writeMetricsCsv(const std::filesystem::path& path, const std::vector<FrameM
             << ',' << row.colorMean
             << ',' << row.irLeftMean
             << ',' << row.irRightMean
+            << ',' << row.irLeftMeanReferenceRelativePercent
+            << ',' << row.irLeftMeanPreviousRelativePercent
+            << ',' << row.irRightMeanReferenceRelativePercent
+            << ',' << row.irRightMeanPreviousRelativePercent
+            << ',' << row.irLeftNormalizedReferenceMeanAbsPercent
+            << ',' << row.irLeftNormalizedPreviousMeanAbsPercent
+            << ',' << row.irRightNormalizedReferenceMeanAbsPercent
+            << ',' << row.irRightNormalizedPreviousMeanAbsPercent
+            << ',' << row.irLeftGradientReferenceMeanAbsPercent
+            << ',' << row.irLeftGradientPreviousMeanAbsPercent
+            << ',' << row.irRightGradientReferenceMeanAbsPercent
+            << ',' << row.irRightGradientPreviousMeanAbsPercent
             << ',' << row.depthValidPercent
             << ',' << row.depthMeanMm
             << ',' << row.disparityValidPercent
@@ -762,6 +872,16 @@ struct SummaryStats
     double maximum = 0.0;
 };
 
+struct SignalRunStats
+{
+    double mean = 0.0;
+    double standardDeviation = 0.0;
+    double coefficientOfVariationPercent = 0.0;
+    double first60Mean = 0.0;
+    double last60Mean = 0.0;
+    double startToEndDriftPercent = 0.0;
+};
+
 template <typename Getter>
 SummaryStats summarize(const std::vector<FrameMetrics>& metrics, Getter getter)
 {
@@ -778,11 +898,62 @@ SummaryStats summarize(const std::vector<FrameMetrics>& metrics, Getter getter)
     return result;
 }
 
+template <typename Getter>
+SignalRunStats summarizeSignal(const std::vector<FrameMetrics>& metrics, Getter getter)
+{
+    SignalRunStats result;
+    if (metrics.empty())
+    {
+        return result;
+    }
+    double sum = 0.0;
+    for (const FrameMetrics& metric : metrics)
+    {
+        sum += getter(metric);
+    }
+    result.mean = sum / static_cast<double>(metrics.size());
+    double squaredDifferenceSum = 0.0;
+    for (const FrameMetrics& metric : metrics)
+    {
+        const double difference = getter(metric) - result.mean;
+        squaredDifferenceSum += difference * difference;
+    }
+    result.standardDeviation = std::sqrt(squaredDifferenceSum / static_cast<double>(metrics.size()));
+    result.coefficientOfVariationPercent =
+        100.0 * result.standardDeviation / std::max(std::abs(result.mean), 1e-6);
+    const size_t window = std::min<size_t>(60, metrics.size());
+    double firstSum = 0.0;
+    double lastSum = 0.0;
+    for (size_t index = 0; index < window; ++index)
+    {
+        firstSum += getter(metrics[index]);
+        lastSum += getter(metrics[metrics.size() - window + index]);
+    }
+    result.first60Mean = firstSum / static_cast<double>(window);
+    result.last60Mean = lastSum / static_cast<double>(window);
+    result.startToEndDriftPercent = 100.0 * (result.last60Mean - result.first60Mean) /
+        std::max(std::abs(result.first60Mean), 1e-6);
+    return result;
+}
+
 void writeSummaryMetric(std::ostream& out, const char* name, const SummaryStats& stats, bool trailingComma)
 {
     out << "    \"" << name << "\": {\"p50\": " << stats.p50
         << ", \"p95\": " << stats.p95
         << ", \"max\": " << stats.maximum << "}";
+    if (trailingComma) out << ',';
+    out << '\n';
+}
+
+void writeSignalRunStats(std::ostream& out, const char* name, const SignalRunStats& stats, bool trailingComma)
+{
+    out << "    \"" << name << "\": {"
+        << "\"mean\": " << stats.mean
+        << ", \"standard_deviation\": " << stats.standardDeviation
+        << ", \"coefficient_of_variation_percent\": " << stats.coefficientOfVariationPercent
+        << ", \"first_60_mean\": " << stats.first60Mean
+        << ", \"last_60_mean\": " << stats.last60Mean
+        << ", \"start_to_end_drift_percent\": " << stats.startToEndDriftPercent << '}';
     if (trailingComma) out << ',';
     out << '\n';
 }
@@ -844,6 +1015,18 @@ void writeSummary(
     writeSummaryMetric(out, "ir_left_previous_changed_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftVsPrevious.changedPercent; }), true);
     writeSummaryMetric(out, "ir_right_reference_changed_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightVsReference.changedPercent; }), true);
     writeSummaryMetric(out, "ir_right_previous_changed_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightVsPrevious.changedPercent; }), true);
+    writeSummaryMetric(out, "ir_left_mean_reference_relative_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftMeanReferenceRelativePercent; }), true);
+    writeSummaryMetric(out, "ir_left_mean_previous_relative_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftMeanPreviousRelativePercent; }), true);
+    writeSummaryMetric(out, "ir_right_mean_reference_relative_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightMeanReferenceRelativePercent; }), true);
+    writeSummaryMetric(out, "ir_right_mean_previous_relative_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightMeanPreviousRelativePercent; }), true);
+    writeSummaryMetric(out, "ir_left_normalized_reference_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftNormalizedReferenceMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_left_normalized_previous_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftNormalizedPreviousMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_right_normalized_reference_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightNormalizedReferenceMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_right_normalized_previous_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightNormalizedPreviousMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_left_gradient_normalized_reference_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftGradientReferenceMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_left_gradient_normalized_previous_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irLeftGradientPreviousMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_right_gradient_normalized_reference_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightGradientReferenceMeanAbsPercent; }), true);
+    writeSummaryMetric(out, "ir_right_gradient_normalized_previous_mean_abs_percent", summarize(metrics, [](const FrameMetrics& value) { return value.irRightGradientPreviousMeanAbsPercent; }), true);
     writeSummaryMetric(out, "depth_reference_mean_abs_mm", summarize(metrics, [](const FrameMetrics& value) { return value.depthVsReference.meanAbsolute; }), true);
     writeSummaryMetric(out, "depth_reference_p95_abs_mm", summarize(metrics, [](const FrameMetrics& value) { return value.depthVsReference.p95Absolute; }), true);
     writeSummaryMetric(out, "depth_valid_flicker_percent", summarize(metrics, [](const FrameMetrics& value) { return value.depthVsReference.validFlickerPercent; }), true);
@@ -856,6 +1039,10 @@ void writeSummary(
     writeSummaryMetric(out, "disparity_previous_mean_abs_px", summarize(metrics, [](const FrameMetrics& value) { return value.disparityVsPrevious.meanAbsolute; }), true);
     writeSummaryMetric(out, "disparity_previous_p95_abs_px", summarize(metrics, [](const FrameMetrics& value) { return value.disparityVsPrevious.p95Absolute; }), true);
     writeSummaryMetric(out, "disparity_previous_valid_flicker_percent", summarize(metrics, [](const FrameMetrics& value) { return value.disparityVsPrevious.validFlickerPercent; }), false);
+    out << "  },\n"
+        << "  \"run_statistics\": {\n";
+    writeSignalRunStats(out, "ir_left_mean", summarizeSignal(metrics, [](const FrameMetrics& value) { return value.irLeftMean; }), true);
+    writeSignalRunStats(out, "ir_right_mean", summarizeSignal(metrics, [](const FrameMetrics& value) { return value.irRightMean; }), false);
     out << "  },\n"
         << "  \"interpretation\": {\n"
         << "    \"software_repeatability_status\": \""
@@ -1239,6 +1426,9 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
     frameMetadata << std::fixed << std::setprecision(6);
     int captured = 0;
     int skippedUnsynchronized = 0;
+    int skippedStreamsNotAdvanced = 0;
+    int skippedStereoPairMismatch = 0;
+    int skippedTimestampSpan = 0;
     uint64_t lastDepthFrameNumber = 0;
     uint64_t lastColorFrameNumber = 0;
     uint64_t lastLeftFrameNumber = 0;
@@ -1272,6 +1462,9 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         if (!streamsAdvanced || !stereoPairAligned || timestampSpanMs > config.maxStreamTimestampDeltaMs)
         {
             ++skippedUnsynchronized;
+            skippedStreamsNotAdvanced += streamsAdvanced ? 0 : 1;
+            skippedStereoPairMismatch += stereoPairAligned ? 0 : 1;
+            skippedTimestampSpan += timestampSpanMs > config.maxStreamTimestampDeltaMs ? 1 : 0;
             continue;
         }
         lastDepthFrameNumber = depthFrameNumber;
@@ -1336,6 +1529,14 @@ std::vector<FrameMetrics> captureAndAnalyze(const ProbeConfig& config)
         << "  \"warmup_frames\": " << config.warmupFrames << ",\n"
         << "  \"settle_frames\": " << config.settleFrames << ",\n"
         << "  \"skipped_unsynchronized_framesets\": " << skippedUnsynchronized << ",\n"
+        << "  \"skipped_streams_not_advanced_framesets\": " << skippedStreamsNotAdvanced << ",\n"
+        << "  \"skipped_stereo_pair_mismatch_framesets\": " << skippedStereoPairMismatch << ",\n"
+        << "  \"skipped_timestamp_span_framesets\": " << skippedTimestampSpan << ",\n"
+        << "  \"sync_acceptance_percent\": "
+        << (captured + skippedUnsynchronized == 0
+            ? 0.0
+            : 100.0 * static_cast<double>(captured) /
+                static_cast<double>(captured + skippedUnsynchronized)) << ",\n"
         << "  \"max_stream_timestamp_delta_ms\": " << config.maxStreamTimestampDeltaMs << ",\n"
         << "  \"calibration_file\": \"calibration.json\",\n"
         << "  \"frame_metadata_file\": \"frame_metadata.csv\",\n"
