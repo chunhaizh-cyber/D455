@@ -194,6 +194,8 @@ def validate_references(records, indexes, errors):
             errors.append(f"{source}: unknown promotion method_id {record.get('method_id')!r}")
         elif record.get("method_version") != method.get("method_version"):
             errors.append(f"{source}: method_version does not match registered method")
+        if record.get("status") == "approved" and method and method.get("status") != "promoted":
+            errors.append(f"{source}: approved promotion requires method status=promoted")
         if record.get("requirement_id") not in requirements:
             errors.append(f"{source}: unknown requirement_id {record.get('requirement_id')!r}")
         if record.get("task_id") not in tasks:

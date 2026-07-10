@@ -84,3 +84,14 @@ python scripts\evaluate_visual_task.py `
 ```
 
 任务结果为 `insufficient_evidence` 时不能晋级；固定回放、留出回放和影子运行必须使用不同的运行编号。
+
+## 晋级、回退与适用选择
+
+生产选择只返回 `status=promoted` 且存在 `promotion.status=approved` 的方法；固定回放选择可以返回 `replay_only`：
+
+```powershell
+python scripts\select_applicable_method.py --applicability-bucket slow_pan_far_object --evaluation-split production --out $env:TEMP\d455_production_method.json
+python scripts\select_applicable_method.py --applicability-bucket slow_pan_far_object --evaluation-split replay --out $env:TEMP\d455_replay_method.json
+```
+
+`promote_visual_method.py` 默认要求固定回放、独立留出和影子结果，并要求通过 regression gate；`--replay-only` 只能登记固定回放桶，不能把 probe-only 方法变成方法能力。`rollback_visual_method.py` 只更新方法生命周期并追加回退证据，不删除原候选或运行包。

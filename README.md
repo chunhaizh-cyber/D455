@@ -24,7 +24,7 @@
 
 ## 云端分析协议
 
-P0-P5 已建立 `eval/visual_evolution/` 记录契约、历史样例、校验器、需求候选生成器、适用方法查询、单目标任务筹办和任务级评估脚本；`run_batch.py` 与 converter 已能传递需求/任务/方法元数据而不改变 D455.exe 参数。`compare_runs.py` 已执行 regression gate，`evaluate_visual_task.py` 会拦截缺少留出/影子证据和数据泄漏。当前任务在缺少独立留出集时会明确标记 `blocked_missing_holdout`，probe-only 方法默认不会作为生产基线；方法自动晋级和回退仍未实现。
+P0-P6 已建立 `eval/visual_evolution/` 记录契约、历史样例、校验器、需求候选生成器、适用方法查询、单目标任务筹办、任务级评估、显式晋级、回退和适用方法选择脚本；`run_batch.py` 与 converter 已能传递需求/任务/方法元数据而不改变 D455.exe 参数。`compare_runs.py` 已执行 regression gate，`evaluate_visual_task.py` 会拦截缺少留出/影子证据和数据泄漏。当前任务在缺少独立留出集时会明确标记 `blocked_missing_holdout`，生产选择默认不会返回 replay-only 或 probe-only 方法；P7 实时影子仍等待独立手部遮挡留出回放和首个 approved 方法。
 
 仓库现在固定使用 `analysis_runs/<run_id>/` 作为云端分析包目录，协议说明见 `docs/ANALYSIS_PROTOCOL.md`，评判指标见 `docs/EVALUATION_FEATURES.md`，特征采集性能策略见 `docs/FEATURE_OPTIMIZATION.md`，运行索引见 `docs/RUN_INDEX.md`。需求、特征值、中文方法函数和实现流程的资料说明见 `资料/需求特征值方法流程说明.md`；需求如何由真实差距产生、任务如何选择方法、方法如何学习晋级的设计见 `资料/视觉方法需求任务学习晋级闭环详细设计.md`，配套流程图见 `资料/视觉方法需求任务学习晋级闭环流程图.md`，分阶段实施计划见 `资料/视觉能力进化闭环实现计划.md`。这些材料目前是设计和计划规格，不代表 D455 已经实现自动需求生成、任务调度或方法自动晋级。每次同步一次运行目录即可按 `run_id / branch / commit / config / metrics / sample_frames` 复查问题；不要把分析数据散落到 `recordings/` 里再靠聊天记录解释。最小六件套为：
 
