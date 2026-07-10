@@ -662,16 +662,31 @@ def manifest_is_template_or_incomplete(manifest, args):
         return True
     if args.case_id and not manifest.get("case_id"):
         return True
+    if args.requirement_id and not manifest.get("requirement_id"):
+        return True
+    if args.task_id and not manifest.get("task_id"):
+        return True
+    if args.method_id and not manifest.get("method_id"):
+        return True
+    if args.method_version and not manifest.get("method_version"):
+        return True
+    if args.evaluation_split and not manifest.get("evaluation_split"):
+        return True
     if not manifest.get("converted_from"):
         return True
     return False
 
 
-def config_is_template_or_incomplete(config, candidate_config):
+def config_is_template_or_incomplete(config, candidate_config, args):
     if not config:
         return True
     if config.get("source") == "convert_exports_to_analysis_run.py":
-        return False
+        return bool(
+            any(
+                getattr(args, key, "") and key not in config.get("visual_evolution_context", {})
+                for key in ["requirement_id", "task_id", "method_id", "method_version", "evaluation_split"]
+            )
+        )
     if candidate_config and not config.get("candidate_config"):
         return True
     if not config.get("inputs"):
@@ -694,6 +709,10 @@ def build_manifest(run_dir, args, candidate_config, inputs, existing=None):
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "converted_from": {name: stringify_input(path) for name, path in inputs.items() if path},
     })
+    for key in ["requirement_id", "task_id", "method_id", "method_version", "evaluation_split"]:
+        value = getattr(args, key, "")
+        if value:
+            manifest[key] = value
     return manifest
 
 
@@ -703,12 +722,19 @@ def stringify_input(value):
     return str(value)
 
 
-def build_config_snapshot(candidate_config, inputs, existing=None):
+def build_config_snapshot(candidate_config, inputs, args, existing=None):
     config = {
         "source": "convert_exports_to_analysis_run.py",
         "candidate_config": candidate_config,
         "inputs": {name: stringify_input(path) for name, path in inputs.items() if path},
     }
+    evolution_context = {
+        key: getattr(args, key, "")
+        for key in ["requirement_id", "task_id", "method_id", "method_version", "evaluation_split"]
+        if getattr(args, key, "")
+    }
+    if evolution_context:
+        config["visual_evolution_context"] = evolution_context
     if existing:
         config["previous_config_snapshot"] = existing
     return config
@@ -723,8 +749,8 @@ def write_manifest_and_config(run_dir, args, candidate_config, inputs):
 
     config_path = run_dir / "config_snapshot.json"
     existing_config = read_json(config_path)
-    if args.overwrite_config_snapshot or config_is_template_or_incomplete(existing_config, candidate_config):
-        config = build_config_snapshot(candidate_config, inputs, existing_config)
+    if args.overwrite_config_snapshot or config_is_template_or_incomplete(existing_config, candidate_config, args):
+        config = build_config_snapshot(candidate_config, inputs, args, existing_config)
         config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     notes_path = run_dir / "notes.md"
@@ -748,6 +774,11 @@ def main():
     parser.add_argument("--run-id", default="")
     parser.add_argument("--candidate-id", default="")
     parser.add_argument("--case-id", default="")
+    parser.add_argument("--requirement-id", default="")
+    parser.add_argument("--task-id", default="")
+    parser.add_argument("--method-id", default="")
+    parser.add_argument("--method-version", default="")
+    parser.add_argument("--evaluation-split", default="")
     parser.add_argument("--purpose", default="Converted D455 export smoke analysis run.")
     parser.add_argument("--command-line", default="")
     parser.add_argument("--update-manifest", action="store_true")

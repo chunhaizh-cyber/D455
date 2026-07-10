@@ -63,3 +63,5 @@ python scripts\prepare_visual_task.py `
   --case-id hand_occlusion_reappear `
   --out $env:TEMP\d455_task.json
 ```
+
+任务元数据由 `run_batch.py` 写入 converter 命令和 `command_plan.csv`，converter 再写入 `run_manifest.json` 与 `config_snapshot.json`；这些字段不会传给 D455.exe。旧命令不带元数据参数时保持兼容。

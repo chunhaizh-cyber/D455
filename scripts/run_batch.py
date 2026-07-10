@@ -75,6 +75,11 @@ def main():
     parser.add_argument("--max-frames-override", type=int, default=0)
     parser.add_argument("--candidate-id", action="append", default=[])
     parser.add_argument("--case-id", action="append", default=[])
+    parser.add_argument("--requirement-id", default="")
+    parser.add_argument("--task-id", default="")
+    parser.add_argument("--method-id", default="")
+    parser.add_argument("--method-version", default="")
+    parser.add_argument("--evaluation-split", default="")
     parser.add_argument("--skip-missing-replay", action="store_true")
     parser.add_argument("--validate-replay", action="store_true")
     parser.add_argument("--require-replay-ir", action="store_true")
@@ -122,6 +127,11 @@ def main():
                 f"--case-id={case['case_id']}",
                 f"--run-id={run_id}",
                 *([f"--ignore-first-n-frames={args.ignore_first_n_frames}"] if args.ignore_first_n_frames > 0 else []),
+                *([f"--requirement-id={args.requirement_id}"] if args.requirement_id else []),
+                *([f"--task-id={args.task_id}"] if args.task_id else []),
+                *([f"--method-id={args.method_id}"] if args.method_id else []),
+                *([f"--method-version={args.method_version}"] if args.method_version else []),
+                *([f"--evaluation-split={args.evaluation_split}"] if args.evaluation_split else []),
             ])
             score_command = " ".join([
                 sys.executable,
@@ -136,6 +146,11 @@ def main():
                 "replay": case["replay"],
                 "max_frames": max_frames,
                 "analysis_dir": analysis_dir,
+                "requirement_id": args.requirement_id,
+                "task_id": args.task_id,
+                "method_id": args.method_id,
+                "method_version": args.method_version,
+                "evaluation_split": args.evaluation_split,
                 "command": command,
                 "convert_command": convert_command,
                 "score_command": score_command,
@@ -156,6 +171,11 @@ def main():
                 "replay",
                 "max_frames",
                 "analysis_dir",
+                "requirement_id",
+                "task_id",
+                "method_id",
+                "method_version",
+                "evaluation_split",
                 "command",
                 "convert_command",
                 "score_command",

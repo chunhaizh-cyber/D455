@@ -159,6 +159,22 @@ Minimum keys:
 
 Feature collection policy and performance tradeoffs are documented in `docs/FEATURE_OPTIMIZATION.md`.
 
+## Visual Evolution Context
+
+Task-driven replay may attach optional governance metadata without passing those fields to `D455.exe`:
+
+```json
+{
+  "requirement_id": "visual-need-hand-occlusion-local-refresh",
+  "task_id": "task-hand-occlusion-local-refresh-001",
+  "method_id": "method-candidate-0030",
+  "method_version": "candidate_0030",
+  "evaluation_split": "validation"
+}
+```
+
+The same values are written to `run_manifest.json` as top-level fields and to `config_snapshot.json` under `visual_evolution_context`. They identify why a run was executed and which method version was evaluated; they do not turn a replay result into a world fact or a production promotion. `run_batch.py` keeps these options in the converter command and command plan, while the D455 command remains compatible with the executable's existing arguments.
+
 ## frame_metrics.csv
 
 Required header:
