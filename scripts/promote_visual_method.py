@@ -42,6 +42,20 @@ def read_score(path, split):
     }, score
 
 
+def evaluate_method_run(baseline, score, config, method_version, split):
+    if score.get("candidate_id") != method_version:
+        raise ValueError(
+            f"{split} run candidate_id does not match method version: "
+            f"{score.get('candidate_id')} != {method_version}"
+        )
+    if baseline.get("case_id") and score.get("case_id") and baseline.get("case_id") != score.get("case_id"):
+        raise ValueError(
+            f"{split} baseline/candidate case mismatch: "
+            f"{baseline.get('case_id')} != {score.get('case_id')}"
+        )
+    return evaluate_regression(baseline, score, config)
+
+
 def append_record(path, record):
     existing = load_jsonl(path, record["record_type"]) if path.exists() else {}
     if record["record_id"] in existing:
@@ -94,7 +108,9 @@ def main():
     parser.add_argument("--task-id", required=True)
     parser.add_argument("--baseline-run", required=True)
     parser.add_argument("--fixed-run", action="append", required=True)
+    parser.add_argument("--holdout-baseline-run", default="")
     parser.add_argument("--holdout-run", action="append", default=[])
+    parser.add_argument("--shadow-baseline-run", default="")
     parser.add_argument("--shadow-run", action="append", default=[])
     parser.add_argument("--replay-only", action="store_true")
     parser.add_argument("--methods", default="eval/visual_evolution/methods.jsonl")
@@ -127,36 +143,65 @@ def main():
             raise ValueError(f"unknown task: {args.task_id}")
         if task.get("requirement_id") != args.requirement_id:
             raise ValueError("task does not belong to requirement")
-        if not args.replay_only and task.get("status") == "blocked_missing_holdout":
-            raise ValueError("blocked task cannot be promoted")
-        baseline_score = load_score(args.baseline_run)
+        if args.method_id not in task.get("candidate_method_ids", []):
+            raise ValueError("method is not registered as a task candidate")
+        if not args.replay_only and task.get("status") in {"blocked_missing_holdout", "failed"}:
+            raise ValueError("blocked or failed task cannot be promoted")
+        baseline_ref, baseline_score = read_score(args.baseline_run, "historical")
+        holdout_baseline_ref = None
+        holdout_baseline_score = None
+        if args.holdout_baseline_run:
+            holdout_baseline_ref, holdout_baseline_score = read_score(args.holdout_baseline_run, "test")
+        shadow_baseline_ref = None
+        shadow_baseline_score = None
+        if args.shadow_baseline_run:
+            shadow_baseline_ref, shadow_baseline_score = read_score(args.shadow_baseline_run, "shadow")
         config = load_score_config(Path(args.weights))
         fixed_refs = []
         all_fixed_results = []
         for path in args.fixed_run:
             ref, score = read_score(path, "fixed")
             fixed_refs.append(ref)
-            all_fixed_results.append(evaluate_regression(baseline_score, score, config))
+            all_fixed_results.append(
+                evaluate_method_run(baseline_score, score, config, args.method_version, "fixed")
+            )
         holdout_refs = []
         holdout_scores = []
         for path in args.holdout_run:
+            if holdout_baseline_score is None:
+                raise ValueError("holdout runs require --holdout-baseline-run")
             ref, score = read_score(path, "holdout")
             holdout_refs.append(ref)
-            holdout_scores.append((ref, score, evaluate_regression(baseline_score, score, config)))
+            holdout_scores.append((
+                ref,
+                score,
+                evaluate_method_run(holdout_baseline_score, score, config, args.method_version, "holdout"),
+            ))
         shadow_refs = []
         shadow_scores = []
         for path in args.shadow_run:
+            if shadow_baseline_score is None:
+                raise ValueError("shadow runs require --shadow-baseline-run")
             ref, score = read_score(path, "shadow")
             shadow_refs.append(ref)
-            shadow_scores.append((ref, score, evaluate_regression(baseline_score, score, config)))
-        all_run_ids = [item["run_id"] for item in fixed_refs + holdout_refs + shadow_refs]
+            shadow_scores.append((
+                ref,
+                score,
+                evaluate_method_run(shadow_baseline_score, score, config, args.method_version, "shadow"),
+            ))
+        baseline_refs = [baseline_ref]
+        if holdout_baseline_ref:
+            baseline_refs.append(holdout_baseline_ref)
+        if shadow_baseline_ref:
+            baseline_refs.append(shadow_baseline_ref)
+        all_run_ids = [item["run_id"] for item in baseline_refs + fixed_refs + holdout_refs + shadow_refs]
         if len(all_run_ids) != len(set(all_run_ids)):
             raise ValueError("fixed, holdout and shadow runs must have distinct run_id values")
         if any(result.get("status") != "pass" for result in all_fixed_results):
             raise ValueError("fixed replay regression gate failed")
         if not args.replay_only:
-            if not holdout_refs or not shadow_refs:
-                raise ValueError("approved promotion requires holdout and shadow runs")
+            if not holdout_refs or not shadow_refs or not holdout_baseline_ref or not shadow_baseline_ref:
+                raise ValueError("approved promotion requires split-specific holdout and shadow baselines/runs")
             if any(result.get("status") != "pass" for _, _, result in holdout_scores + shadow_scores):
                 raise ValueError("holdout or shadow regression gate failed")
             if method.get("status") == "probe_only":
@@ -176,6 +221,11 @@ def main():
             "applicability_bucket": args.applicability_bucket,
             "requirement_id": args.requirement_id,
             "task_id": args.task_id,
+            "baseline_runs": {
+                "fixed": baseline_ref,
+                "holdout": holdout_baseline_ref,
+                "shadow": shadow_baseline_ref,
+            },
             "fixed_runs": fixed_refs,
             "holdout_runs": holdout_refs,
             "shadow_runs": shadow_refs,

@@ -68,7 +68,7 @@ python scripts\prepare_visual_task.py `
 
 ## 任务评估
 
-`compare_runs.py` 会读取 `eval/score_weights.yaml` 的 `regression_gate`。当前评分器的 `spatial_quality` 和 `far_retention` 分别作为 `near_score`、`far_score` 的兼容来源，并在结果中记录来源。`evaluate_visual_task.py` 还会拒绝没有独立留出/影子证据或复用固定 `run_id` 的任务：
+`compare_runs.py` 会读取 `eval/score_weights.yaml` 的 `regression_gate`。当前评分器的 `spatial_quality` 和 `far_retention` 分别作为 `near_score`、`far_score` 的兼容来源，并在结果中记录来源。`evaluate_visual_task.py` 按 fixed/holdout/shadow 各自同场景基线执行回归比较，只允许同一个候选在所有必需分片都通过；它也会拒绝缺少分片基线、缺少独立留出/影子证据或复用固定 `run_id` 的任务：
 
 ```powershell
 python scripts\compare_runs.py `
@@ -78,8 +78,12 @@ python scripts\compare_runs.py `
 
 python scripts\evaluate_visual_task.py `
   --task $env:TEMP\d455_task.json `
-  --baseline analysis_runs\...\run_score.json `
-  --candidate analysis_runs\...\run_score.json `
+  --baseline analysis_runs\...\historical_baseline\run_score.json `
+  --candidate analysis_runs\...\historical_candidate\run_score.json `
+  --holdout-baseline analysis_runs\...\holdout_baseline\run_score.json `
+  --holdout analysis_runs\...\holdout_candidate\run_score.json `
+  --shadow-baseline analysis_runs\...\shadow_baseline\run_score.json `
+  --shadow analysis_runs\...\shadow_candidate\run_score.json `
   --out $env:TEMP\d455_task_evaluation.json
 ```
 
@@ -94,4 +98,4 @@ python scripts\select_applicable_method.py --applicability-bucket slow_pan_far_o
 python scripts\select_applicable_method.py --applicability-bucket slow_pan_far_object --evaluation-split replay --out $env:TEMP\d455_replay_method.json
 ```
 
-`promote_visual_method.py` 默认要求固定回放、独立留出和影子结果，并要求通过 regression gate；`--replay-only` 只能登记固定回放桶，不能把 probe-only 方法变成方法能力。`rollback_visual_method.py` 只更新方法生命周期并追加回退证据，不删除原候选或运行包。
+`promote_visual_method.py` 默认要求固定回放、独立留出和影子结果，并要求每个分片提供同场景基线并通过 regression gate；生产晋级使用 `--holdout-baseline-run` 和 `--shadow-baseline-run`，不能拿历史 case 基线跨场景比较。`--replay-only` 只能登记固定回放桶，不能把 probe-only 方法变成方法能力；`failed` 任务也不能晋级。`rollback_visual_method.py` 只更新方法生命周期并追加回退证据，不删除原候选或运行包。
