@@ -26,6 +26,12 @@
 
 后续性能主线不再只优化全画面完整算法耗时，而是建立“最快全画面变化扫描 + 场景缓存复用 + 中心/单存在关注 + 多关注区域线程池并发 + 分片全局刷新”。全画面像素账本继续保留，未关注区域不得自动视为背景；缓存深度必须标记历史来源。详细数据结构、中文方法、线程边界、双目裁剪边距、性能模型和验收门槛见 `资料/视觉注意力缓存差异扫描与并发ROI处理方案_v0.1.md`。
 
+2026-07-10 已实现第一版默认关闭的 attention 调度闭环。`--attention-difference-scan` 会每帧生成参数化低分辨率灰度签名，以相位相关结果做有限二维位移门禁，计算变化比例并复用未触发重算的彩图轮廓缓存；局部变化沿用 motion 连通域生成多个 ROI。多个 ROI 由固定线程池只读处理，工作线程各自返回结果，调用线程按 ROI 输入顺序确定性合并；现有异步刷新结果还增加缓存版本和最大年龄校验，过期结果不得写回。缓存缺失、对齐不可靠、变化面积超限和既有 interval/unknown/far-loss 事件仍退回原全帧路径，不会把本帧未重算区域改写为背景。
+
+主要参数是 `--attention-scan-width-px`、`--attention-diff-threshold`、`--attention-min-dirty-percent`、`--attention-max-dirty-percent`、`--attention-roi-workers`、`--attention-max-cache-shift-px` 和 `--attention-max-result-age-frames`；`attention-roi-workers=0` 自动使用 `min(逻辑核心数-1, 4)`。profile、converter、score 和 leaderboard 已贯通 `attention_scan_ms / dirty_percent / dirty_roi_count / cache_reused / full_refresh / worker_task_count / worker_queue_ms / worker_ms / longest_ms / merge_ms / apply_ms / stale_result_count`。实现和固定回放结果见 `docs/ATTENTION_DIFFERENCE_SCAN.md`。
+
+`candidate_0048` 是机制探针，不是新的全局 best。最终 120 帧固定回放中，四个 case 均保持 coverage=100%、unknown=0，且 contour-lost/merge/split 均为 0；真实遮挡 holdout 的 p95 为 57.070ms，局部运动为 56.000ms。局部运动的前一次同配置运行曾得到 52.170ms，说明当前线程池时序仍有运行间波动，不能宣称稳定提速。slow-pan p95 为 70.194ms、max 为 108.834ms，仍差于 `candidate_0030` 的 63.218ms/90.872ms，因此 `candidate_0030` 继续保留 slow-pan bucket best。当前只把彩图轮廓提取缩小并并发，深度锚点复核、完整像素来源账本、IMU/三维缓存重投影、下游深度聚类和最终归属尚未局部化。
+
 ## 双目静态稳定性子项目
 
 `StaticStabilityProbe/` 是独立于主分割程序的第一层稳定性测试项目，用于回答“同一原始帧重复处理是否确定”和“静态场景连续原始帧的 color/depth/左右IR/视差差异有多大”。它不复用 `D455.cpp` 的 tracker、轮廓缓存、时序滤波和最终归簇状态，每帧都独立执行相同处理；操作协议和指标定义见 `StaticStabilityProbe/README.md`，工具链基线见 `资料/D455双目静态稳定性第一阶段测试报告_v0.1.md`，正式 A-B-A-B 交叉测试见 `资料/D455双目静态稳定性第二阶段交叉测试报告_v0.1.md`。

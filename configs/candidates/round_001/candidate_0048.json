@@ -1,0 +1,45 @@
+{
+  "candidate_id": "candidate_0048",
+  "parent": "candidate_0030",
+  "purpose": "Attention difference-scan probe with cache reuse, bounded multi-ROI refresh, fixed ROI workers, deterministic merge, and stale-result rejection.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh",
+    "--attention-difference-scan",
+    "--attention-scan-width-px=160",
+    "--attention-diff-threshold=24",
+    "--attention-min-dirty-percent=1",
+    "--attention-max-dirty-percent=25",
+    "--attention-roi-workers=4",
+    "--attention-max-cache-shift-px=5",
+    "--attention-max-result-age-frames=15",
+    "--color-contour-refresh-roi-padding-px=24",
+    "--color-contour-refresh-roi-min-component-px=12",
+    "--color-contour-refresh-max-component-rois=8"
+  ],
+  "expected_effect": [
+    "Run a low-resolution full-frame difference scan on every frame and reuse the contour cache when no material change is detected.",
+    "Process independent dirty ROIs through a fixed worker pool and merge results in ROI index order on the main refresh path.",
+    "Reject cache-version or age-stale async results and synchronously fall back when alignment or dirty-area gates fail."
+  ],
+  "risk": [
+    "The first implementation only gates small 2D translation; it does not reproject cached contours for camera rotation or depth parallax.",
+    "Color-contour extraction is parallelized, but downstream depth clustering and final pixel assignment still run full-frame.",
+    "OpenCV kernels may use internal threads, so four ROI workers can oversubscribe some CPUs."
+  ]
+}

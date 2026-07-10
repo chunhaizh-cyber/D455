@@ -98,6 +98,25 @@ FRAME_FIELDS = [
     "color_contour_refresh_roi_stereo_dropped_pixels",
     "color_contour_cache_age_frames",
     "color_contour_async_worker_ms",
+    "attention_scan_enabled",
+    "attention_alignment_reliable",
+    "attention_cache_reused",
+    "attention_full_refresh",
+    "attention_dirty_pixels",
+    "attention_dirty_percent",
+    "attention_dirty_roi_count",
+    "attention_alignment_shift_x_px",
+    "attention_alignment_shift_y_px",
+    "attention_alignment_response",
+    "attention_scan_ms",
+    "attention_alignment_ms",
+    "attention_worker_task_count",
+    "attention_worker_queue_ms",
+    "attention_worker_ms",
+    "attention_worker_longest_ms",
+    "attention_merge_ms",
+    "attention_apply_ms",
+    "attention_stale_result_count",
     "unknown_spike",
     "merge_event",
     "split_event",
@@ -503,6 +522,37 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "color_contour_async_worker_ms": round(
             as_float(profile_row.get("color_contour_async_worker_ms")),
             3,
+        ),
+        "attention_scan_enabled": as_int(profile_row.get("attention_scan_enabled")),
+        "attention_alignment_reliable": as_int(profile_row.get("attention_alignment_reliable")),
+        "attention_cache_reused": as_int(profile_row.get("attention_cache_reused")),
+        "attention_full_refresh": as_int(profile_row.get("attention_full_refresh")),
+        "attention_dirty_pixels": as_int(profile_row.get("attention_dirty_pixels")),
+        "attention_dirty_percent": round(as_float(profile_row.get("attention_dirty_percent")), 3),
+        "attention_dirty_roi_count": as_int(profile_row.get("attention_dirty_roi_count")),
+        "attention_alignment_shift_x_px": round(
+            as_float(profile_row.get("attention_alignment_shift_x_px")), 3
+        ),
+        "attention_alignment_shift_y_px": round(
+            as_float(profile_row.get("attention_alignment_shift_y_px")), 3
+        ),
+        "attention_alignment_response": round(
+            as_float(profile_row.get("attention_alignment_response")), 3
+        ),
+        "attention_scan_ms": round(as_float(profile_row.get("attention_scan_ms")), 3),
+        "attention_alignment_ms": round(as_float(profile_row.get("attention_alignment_ms")), 3),
+        "attention_worker_task_count": as_int(profile_row.get("attention_worker_task_count")),
+        "attention_worker_queue_ms": round(
+            as_float(profile_row.get("attention_worker_queue_ms")), 3
+        ),
+        "attention_worker_ms": round(as_float(profile_row.get("attention_worker_ms")), 3),
+        "attention_worker_longest_ms": round(
+            as_float(profile_row.get("attention_worker_longest_ms")), 3
+        ),
+        "attention_merge_ms": round(as_float(profile_row.get("attention_merge_ms")), 3),
+        "attention_apply_ms": round(as_float(profile_row.get("attention_apply_ms")), 3),
+        "attention_stale_result_count": as_int(
+            profile_row.get("attention_stale_result_count")
         ),
         "unknown_spike": int(unknown_percent > args.unknown_spike_percent),
         "far_stereo_failed_event": int(color_region_count > 0 and stereo_valid <= 0),

@@ -298,6 +298,55 @@ def score_run(run_dir, config):
     color_cache_age_p95 = percentile([r.get("color_contour_cache_age_frames") for r in timing_rows], 95)
     color_async_worker_ms_p95 = percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
     color_async_worker_ms_positive_p95 = positive_percentile([r.get("color_contour_async_worker_ms") for r in timing_rows], 95)
+    attention_scan_enabled_count = sum(
+        int(row_float(r, "attention_scan_enabled") > 0) for r in timing_rows
+    )
+    attention_alignment_failure_count = sum(
+        int(
+            row_float(r, "attention_scan_enabled") > 0 and
+            row_float(r, "attention_alignment_reliable") <= 0
+        )
+        for r in timing_rows
+    )
+    attention_cache_reuse_count = sum(
+        int(row_float(r, "attention_cache_reused") > 0) for r in timing_rows
+    )
+    attention_full_refresh_count = sum(
+        int(row_float(r, "attention_full_refresh") > 0) for r in timing_rows
+    )
+    attention_dirty_percent_p95 = percentile(
+        [r.get("attention_dirty_percent") for r in timing_rows], 95
+    )
+    attention_dirty_roi_count = sum(
+        int(row_float(r, "attention_dirty_roi_count")) for r in timing_rows
+    )
+    attention_scan_ms_p95 = positive_percentile(
+        [r.get("attention_scan_ms") for r in timing_rows], 95
+    )
+    attention_alignment_ms_p95 = positive_percentile(
+        [r.get("attention_alignment_ms") for r in timing_rows], 95
+    )
+    attention_worker_task_count = sum(
+        int(row_float(r, "attention_worker_task_count")) for r in timing_rows
+    )
+    attention_worker_queue_ms_p95 = positive_percentile(
+        [r.get("attention_worker_queue_ms") for r in timing_rows], 95
+    )
+    attention_worker_ms_p95 = positive_percentile(
+        [r.get("attention_worker_ms") for r in timing_rows], 95
+    )
+    attention_worker_longest_ms_p95 = positive_percentile(
+        [r.get("attention_worker_longest_ms") for r in timing_rows], 95
+    )
+    attention_merge_ms_p95 = positive_percentile(
+        [r.get("attention_merge_ms") for r in timing_rows], 95
+    )
+    attention_apply_ms_p95 = positive_percentile(
+        [r.get("attention_apply_ms") for r in timing_rows], 95
+    )
+    attention_stale_result_count = sum(
+        int(row_float(r, "attention_stale_result_count")) for r in timing_rows
+    )
     roi_stereo_evidence_count = (
         color_refresh_roi_stereo_reuse_count +
         color_refresh_roi_stereo_built_count +
@@ -471,6 +520,21 @@ def score_run(run_dir, config):
             "color_contour_cache_age_frames_p95": color_cache_age_p95,
             "color_contour_async_worker_ms_p95": color_async_worker_ms_p95,
             "color_contour_async_worker_ms_positive_p95": color_async_worker_ms_positive_p95,
+            "attention_scan_enabled_count": attention_scan_enabled_count,
+            "attention_alignment_failure_count": attention_alignment_failure_count,
+            "attention_cache_reuse_count": attention_cache_reuse_count,
+            "attention_full_refresh_count": attention_full_refresh_count,
+            "attention_dirty_percent_p95": attention_dirty_percent_p95,
+            "attention_dirty_roi_count": attention_dirty_roi_count,
+            "attention_scan_ms_p95": attention_scan_ms_p95,
+            "attention_alignment_ms_p95": attention_alignment_ms_p95,
+            "attention_worker_task_count": attention_worker_task_count,
+            "attention_worker_queue_ms_p95": attention_worker_queue_ms_p95,
+            "attention_worker_ms_p95": attention_worker_ms_p95,
+            "attention_worker_longest_ms_p95": attention_worker_longest_ms_p95,
+            "attention_merge_ms_p95": attention_merge_ms_p95,
+            "attention_apply_ms_p95": attention_apply_ms_p95,
+            "attention_stale_result_count": attention_stale_result_count,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,

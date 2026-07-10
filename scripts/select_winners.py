@@ -93,7 +93,15 @@ def main():
             "roi_stereo_g1_preservation_pass",
             "roi_stereo_g2_rebuild_pass",
             "color_cache_age_p95", "color_async_worker_ms_p95",
-            "color_async_worker_ms_positive_p95", "run_id"
+            "color_async_worker_ms_positive_p95",
+            "attention_scan_enabled_count", "attention_alignment_failure_count",
+            "attention_cache_reuse_count", "attention_full_refresh_count",
+            "attention_dirty_percent_p95", "attention_dirty_roi_count",
+            "attention_scan_ms_p95", "attention_alignment_ms_p95",
+            "attention_worker_task_count", "attention_worker_queue_ms_p95",
+            "attention_worker_ms_p95", "attention_worker_longest_ms_p95",
+            "attention_merge_ms_p95", "attention_apply_ms_p95",
+            "attention_stale_result_count", "run_id"
         ])
         for s in scores:
             writer.writerow([
@@ -149,6 +157,21 @@ def main():
                 metric(s, "color_contour_cache_age_frames_p95"),
                 metric(s, "color_contour_async_worker_ms_p95"),
                 metric(s, "color_contour_async_worker_ms_positive_p95"),
+                metric(s, "attention_scan_enabled_count"),
+                metric(s, "attention_alignment_failure_count"),
+                metric(s, "attention_cache_reuse_count"),
+                metric(s, "attention_full_refresh_count"),
+                metric(s, "attention_dirty_percent_p95"),
+                metric(s, "attention_dirty_roi_count"),
+                metric(s, "attention_scan_ms_p95"),
+                metric(s, "attention_alignment_ms_p95"),
+                metric(s, "attention_worker_task_count"),
+                metric(s, "attention_worker_queue_ms_p95"),
+                metric(s, "attention_worker_ms_p95"),
+                metric(s, "attention_worker_longest_ms_p95"),
+                metric(s, "attention_merge_ms_p95"),
+                metric(s, "attention_apply_ms_p95"),
+                metric(s, "attention_stale_result_count"),
                 s.get("run_id", ""),
             ])
 
