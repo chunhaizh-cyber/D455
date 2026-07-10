@@ -11,6 +11,7 @@ splits:
     - local_motion_roi_stereo_probe
     - hand_occlusion_reappear
   test:
+    - hand_occlusion_reappear_holdout
     - unseen_room_far_objects
     - unseen_reflective_scene
 
@@ -94,6 +95,17 @@ cases:
       contour_recovery_required: true
       far_retention_required: true
       cached_contour_lag_risk: true
+
+  - case_id: hand_occlusion_reappear_holdout
+    replay: datasets/hand_occlusion_reappear_holdout
+    frames: 120
+    tags: [motion, occlusion, reappear, contour_cache_staleness, holdout]
+    weight: 2.0
+    expected:
+      contour_recovery_required: true
+      far_retention_required: true
+      cached_contour_lag_risk: true
+      independent_holdout: true
 
   - case_id: wall_table_background
     replay: datasets/wall_table_background
