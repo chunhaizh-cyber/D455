@@ -105,6 +105,15 @@ struct SegmentationConfig
     int stablePlaneMergeMinAnchors = 24;
     int stablePlaneMergeMaxAreaPercent = 85;
     int stablePlaneMergeMaxRoiAreaPercent = 98;
+    int existenceHoleMinDepthGapMm = 250;
+    int existenceHoleBackgroundDepthMatchMm = 350;
+    int existenceHoleBackgroundColorDistance = 70;
+    int existenceHoleMinAreaPixels = 24;
+    int existenceHoleMaxAreaPercent = 35;
+    int existenceHoleInnerMarginPixels = 3;
+    int existenceHoleExteriorRingPixels = 9;
+    int existenceHoleConfirmFrames = 2;
+    int existenceHoleMemoryMaxAgeFrames = 8;
     int splitBoundaryPixels = 3;
     int spatialClusterGapMm = 120;
     int trackConfirmFrames = 3;
@@ -209,6 +218,7 @@ struct SegmentationConfig
     bool indoorPlaneDiagnostics = false;
     bool spatialClusterCheck = true;
     bool stablePlaneMerge = false;
+    bool existenceContourHoleFilter = false;
     bool historyTracking = true;
     bool pclClustering = true;
     bool realtime30 = true;
@@ -328,6 +338,7 @@ struct ClusterInfo
     cv::Rect bbox;
     cv::Point2f center;
     int pixelCount = 0;
+    int depthEvidencePixelCount = 0;
     int depthMinMm = 0;
     int depthMeanMm = 0;
     int depthMaxMm = 0;
@@ -501,6 +512,28 @@ struct ColorContourRefreshStats
     double attentionMergeMs = 0.0;
     double attentionApplyMs = 0.0;
     int attentionStaleResultCount = 0;
+};
+
+struct ExistenceContourHoleStats
+{
+    bool enabled = false;
+    int trackedExistenceCount = 0;
+    int retainedNoDepthPixels = 0;
+    int candidateHoleCount = 0;
+    int candidateHolePixels = 0;
+    int confirmedHoleCount = 0;
+    int confirmedHolePixels = 0;
+    int rememberedHolePixels = 0;
+    int rejectedNoBackgroundCount = 0;
+    int rejectedColorCount = 0;
+    double processingMs = 0.0;
+};
+
+struct ExistenceContourHoleResult
+{
+    cv::Mat ownershipMask;
+    cv::Mat confirmedHoleMask;
+    ExistenceContourHoleStats stats;
 };
 
 struct PoseState
@@ -754,6 +787,15 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--stable-plane-merge-min-anchors=", config.stablePlaneMergeMinAnchors) ||
             parseIntOption(arg, "--stable-plane-merge-max-area-percent=", config.stablePlaneMergeMaxAreaPercent) ||
             parseIntOption(arg, "--stable-plane-merge-max-roi-area-percent=", config.stablePlaneMergeMaxRoiAreaPercent) ||
+            parseIntOption(arg, "--existence-hole-min-depth-gap-mm=", config.existenceHoleMinDepthGapMm) ||
+            parseIntOption(arg, "--existence-hole-background-depth-match-mm=", config.existenceHoleBackgroundDepthMatchMm) ||
+            parseIntOption(arg, "--existence-hole-background-color-distance=", config.existenceHoleBackgroundColorDistance) ||
+            parseIntOption(arg, "--existence-hole-min-area-px=", config.existenceHoleMinAreaPixels) ||
+            parseIntOption(arg, "--existence-hole-max-area-percent=", config.existenceHoleMaxAreaPercent) ||
+            parseIntOption(arg, "--existence-hole-inner-margin-px=", config.existenceHoleInnerMarginPixels) ||
+            parseIntOption(arg, "--existence-hole-exterior-ring-px=", config.existenceHoleExteriorRingPixels) ||
+            parseIntOption(arg, "--existence-hole-confirm-frames=", config.existenceHoleConfirmFrames) ||
+            parseIntOption(arg, "--existence-hole-memory-max-age-frames=", config.existenceHoleMemoryMaxAgeFrames) ||
             parseIntOption(arg, "--split-boundary-px=", config.splitBoundaryPixels) ||
             parseIntOption(arg, "--spatial-cluster-gap-mm=", config.spatialClusterGapMm) ||
             parseIntOption(arg, "--track-confirm-frames=", config.trackConfirmFrames) ||
@@ -942,6 +984,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-stable-plane-merge")
         {
             config.stablePlaneMerge = false;
+            continue;
+        }
+        if (arg == "--existence-contour-hole-filter")
+        {
+            config.existenceContourHoleFilter = true;
+            continue;
+        }
+        if (arg == "--no-existence-contour-hole-filter")
+        {
+            config.existenceContourHoleFilter = false;
             continue;
         }
         if (arg == "--no-history-tracking")
@@ -1448,6 +1500,17 @@ SegmentationConfig parseConfig(int argc, char** argv)
     config.stablePlaneMergeMinAnchors = std::clamp(config.stablePlaneMergeMinAnchors, 1, 1000000);
     config.stablePlaneMergeMaxAreaPercent = std::clamp(config.stablePlaneMergeMaxAreaPercent, 1, 100);
     config.stablePlaneMergeMaxRoiAreaPercent = std::clamp(config.stablePlaneMergeMaxRoiAreaPercent, 1, 100);
+    config.existenceHoleMinDepthGapMm = std::clamp(config.existenceHoleMinDepthGapMm, 20, 5000);
+    config.existenceHoleBackgroundDepthMatchMm =
+        std::clamp(config.existenceHoleBackgroundDepthMatchMm, 20, 5000);
+    config.existenceHoleBackgroundColorDistance =
+        std::clamp(config.existenceHoleBackgroundColorDistance, 1, 442);
+    config.existenceHoleMinAreaPixels = std::clamp(config.existenceHoleMinAreaPixels, 1, 200000);
+    config.existenceHoleMaxAreaPercent = std::clamp(config.existenceHoleMaxAreaPercent, 1, 90);
+    config.existenceHoleInnerMarginPixels = std::clamp(config.existenceHoleInnerMarginPixels, 1, 31);
+    config.existenceHoleExteriorRingPixels = std::clamp(config.existenceHoleExteriorRingPixels, 1, 63);
+    config.existenceHoleConfirmFrames = std::clamp(config.existenceHoleConfirmFrames, 1, 30);
+    config.existenceHoleMemoryMaxAgeFrames = std::clamp(config.existenceHoleMemoryMaxAgeFrames, 1, 120);
     config.splitBoundaryPixels = std::clamp(config.splitBoundaryPixels, 1, 11);
     config.spatialClusterGapMm = std::clamp(config.spatialClusterGapMm, 0, 2000);
     config.trackConfirmFrames = std::clamp(config.trackConfirmFrames, 1, 30);
@@ -6029,6 +6092,356 @@ cv::Mat contourToMask(const std::vector<cv::Point>& contour, const cv::Size& fra
     return mask;
 }
 
+struct ExistenceContourHoleMemory
+{
+    cv::Rect roi;
+    cv::Mat evidence;
+    uint64_t lastFrameId = 0;
+};
+
+class ExistenceContourHoleFilter
+{
+public:
+    ExistenceContourHoleResult update(
+        const std::vector<ObservationMaterial>& materials,
+        const cv::Mat& colorBgr,
+        const cv::Mat& depth16,
+        float depthScale,
+        const SegmentationConfig& config,
+        uint64_t frameId)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        ExistenceContourHoleResult result;
+        result.stats.enabled = config.existenceContourHoleFilter;
+        result.ownershipMask = buildStableContourMask(colorBgr.size(), materials);
+        if (!config.existenceContourHoleFilter || colorBgr.empty() || depth16.empty() ||
+            colorBgr.size() != depth16.size() || materials.empty())
+        {
+            return result;
+        }
+        result.confirmedHoleMask = cv::Mat::zeros(colorBgr.size(), CV_8UC1);
+
+        cv::Mat filteredOwnership = cv::Mat::zeros(colorBgr.size(), CV_8UC1);
+        std::vector<uint64_t> activeTrackIds;
+        activeTrackIds.reserve(materials.size());
+        for (size_t index = 0; index < materials.size(); ++index)
+        {
+            const ObservationMaterial& material = materials[index];
+            if (material.contour.size() < 3)
+            {
+                continue;
+            }
+
+            const uint64_t trackId = material.observationId != 0
+                ? material.observationId
+                : (0x8000000000000000ULL + static_cast<uint64_t>(index));
+            activeTrackIds.push_back(trackId);
+            ++result.stats.trackedExistenceCount;
+
+            cv::Rect roi;
+            cv::Mat contourMask;
+            cv::Mat candidateMask = detectCandidateHoles(
+                material,
+                colorBgr,
+                depth16,
+                depthScale,
+                config,
+                roi,
+                contourMask,
+                result.stats);
+            if (roi.empty() || contourMask.empty())
+            {
+                cv::Mat fallbackOwnership = contourToMask(material.contour, colorBgr.size());
+                cv::Mat ownershipRoi = filteredOwnership;
+                cv::bitwise_or(ownershipRoi, fallbackOwnership, ownershipRoi);
+                continue;
+            }
+
+            ExistenceContourHoleMemory& memory = memories_[trackId];
+            cv::Mat priorEvidence;
+            if (!memory.evidence.empty() &&
+                frameId >= memory.lastFrameId &&
+                frameId - memory.lastFrameId <= static_cast<uint64_t>(config.existenceHoleMemoryMaxAgeFrames) &&
+                geometryCompatible(memory.roi, roi))
+            {
+                cv::resize(memory.evidence, priorEvidence, roi.size(), 0.0, 0.0, cv::INTER_NEAREST);
+            }
+            else
+            {
+                priorEvidence = cv::Mat::zeros(roi.size(), CV_8UC1);
+            }
+
+            cv::Mat evidence = priorEvidence.clone();
+            for (int y = 0; y < evidence.rows; ++y)
+            {
+                uchar* evidenceRow = evidence.ptr<uchar>(y);
+                const uchar* candidateRow = candidateMask.ptr<uchar>(y);
+                const uchar* contourRow = contourMask.ptr<uchar>(y);
+                for (int x = 0; x < evidence.cols; ++x)
+                {
+                    if (contourRow[x] == 0)
+                    {
+                        evidenceRow[x] = 0;
+                    }
+                    else if (candidateRow[x] != 0)
+                    {
+                        evidenceRow[x] = cv::saturate_cast<uchar>(static_cast<int>(evidenceRow[x]) + 1);
+                    }
+                    else
+                    {
+                        evidenceRow[x] = cv::saturate_cast<uchar>(std::max(0, static_cast<int>(evidenceRow[x]) - 1));
+                    }
+                }
+            }
+
+            const int threshold = std::clamp(config.existenceHoleConfirmFrames, 1, 255);
+            cv::Mat confirmedMask;
+            cv::compare(evidence, threshold - 1, confirmedMask, cv::CMP_GT);
+            cv::bitwise_and(confirmedMask, contourMask, confirmedMask);
+
+            cv::Mat localOwnership = contourMask.clone();
+            localOwnership.setTo(0, confirmedMask);
+            cv::Mat ownershipRoi = filteredOwnership(roi);
+            cv::bitwise_or(ownershipRoi, localOwnership, ownershipRoi);
+
+            result.stats.candidateHolePixels += cv::countNonZero(candidateMask);
+            result.stats.rememberedHolePixels += cv::countNonZero(evidence);
+            result.stats.candidateHoleCount += connectedComponentCount(candidateMask);
+
+            memory.roi = roi;
+            memory.evidence = std::move(evidence);
+            memory.lastFrameId = frameId;
+        }
+
+        for (auto it = memories_.begin(); it != memories_.end();)
+        {
+            const bool active = std::find(activeTrackIds.begin(), activeTrackIds.end(), it->first) != activeTrackIds.end();
+            const bool expired = frameId >= it->second.lastFrameId &&
+                frameId - it->second.lastFrameId > static_cast<uint64_t>(config.existenceHoleMemoryMaxAgeFrames);
+            if (!active && expired)
+            {
+                it = memories_.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
+        result.ownershipMask = filteredOwnership;
+        cv::subtract(buildStableContourMask(colorBgr.size(), materials), result.ownershipMask, result.confirmedHoleMask);
+        result.stats.confirmedHolePixels = cv::countNonZero(result.confirmedHoleMask);
+        result.stats.confirmedHoleCount = connectedComponentCount(result.confirmedHoleMask);
+
+        cv::Mat zeroDepth;
+        cv::Mat saturatedDepth;
+        cv::Mat noDepth;
+        cv::Mat retainedNoDepth;
+        cv::compare(depth16, 0, zeroDepth, cv::CMP_EQ);
+        cv::compare(depth16, std::numeric_limits<uint16_t>::max(), saturatedDepth, cv::CMP_EQ);
+        cv::bitwise_or(zeroDepth, saturatedDepth, noDepth);
+        cv::bitwise_and(noDepth, result.ownershipMask, retainedNoDepth);
+        result.stats.retainedNoDepthPixels = cv::countNonZero(retainedNoDepth);
+        result.stats.processingMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return result;
+    }
+
+private:
+    static bool geometryCompatible(const cv::Rect& previous, const cv::Rect& current)
+    {
+        if (previous.empty() || current.empty())
+        {
+            return false;
+        }
+        const double widthRatio = static_cast<double>(current.width) / static_cast<double>(previous.width);
+        const double heightRatio = static_cast<double>(current.height) / static_cast<double>(previous.height);
+        return widthRatio >= 0.55 && widthRatio <= 1.80 && heightRatio >= 0.55 && heightRatio <= 1.80;
+    }
+
+    static int connectedComponentCount(const cv::Mat& mask)
+    {
+        if (mask.empty() || cv::countNonZero(mask) == 0)
+        {
+            return 0;
+        }
+        cv::Mat labels;
+        return std::max(0, cv::connectedComponents(mask, labels, 8, CV_32S) - 1);
+    }
+
+    static int medianValue(std::vector<int>& values)
+    {
+        if (values.empty())
+        {
+            return 0;
+        }
+        const size_t middle = values.size() / 2;
+        std::nth_element(values.begin(), values.begin() + middle, values.end());
+        return values[middle];
+    }
+
+    static cv::Mat detectCandidateHoles(
+        const ObservationMaterial& material,
+        const cv::Mat& colorBgr,
+        const cv::Mat& depth16,
+        float depthScale,
+        const SegmentationConfig& config,
+        cv::Rect& roi,
+        cv::Mat& contourMask,
+        ExistenceContourHoleStats& stats)
+    {
+        const cv::Rect frameRect(0, 0, colorBgr.cols, colorBgr.rows);
+        const cv::Rect bounds = cv::boundingRect(material.contour) & frameRect;
+        roi = expandedRect(bounds, config.existenceHoleExteriorRingPixels, colorBgr.size());
+        if (roi.empty())
+        {
+            return {};
+        }
+
+        std::vector<cv::Point> localContour;
+        localContour.reserve(material.contour.size());
+        for (const cv::Point& point : material.contour)
+        {
+            localContour.emplace_back(point.x - roi.x, point.y - roi.y);
+        }
+        contourMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+        cv::drawContours(
+            contourMask,
+            std::vector<std::vector<cv::Point>>{localContour},
+            -1,
+            cv::Scalar(255),
+            cv::FILLED,
+            cv::LINE_8);
+        const int contourPixels = cv::countNonZero(contourMask);
+        if (contourPixels <= 0)
+        {
+            return cv::Mat::zeros(roi.size(), CV_8UC1);
+        }
+
+        const int foregroundDepthMm = material.meanDepthMm > 0
+            ? material.meanDepthMm
+            : (material.observedDepthMinMm > 0 && material.observedDepthMaxMm > 0
+                ? (material.observedDepthMinMm + material.observedDepthMaxMm) / 2
+                : 0);
+        if (foregroundDepthMm <= 0)
+        {
+            ++stats.rejectedNoBackgroundCount;
+            return cv::Mat::zeros(roi.size(), CV_8UC1);
+        }
+
+        const int innerSize = config.existenceHoleInnerMarginPixels * 2 + 1;
+        const cv::Mat innerKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(innerSize, innerSize));
+        cv::Mat innerMask;
+        cv::erode(contourMask, innerMask, innerKernel);
+
+        const cv::Mat depthRoi = depth16(roi);
+
+        const int ringSize = config.existenceHoleExteriorRingPixels * 2 + 1;
+        const cv::Mat ringKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(ringSize, ringSize));
+        cv::Mat dilatedContour;
+        cv::dilate(contourMask, dilatedContour, ringKernel);
+        cv::Mat exteriorRing;
+        cv::subtract(dilatedContour, contourMask, exteriorRing);
+
+        cv::Mat backgroundRingMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+        std::vector<int> backgroundDepths;
+        backgroundDepths.reserve(static_cast<size_t>(cv::countNonZero(exteriorRing)));
+        for (int y = 0; y < roi.height; ++y)
+        {
+            const uchar* ringRow = exteriorRing.ptr<uchar>(y);
+            const uint16_t* depthRow = depthRoi.ptr<uint16_t>(y);
+            uchar* backgroundRow = backgroundRingMask.ptr<uchar>(y);
+            for (int x = 0; x < roi.width; ++x)
+            {
+                if (ringRow[x] == 0 || depthRow[x] == 0 || depthRow[x] == std::numeric_limits<uint16_t>::max())
+                {
+                    continue;
+                }
+                const int depthMm = static_cast<int>(std::lround(depthRow[x] * depthScale * 1000.0f));
+                if (depthMm < foregroundDepthMm + config.existenceHoleMinDepthGapMm ||
+                    depthMm > config.farMaxDepthMm)
+                {
+                    continue;
+                }
+                backgroundDepths.push_back(depthMm);
+                backgroundRow[x] = 255;
+            }
+        }
+        if (backgroundDepths.size() < static_cast<size_t>(std::max(8, config.existenceHoleMinAreaPixels / 2)))
+        {
+            ++stats.rejectedNoBackgroundCount;
+            return cv::Mat::zeros(roi.size(), CV_8UC1);
+        }
+
+        const int backgroundDepthMm = medianValue(backgroundDepths);
+        const cv::Scalar backgroundColor = cv::mean(colorBgr(roi), backgroundRingMask);
+        cv::Mat candidateMask = cv::Mat::zeros(roi.size(), CV_8UC1);
+        for (int y = 0; y < roi.height; ++y)
+        {
+            const uchar* innerRow = innerMask.ptr<uchar>(y);
+            const uint16_t* depthRow = depthRoi.ptr<uint16_t>(y);
+            uchar* candidateRow = candidateMask.ptr<uchar>(y);
+            for (int x = 0; x < roi.width; ++x)
+            {
+                if (innerRow[x] == 0 || depthRow[x] == 0 || depthRow[x] == std::numeric_limits<uint16_t>::max())
+                {
+                    continue;
+                }
+                const int depthMm = static_cast<int>(std::lround(depthRow[x] * depthScale * 1000.0f));
+                if (depthMm >= foregroundDepthMm + config.existenceHoleMinDepthGapMm &&
+                    std::abs(depthMm - backgroundDepthMm) <= config.existenceHoleBackgroundDepthMatchMm)
+                {
+                    candidateRow[x] = 255;
+                }
+            }
+        }
+
+        const cv::Mat cleanupKernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+        cv::morphologyEx(candidateMask, candidateMask, cv::MORPH_OPEN, cleanupKernel);
+        cv::morphologyEx(candidateMask, candidateMask, cv::MORPH_CLOSE, cleanupKernel);
+
+        cv::Mat labels;
+        cv::Mat componentStats;
+        cv::Mat centroids;
+        const int componentCount = cv::connectedComponentsWithStats(
+            candidateMask,
+            labels,
+            componentStats,
+            centroids,
+            8,
+            CV_32S);
+        cv::Mat accepted = cv::Mat::zeros(roi.size(), CV_8UC1);
+        const int maxArea = std::max(
+            config.existenceHoleMinAreaPixels,
+            contourPixels * config.existenceHoleMaxAreaPercent / 100);
+        for (int label = 1; label < componentCount; ++label)
+        {
+            const int area = componentStats.at<int>(label, cv::CC_STAT_AREA);
+            if (area < config.existenceHoleMinAreaPixels || area > maxArea)
+            {
+                continue;
+            }
+
+            cv::Mat componentMask;
+            cv::compare(labels, label, componentMask, cv::CMP_EQ);
+            const cv::Scalar componentColor = cv::mean(colorBgr(roi), componentMask);
+            const double colorDistance = std::sqrt(
+                std::pow(componentColor[0] - backgroundColor[0], 2.0) +
+                std::pow(componentColor[1] - backgroundColor[1], 2.0) +
+                std::pow(componentColor[2] - backgroundColor[2], 2.0));
+            if (colorDistance > static_cast<double>(config.existenceHoleBackgroundColorDistance))
+            {
+                ++stats.rejectedColorCount;
+                continue;
+            }
+            accepted.setTo(255, componentMask);
+        }
+        return accepted;
+    }
+
+    std::map<uint64_t, ExistenceContourHoleMemory> memories_;
+};
+
 bool overlapsExistingColorRegion(
     const std::vector<ColorContourRegion>& regions,
     const cv::Mat& candidateMask,
@@ -7578,7 +7991,8 @@ void estimateStereoContourDistances(
 FinalSegmentationFrame buildFinalSegmentationFrame(
     const cv::Mat& colorBgr,
     const std::vector<ObservationMaterial>& depthMaterials,
-    const std::vector<ColorContourRegion>& colorRegions)
+    const std::vector<ColorContourRegion>& colorRegions,
+    const cv::Mat& confirmedBackgroundHoleMask)
 {
     FinalSegmentationFrame frame;
     if (colorBgr.empty())
@@ -7593,7 +8007,11 @@ FinalSegmentationFrame buildFinalSegmentationFrame(
     int nextId = 1;
     for (const ObservationMaterial& material : depthMaterials)
     {
-        const cv::Mat mask = contourToMask(material.contour, colorBgr.size());
+        cv::Mat mask = contourToMask(material.contour, colorBgr.size());
+        if (!confirmedBackgroundHoleMask.empty() && confirmedBackgroundHoleMask.size() == mask.size())
+        {
+            mask.setTo(0, confirmedBackgroundHoleMask);
+        }
         frame.idMap.setTo(nextId, mask);
         cv::Mat colorLayer(colorBgr.size(), CV_8UC3, clusterColorForId(nextId));
         colorLayer.copyTo(frame.overlay, mask);
@@ -8109,6 +8527,45 @@ void appendObservationMaterialClusters(
     }
 }
 
+void appendStableObservationMaterialClusters(
+    ClusterMapFrame& frame,
+    const std::vector<ObservationMaterial>& materials,
+    const cv::Mat& ownershipMask,
+    const cv::Mat& validDepthMask,
+    int& nextClusterId)
+{
+    for (const ObservationMaterial& material : materials)
+    {
+        cv::Mat materialMask = contourToMask(material.contour, frame.clusterIdMap.size());
+        if (!ownershipMask.empty() && ownershipMask.size() == materialMask.size())
+        {
+            cv::bitwise_and(materialMask, ownershipMask, materialMask);
+        }
+        if (appendClusterFromMask(
+            frame,
+            materialMask,
+            ClusterSpatialMode::PreciseDepth3D,
+            "stable_depth_tracker_outer_contour",
+            material.depthMinMm,
+            material.meanDepthMm,
+            material.depthMaxMm,
+            0.90,
+            nextClusterId))
+        {
+            int depthEvidencePixelCount = 0;
+            if (!validDepthMask.empty() && validDepthMask.size() == materialMask.size())
+            {
+                cv::Mat measuredOwnership;
+                cv::bitwise_and(validDepthMask, materialMask, measuredOwnership);
+                depthEvidencePixelCount = cv::countNonZero(measuredOwnership);
+            }
+            frame.clusters.back().depthEvidencePixelCount = std::min(
+                frame.clusters.back().pixelCount,
+                depthEvidencePixelCount);
+        }
+    }
+}
+
 void appendFarDistanceClusters(
     ClusterMapFrame& frame,
     const std::vector<FarDistanceMaterial>& materials,
@@ -8237,6 +8694,8 @@ void appendIndoorPlaneClusters(
 ClusterMapFrame buildFullFrameClusterMap(
     const cv::Size& frameSize,
     const std::vector<ObservationMaterial>& stableMaterials,
+    const cv::Mat& stableOwnershipMask,
+    const cv::Mat& depth16,
     const std::vector<FarDistanceMaterial>& farDistanceMaterials,
     const std::vector<ObservationMaterial>& nearPlaneMaterials,
     const IndoorPlaneAnalysis& indoorPlaneAnalysis,
@@ -8247,12 +8706,21 @@ ClusterMapFrame buildFullFrameClusterMap(
     frame.clusterIdMap = cv::Mat::zeros(frameSize, CV_32S);
     int nextClusterId = 1;
 
-    appendObservationMaterialClusters(
+    cv::Mat validDepthMask;
+    if (!depth16.empty() && depth16.type() == CV_16UC1 && depth16.size() == frameSize)
+    {
+        cv::Mat nonZeroDepth;
+        cv::Mat nonSaturatedDepth;
+        cv::compare(depth16, 0, nonZeroDepth, cv::CMP_GT);
+        cv::compare(depth16, std::numeric_limits<uint16_t>::max(), nonSaturatedDepth, cv::CMP_LT);
+        cv::bitwise_and(nonZeroDepth, nonSaturatedDepth, validDepthMask);
+    }
+
+    appendStableObservationMaterialClusters(
         frame,
         stableMaterials,
-        ClusterSpatialMode::PreciseDepth3D,
-        "stable_depth_tracker",
-        0.90,
+        stableOwnershipMask,
+        validDepthMask,
         nextClusterId);
     appendFarDistanceClusters(frame, farDistanceMaterials, nextClusterId);
     appendVisualContourClusters(frame, visualGray, config, nextClusterId);
@@ -8410,6 +8878,8 @@ void writeClusterMapExport(
         metadata << "      \"mode\": \"" << clusterSpatialModeName(cluster.mode) << "\",\n";
         metadata << "      \"source\": \"" << cluster.source << "\",\n";
         metadata << "      \"pixel_count\": " << cluster.pixelCount << ",\n";
+        metadata << "      \"depth_evidence_pixel_count\": "
+            << cluster.depthEvidencePixelCount << ",\n";
         metadata << "      \"bbox_2d\": ["
             << cluster.bbox.x << ", " << cluster.bbox.y << ", "
             << cluster.bbox.width << ", " << cluster.bbox.height << "],\n";
@@ -9963,7 +10433,8 @@ public:
         int anchorCount,
         int anchorPointsOnCandidates,
         const FrameTimingStats& timingStats,
-        const ColorContourRefreshStats& colorContourRefreshStats)
+        const ColorContourRefreshStats& colorContourRefreshStats,
+        const ExistenceContourHoleStats& existenceHoleStats)
     {
         if (!config_.enabled)
         {
@@ -10069,7 +10540,18 @@ public:
             << colorContourRefreshStats.attentionWorkerLongestMs << ','
             << colorContourRefreshStats.attentionMergeMs << ','
             << colorContourRefreshStats.attentionApplyMs << ','
-            << colorContourRefreshStats.attentionStaleResultCount
+            << colorContourRefreshStats.attentionStaleResultCount << ','
+            << (existenceHoleStats.enabled ? 1 : 0) << ','
+            << existenceHoleStats.trackedExistenceCount << ','
+            << existenceHoleStats.retainedNoDepthPixels << ','
+            << existenceHoleStats.candidateHoleCount << ','
+            << existenceHoleStats.candidateHolePixels << ','
+            << existenceHoleStats.confirmedHoleCount << ','
+            << existenceHoleStats.confirmedHolePixels << ','
+            << existenceHoleStats.rememberedHolePixels << ','
+            << existenceHoleStats.rejectedNoBackgroundCount << ','
+            << existenceHoleStats.rejectedColorCount << ','
+            << existenceHoleStats.processingMs
             << '\n';
     }
 
@@ -10153,7 +10635,13 @@ private:
             << "attention_alignment_response,attention_scan_ms,attention_alignment_ms,"
             << "attention_worker_task_count,attention_worker_queue_ms,attention_worker_ms,"
             << "attention_worker_longest_ms,attention_merge_ms,attention_apply_ms,"
-            << "attention_stale_result_count\n";
+            << "attention_stale_result_count,"
+            << "existence_hole_filter_enabled,existence_hole_tracked_count,"
+            << "existence_hole_retained_no_depth_pixels,"
+            << "existence_hole_candidate_count,existence_hole_candidate_pixels,"
+            << "existence_hole_confirmed_count,existence_hole_confirmed_pixels,"
+            << "existence_hole_remembered_pixels,existence_hole_rejected_no_background_count,"
+            << "existence_hole_rejected_color_count,existence_hole_processing_ms\n";
         std::cout << "Profile CSV: " << outputPath_ << '\n';
     }
 
@@ -12891,6 +13379,15 @@ void printUsage()
         << "  --stable-plane-merge-min-anchors=24\n"
         << "  --stable-plane-merge-max-area-percent=85\n"
         << "  --stable-plane-merge-max-roi-area-percent=98\n"
+        << "  --existence-hole-min-depth-gap-mm=250\n"
+        << "  --existence-hole-background-depth-match-mm=350\n"
+        << "  --existence-hole-background-color-distance=70\n"
+        << "  --existence-hole-min-area-px=24\n"
+        << "  --existence-hole-max-area-percent=35\n"
+        << "  --existence-hole-inner-margin-px=3\n"
+        << "  --existence-hole-exterior-ring-px=9\n"
+        << "  --existence-hole-confirm-frames=2\n"
+        << "  --existence-hole-memory-max-age-frames=8\n"
         << "  --split-boundary-px=3\n"
         << "  --group-gap-px=24\n"
         << "  --group-depth-gap-mm=450\n"
@@ -12956,6 +13453,8 @@ void printUsage()
         << "  --no-spatial-cluster-check\n"
         << "  --stable-plane-merge\n"
         << "  --no-stable-plane-merge\n"
+        << "  --existence-contour-hole-filter\n"
+        << "  --no-existence-contour-hole-filter\n"
         << "  --no-history-tracking\n"
         << "  --boundary-diagnostics\n"
         << "  --indoor-plane-diagnostics\n"
@@ -13033,6 +13532,7 @@ int runReplayDirectory(
 
     ProfileCsvWriter profileCsv(parseProfileCsvConfig(argc, argv));
     SegmentationTracker tracker;
+    ExistenceContourHoleFilter existenceHoleFilter;
     std::vector<ObservationMaterial> pclCandidateCache;
     std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
     IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
@@ -13477,13 +13977,6 @@ int runReplayDirectory(
         }
         timingStats.pclMs = takeSectionMs();
 
-        if (config.qualitySegmentation)
-        {
-            lastFinalSegmentationFrame =
-                buildFinalSegmentationFrame(colorBgr, candidateMaterials, colorContourRegions);
-            hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
-        }
-
         int anchorPointsOnCandidates = 0;
         std::vector<ObservationMaterial> anchorSupportedCandidates =
             calibrateMaterialsWithStableAnchors(
@@ -13521,6 +14014,25 @@ int runReplayDirectory(
         std::vector<ObservationMaterial> stableMaterials =
             tracker.update(cueSelectedCandidates, config, frameId);
         timingStats.trackerMs = takeSectionMs();
+
+        const ExistenceContourHoleResult existenceHoleResult = existenceHoleFilter.update(
+            stableMaterials,
+            colorBgr,
+            depth16,
+            depthScale,
+            config,
+            frameId);
+        timingStats.diagnosticsMs += takeSectionMs();
+
+        if (config.qualitySegmentation)
+        {
+            lastFinalSegmentationFrame = buildFinalSegmentationFrame(
+                colorBgr,
+                candidateMaterials,
+                colorContourRegions,
+                existenceHoleResult.confirmedHoleMask);
+            hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
+        }
 
         for (const ObservationMaterial& stableMaterial : stableMaterials)
         {
@@ -13564,7 +14076,7 @@ int runReplayDirectory(
         cv::Mat stableMaskForFrame;
         if (config.clusterMap)
         {
-            stableMaskForFrame = buildStableContourMask(colorBgr.size(), stableMaterials);
+            stableMaskForFrame = existenceHoleResult.ownershipMask;
         }
         IndoorPlaneAnalysis indoorPlaneAnalysis;
         if (config.clusterMap)
@@ -13593,6 +14105,8 @@ int runReplayDirectory(
             lastClusterMapFrame = buildFullFrameClusterMap(
                 colorBgr.size(),
                 stableMaterials,
+                stableMaskForFrame,
+                depth16,
                 farDistanceMaterials,
                 nearPlaneMaterials,
                 indoorPlaneAnalysis,
@@ -13649,7 +14163,8 @@ int runReplayDirectory(
             cv::countNonZero(anchorMask),
             anchorPointsOnCandidates,
             timingStats,
-            colorContourRefreshStats);
+            colorContourRefreshStats,
+            existenceHoleResult.stats);
     }
 
     profileCsv.close();
@@ -14071,6 +14586,7 @@ int main(int argc, char** argv)
         }
 
         SegmentationTracker tracker;
+        ExistenceContourHoleFilter existenceHoleFilter;
         std::vector<ObservationMaterial> pclCandidateCache;
         std::map<uint64_t, StableContourTrackAggregate> stableTrackAggregates;
         IndoorPlaneAnalysis cachedIndoorPlaneAnalysis;
@@ -14574,13 +15090,6 @@ int main(int argc, char** argv)
             }
             timingStats.pclMs = takeSectionMs();
 
-            if (config.qualitySegmentation)
-            {
-                lastFinalSegmentationFrame =
-                    buildFinalSegmentationFrame(colorBgr, candidateMaterials, colorContourRegions);
-                hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
-            }
-
             int anchorPointsOnCandidates = 0;
             std::vector<ObservationMaterial> anchorSupportedCandidates =
                 calibrateMaterialsWithStableAnchors(
@@ -14618,6 +15127,25 @@ int main(int argc, char** argv)
             std::vector<ObservationMaterial> stableMaterials =
                 tracker.update(cueSelectedCandidates, config, frameId);
             timingStats.trackerMs = takeSectionMs();
+
+            const ExistenceContourHoleResult existenceHoleResult = existenceHoleFilter.update(
+                stableMaterials,
+                colorBgr,
+                depth16,
+                depthScale,
+                config,
+                frameId);
+            timingStats.diagnosticsMs += takeSectionMs();
+
+            if (config.qualitySegmentation)
+            {
+                lastFinalSegmentationFrame = buildFinalSegmentationFrame(
+                    colorBgr,
+                    candidateMaterials,
+                    colorContourRegions,
+                    existenceHoleResult.confirmedHoleMask);
+                hasLastFinalSegmentationFrame = !lastFinalSegmentationFrame.idMap.empty();
+            }
 
             for (const ObservationMaterial& stableMaterial : stableMaterials)
             {
@@ -14662,7 +15190,7 @@ int main(int argc, char** argv)
             cv::Mat stableMaskForFrame;
             if (config.indoorPlaneDiagnostics || acceptanceConfig.enabled || config.clusterMap)
             {
-                stableMaskForFrame = buildStableContourMask(colorBgr.size(), stableMaterials);
+                stableMaskForFrame = existenceHoleResult.ownershipMask;
             }
             IndoorPlaneAnalysis indoorPlaneAnalysis;
             if (config.indoorPlaneDiagnostics || config.clusterMap)
@@ -14691,6 +15219,8 @@ int main(int argc, char** argv)
                 lastClusterMapFrame = buildFullFrameClusterMap(
                     colorBgr.size(),
                     stableMaterials,
+                    stableMaskForFrame,
+                    depth16,
                     farDistanceMaterials,
                     nearPlaneMaterials,
                     indoorPlaneAnalysis,
@@ -14792,8 +15322,14 @@ int main(int argc, char** argv)
                             farDistanceMaterials,
                             frameId)
                         : displayStableMaterials;
-                const cv::Mat displayStableMask =
+                cv::Mat displayStableMask =
                     buildStableContourMask(colorBgr.size(), mosaicDisplayMaterials);
+                if (config.existenceContourHoleFilter &&
+                    !existenceHoleResult.confirmedHoleMask.empty() &&
+                    existenceHoleResult.confirmedHoleMask.size() == displayStableMask.size())
+                {
+                    displayStableMask.setTo(0, existenceHoleResult.confirmedHoleMask);
+                }
                 mosaicView = buildStableContourColorMosaic(colorBgr, mosaicDisplayMaterials, displayStableMask);
                 drawColorContourCompletionOverlay(mosaicView, completionStats, config.colorContourCompletion);
                 if (config.extraCandidatesInMosaic)
@@ -14957,7 +15493,8 @@ int main(int argc, char** argv)
                 cv::countNonZero(anchorMask),
                 anchorPointsOnCandidates,
                 timingStats,
-                colorContourRefreshStats);
+                colorContourRefreshStats,
+                existenceHoleResult.stats);
             if (acceptanceConfig.enabled)
             {
                 const cv::Mat stableMask = stableMaskForFrame.empty()

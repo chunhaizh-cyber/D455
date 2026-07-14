@@ -1,0 +1,49 @@
+{
+  "candidate_id": "candidate_0049",
+  "parent": "candidate_0030",
+  "purpose": "Existence outer-contour ownership probe: retain every interior pixel by default and remove only multi-frame holes with positive background depth and color evidence.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-padding-px=48",
+    "--color-contour-refresh-max-roi-area-percent=35",
+    "--color-contour-refresh-on-motion",
+    "--color-contour-refresh-motion-delta-percent=40",
+    "--color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-on-unknown-spike",
+    "--color-contour-refresh-unknown-percent=12",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000",
+    "--async-color-contour-refresh",
+    "--existence-contour-hole-filter",
+    "--existence-hole-min-depth-gap-mm=250",
+    "--existence-hole-background-depth-match-mm=350",
+    "--existence-hole-background-color-distance=70",
+    "--existence-hole-min-area-px=24",
+    "--existence-hole-max-area-percent=35",
+    "--existence-hole-inner-margin-px=3",
+    "--existence-hole-exterior-ring-px=9",
+    "--existence-hole-confirm-frames=2",
+    "--existence-hole-memory-max-age-frames=8"
+  ],
+  "expected_effect": [
+    "Keep invalid-depth or stereo-unresolved pixels inside a stable outer contour assigned to that existence.",
+    "Remove only interior regions that repeatedly match the depth and color of visible background outside the contour.",
+    "Expose retained-no-depth, candidate-hole, confirmed-hole, memory, rejection, and processing-cost metrics."
+  ],
+  "risk": [
+    "This probe does not repair an upstream outer contour that was already split into multiple stable materials.",
+    "Textured or depth-varying background can conservatively prevent a real hole from being removed.",
+    "The filter preserves ownership only; it does not invent dense per-pixel depth or promote unsupported pixels to measured 3D evidence."
+  ]
+}

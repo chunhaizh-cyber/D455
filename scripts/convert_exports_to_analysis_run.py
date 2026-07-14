@@ -117,6 +117,17 @@ FRAME_FIELDS = [
     "attention_merge_ms",
     "attention_apply_ms",
     "attention_stale_result_count",
+    "existence_hole_filter_enabled",
+    "existence_hole_tracked_count",
+    "existence_hole_retained_no_depth_pixels",
+    "existence_hole_candidate_count",
+    "existence_hole_candidate_pixels",
+    "existence_hole_confirmed_count",
+    "existence_hole_confirmed_pixels",
+    "existence_hole_remembered_pixels",
+    "existence_hole_rejected_no_background_count",
+    "existence_hole_rejected_color_count",
+    "existence_hole_processing_ms",
     "unknown_spike",
     "merge_event",
     "split_event",
@@ -389,6 +400,14 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
     if frame_id < 0:
         frame_id = 0
 
+    precise_depth_evidence_pixels = sum(
+        as_int(
+            cluster.get("depth_evidence_pixel_count"),
+            as_int(cluster.get("pixel_count")),
+        )
+        for cluster in clusters
+        if normalize_mode(cluster.get("mode")) == "PreciseDepth3D"
+    )
     row = {field: 0 for field in FRAME_FIELDS}
     row.update({
         "frame_id": frame_id,
@@ -412,7 +431,7 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "background_cluster_count": mode_counts.get("BackgroundPlane", 0) + mode_counts.get("FarBackground", 0),
         "unknown_cluster_count": mode_counts.get("Unknown", 0),
         "total_cluster_count": len(clusters),
-        "reliable_depth_pixels": mode_pixels["precise_depth3d_pixels"],
+        "reliable_depth_pixels": precise_depth_evidence_pixels,
         "stable_track_count": as_int(profile_row.get("stable_count")),
         "stereo_matched_cluster_count": stereo_valid,
         "stereo_failed_cluster_count": stereo_failed,
@@ -554,6 +573,39 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "attention_stale_result_count": as_int(
             profile_row.get("attention_stale_result_count")
         ),
+        "existence_hole_filter_enabled": as_int(
+            profile_row.get("existence_hole_filter_enabled")
+        ),
+        "existence_hole_tracked_count": as_int(
+            profile_row.get("existence_hole_tracked_count")
+        ),
+        "existence_hole_retained_no_depth_pixels": as_int(
+            profile_row.get("existence_hole_retained_no_depth_pixels")
+        ),
+        "existence_hole_candidate_count": as_int(
+            profile_row.get("existence_hole_candidate_count")
+        ),
+        "existence_hole_candidate_pixels": as_int(
+            profile_row.get("existence_hole_candidate_pixels")
+        ),
+        "existence_hole_confirmed_count": as_int(
+            profile_row.get("existence_hole_confirmed_count")
+        ),
+        "existence_hole_confirmed_pixels": as_int(
+            profile_row.get("existence_hole_confirmed_pixels")
+        ),
+        "existence_hole_remembered_pixels": as_int(
+            profile_row.get("existence_hole_remembered_pixels")
+        ),
+        "existence_hole_rejected_no_background_count": as_int(
+            profile_row.get("existence_hole_rejected_no_background_count")
+        ),
+        "existence_hole_rejected_color_count": as_int(
+            profile_row.get("existence_hole_rejected_color_count")
+        ),
+        "existence_hole_processing_ms": round(
+            as_float(profile_row.get("existence_hole_processing_ms")), 3
+        ),
         "unknown_spike": int(unknown_percent > args.unknown_spike_percent),
         "far_stereo_failed_event": int(color_region_count > 0 and stereo_valid <= 0),
         "frame_time_over_budget": int(total_ms > args.frame_budget_ms) if total_ms else 0,
@@ -568,6 +620,7 @@ def cluster_metric_line(frame_id, total_pixels, cluster):
     depth_mean = nullable_positive_int(cluster.get("depth_mean_mm"))
     estimated_distance = nullable_positive_int(cluster.get("estimated_distance_mm"))
     matched = as_int(cluster.get("matched_stereo_points"))
+    depth_evidence_pixels = as_int(cluster.get("depth_evidence_pixel_count"))
     return {
         "frame_id": frame_id,
         "cluster_id": as_int(cluster.get("cluster_id", cluster.get("id"))),
@@ -575,6 +628,7 @@ def cluster_metric_line(frame_id, total_pixels, cluster):
         "mode": mode,
         "source": cluster.get("source", ""),
         "pixel_count": pixel_count,
+        "depth_evidence_pixel_count": depth_evidence_pixels,
         "area_percent": round(100.0 * pixel_count / total_pixels, 3) if total_pixels else 0.0,
         "bbox_2d": cluster.get("bbox_2d", [0, 0, 0, 0]),
         "center_2d": cluster.get("center_2d", [0, 0]),
@@ -583,7 +637,11 @@ def cluster_metric_line(frame_id, total_pixels, cluster):
         "depth_min_mm": nullable_positive_int(cluster.get("depth_min_mm")),
         "depth_mean_mm": depth_mean,
         "depth_max_mm": nullable_positive_int(cluster.get("depth_max_mm")),
-        "depth_valid_percent": 100.0 if mode == "PreciseDepth3D" and depth_mean else None,
+        "depth_valid_percent": (
+            round(100.0 * depth_evidence_pixels / pixel_count, 3)
+            if mode == "PreciseDepth3D" and pixel_count > 0 and depth_evidence_pixels > 0
+            else None
+        ),
         "median_disparity_px": (
             as_float(cluster.get("median_disparity_px"))
             if cluster.get("median_disparity_px") not in (None, "")
@@ -667,6 +725,18 @@ def collect_events(frame_row):
             "message": "color contour cache refreshed: " + ("+".join(reasons) if reasons else "unspecified"),
             "value_before": frame_row.get("color_contour_motion_delta_percent", ""),
             "value_after": frame_row.get("color_contour_region_count", ""),
+        })
+    if frame_row.get("existence_hole_confirmed_pixels", 0) > 0:
+        events.append({
+            "frame_id": frame_id,
+            "event_type": "existence_background_hole_confirmed",
+            "severity": "info",
+            "cluster_id": "",
+            "track_id": "",
+            "related_cluster_id": "",
+            "message": "interior pixels were removed only after positive background evidence confirmation",
+            "value_before": frame_row.get("existence_hole_candidate_pixels", ""),
+            "value_after": frame_row.get("existence_hole_confirmed_pixels", ""),
         })
     if frame_row["frame_time_over_budget"]:
         events.append({

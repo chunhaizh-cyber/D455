@@ -22,6 +22,14 @@
 
 每轮结束时如果项目文件有变动，必须自动完成云端同步：先运行相关校验，再只暂存本轮有意变更的项目文件，提交并推送当前分支到 `origin`。不要自动同步真实录制视频、实际运行大数据、构建产物、密钥或无关用户改动；如果校验失败，则停止推送并说明阻塞原因。
 
+## 外围轮廓内部保留与真实穿孔过滤
+
+2026-07-14 新增默认关闭的 `--existence-contour-hole-filter` 探针。稳定轨迹给出外围轮廓后，系统先把轮廓内部全部记为该存在的像素归属；深度为 `0/65535`、黑色材质或双目视差失败都不是穿孔证据，因此这些内部像素继续保留。只有内部区域具有有效深度、明显位于存在表面之后、与轮廓外圈背景深度和颜色相容，并按 `track_id` 连续多帧确认时，才从该存在的 ownership mask 中扣除并交给后续视觉/背景路径接管。
+
+该功能不补写内部逐像素深度，也不把历史值伪装成本帧测量；簇级距离仍只来自已有有效深度支撑，cluster metadata 用 `depth_evidence_pixel_count` 将深度证据数量与完整轮廓归属像素数分开。主要参数为 `--existence-hole-min-depth-gap-mm`、`--existence-hole-background-depth-match-mm`、`--existence-hole-background-color-distance`、`--existence-hole-min-area-px`、`--existence-hole-max-area-percent`、`--existence-hole-confirm-frames` 和 `--existence-hole-memory-max-age-frames`。profile、converter、score 和 leaderboard 已贯通保留无深度像素、候选/确认穿孔、记忆像素、保守拒绝和处理耗时指标。`candidate_0049` 仅用于证明此机制，不修复上游已经分裂的外围轮廓，也不替换现有 best；完整边界和验证命令见 `docs/EXISTENCE_CONTOUR_HOLE_FILTER.md`。
+
+机制探针中，真实背景缺口连续确认并扣除 8783px；只把内部深度设为无效时则保留 8787px，候选和确认穿孔均为 0。三组真实 120 帧 replay 的 `candidate_0030/0049` 共 6/6 通过硬门槛，coverage=100%、unknown=0、contour-lost/merge/split=0；0049 最终合并后的确认穿孔 p95 为 0-944px，同时保留无深度像素 p50 为 21801-29867px。过滤器自身 p95 为 12.7-22.0ms，最终重跑没有超过 100ms 的帧，但 0049 在三个 case 上仍比 0030 慢约 12-22ms、总分也更低，因此保持 probe-only，0030 继续作为 motion 性能基线。
+
 ## 视觉注意力与差异驱动处理方向
 
 后续性能主线不再只优化全画面完整算法耗时，而是建立“最快全画面变化扫描 + 场景缓存复用 + 中心/单存在关注 + 多关注区域线程池并发 + 分片全局刷新”。全画面像素账本继续保留，未关注区域不得自动视为背景；缓存深度必须标记历史来源。详细数据结构、中文方法、线程边界、双目裁剪边距、性能模型和验收门槛见 `资料/视觉注意力缓存差异扫描与并发ROI处理方案_v0.1.md`。

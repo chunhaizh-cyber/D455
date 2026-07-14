@@ -347,6 +347,39 @@ def score_run(run_dir, config):
     attention_stale_result_count = sum(
         int(row_float(r, "attention_stale_result_count")) for r in timing_rows
     )
+    existence_hole_filter_enabled_count = sum(
+        int(row_float(r, "existence_hole_filter_enabled") > 0) for r in timing_rows
+    )
+    existence_hole_tracked_count_p50 = percentile(
+        [r.get("existence_hole_tracked_count") for r in timing_rows], 50
+    )
+    existence_hole_retained_no_depth_pixels_p50 = percentile(
+        [r.get("existence_hole_retained_no_depth_pixels") for r in timing_rows], 50
+    )
+    existence_hole_candidate_count = sum(
+        int(row_float(r, "existence_hole_candidate_count")) for r in timing_rows
+    )
+    existence_hole_candidate_pixels_p95 = positive_percentile(
+        [r.get("existence_hole_candidate_pixels") for r in timing_rows], 95
+    )
+    existence_hole_confirmed_count = sum(
+        int(row_float(r, "existence_hole_confirmed_count")) for r in timing_rows
+    )
+    existence_hole_confirmed_pixels_p95 = positive_percentile(
+        [r.get("existence_hole_confirmed_pixels") for r in timing_rows], 95
+    )
+    existence_hole_remembered_pixels_p95 = positive_percentile(
+        [r.get("existence_hole_remembered_pixels") for r in timing_rows], 95
+    )
+    existence_hole_rejected_no_background_count = sum(
+        int(row_float(r, "existence_hole_rejected_no_background_count")) for r in timing_rows
+    )
+    existence_hole_rejected_color_count = sum(
+        int(row_float(r, "existence_hole_rejected_color_count")) for r in timing_rows
+    )
+    existence_hole_processing_ms_p95 = positive_percentile(
+        [r.get("existence_hole_processing_ms") for r in timing_rows], 95
+    )
     roi_stereo_evidence_count = (
         color_refresh_roi_stereo_reuse_count +
         color_refresh_roi_stereo_built_count +
@@ -535,6 +568,19 @@ def score_run(run_dir, config):
             "attention_merge_ms_p95": attention_merge_ms_p95,
             "attention_apply_ms_p95": attention_apply_ms_p95,
             "attention_stale_result_count": attention_stale_result_count,
+            "existence_hole_filter_enabled_count": existence_hole_filter_enabled_count,
+            "existence_hole_tracked_count_p50": existence_hole_tracked_count_p50,
+            "existence_hole_retained_no_depth_pixels_p50":
+                existence_hole_retained_no_depth_pixels_p50,
+            "existence_hole_candidate_count": existence_hole_candidate_count,
+            "existence_hole_candidate_pixels_p95": existence_hole_candidate_pixels_p95,
+            "existence_hole_confirmed_count": existence_hole_confirmed_count,
+            "existence_hole_confirmed_pixels_p95": existence_hole_confirmed_pixels_p95,
+            "existence_hole_remembered_pixels_p95": existence_hole_remembered_pixels_p95,
+            "existence_hole_rejected_no_background_count":
+                existence_hole_rejected_no_background_count,
+            "existence_hole_rejected_color_count": existence_hole_rejected_color_count,
+            "existence_hole_processing_ms_p95": existence_hole_processing_ms_p95,
             "contour_lost_event_count": contour_lost_events,
             "merge_event_count": merge_events,
             "split_event_count": split_events,

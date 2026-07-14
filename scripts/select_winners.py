@@ -101,7 +101,15 @@ def main():
             "attention_worker_task_count", "attention_worker_queue_ms_p95",
             "attention_worker_ms_p95", "attention_worker_longest_ms_p95",
             "attention_merge_ms_p95", "attention_apply_ms_p95",
-            "attention_stale_result_count", "run_id"
+            "attention_stale_result_count",
+            "existence_hole_filter_enabled_count", "existence_hole_tracked_count_p50",
+            "existence_hole_retained_no_depth_pixels_p50",
+            "existence_hole_candidate_count", "existence_hole_candidate_pixels_p95",
+            "existence_hole_confirmed_count", "existence_hole_confirmed_pixels_p95",
+            "existence_hole_remembered_pixels_p95",
+            "existence_hole_rejected_no_background_count",
+            "existence_hole_rejected_color_count", "existence_hole_processing_ms_p95",
+            "run_id"
         ])
         for s in scores:
             writer.writerow([
@@ -172,6 +180,17 @@ def main():
                 metric(s, "attention_merge_ms_p95"),
                 metric(s, "attention_apply_ms_p95"),
                 metric(s, "attention_stale_result_count"),
+                metric(s, "existence_hole_filter_enabled_count"),
+                metric(s, "existence_hole_tracked_count_p50"),
+                metric(s, "existence_hole_retained_no_depth_pixels_p50"),
+                metric(s, "existence_hole_candidate_count"),
+                metric(s, "existence_hole_candidate_pixels_p95"),
+                metric(s, "existence_hole_confirmed_count"),
+                metric(s, "existence_hole_confirmed_pixels_p95"),
+                metric(s, "existence_hole_remembered_pixels_p95"),
+                metric(s, "existence_hole_rejected_no_background_count"),
+                metric(s, "existence_hole_rejected_color_count"),
+                metric(s, "existence_hole_processing_ms_p95"),
                 s.get("run_id", ""),
             ])
 
