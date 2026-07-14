@@ -623,6 +623,14 @@ struct ProfileCsvConfig
     std::string csvPath;
 };
 
+struct BinaryContourStabilityConfig
+{
+    bool enabled = false;
+    int warmupFrames = 30;
+    int saveEveryN = 1;
+    std::string outputDir = "analysis_runs/binary_contour_stability";
+};
+
 struct PoseReadConfig
 {
     bool enabled = false;
@@ -1373,6 +1381,14 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg == "--binary-contour-stability" ||
+            arg == "--no-binary-contour-stability" ||
+            arg.rfind("--binary-contour-output=", 0) == 0 ||
+            arg.rfind("--binary-contour-warmup-frames=", 0) == 0 ||
+            arg.rfind("--binary-contour-save-every-n=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--pose-read" ||
             arg == "--no-pose-read" ||
             arg == "--pose-overlay" ||
@@ -1773,6 +1789,43 @@ ProfileCsvConfig parseProfileCsvConfig(int argc, char** argv)
         }
     }
 
+    return config;
+}
+
+BinaryContourStabilityConfig parseBinaryContourStabilityConfig(int argc, char** argv)
+{
+    BinaryContourStabilityConfig config;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--binary-contour-stability")
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (arg == "--no-binary-contour-stability")
+        {
+            config.enabled = false;
+            continue;
+        }
+        if (parseStringOption(arg, "--binary-contour-output=", config.outputDir))
+        {
+            config.enabled = true;
+            continue;
+        }
+        if (parseIntOption(arg, "--binary-contour-warmup-frames=", config.warmupFrames) ||
+            parseIntOption(arg, "--binary-contour-save-every-n=", config.saveEveryN))
+        {
+            continue;
+        }
+    }
+
+    config.warmupFrames = std::max(0, config.warmupFrames);
+    config.saveEveryN = std::max(1, config.saveEveryN);
+    if (config.outputDir.empty())
+    {
+        config.outputDir = "analysis_runs/binary_contour_stability";
+    }
     return config;
 }
 
@@ -9155,6 +9208,392 @@ std::filesystem::path resolveProjectOutputPath(
     return std::filesystem::absolute(output);
 }
 
+struct PackedBinaryContourFrame
+{
+    uint64_t frameId = 0;
+    uint64_t contourId = 0;
+    cv::Size sourceSize;
+    cv::Rect sourceBbox;
+    cv::Mat contentMask;
+    cv::Mat centeredMask;
+    std::vector<uint64_t> blocks;
+    uint64_t foregroundPixels = 0;
+};
+
+struct BinaryContourComparison
+{
+    uint64_t comparePixels = 0;
+    uint64_t changedPixels = 0;
+    uint64_t intersectionPixels = 0;
+    uint64_t unionPixels = 0;
+    double similarityPercent = 0.0;
+    double iouPercent = 0.0;
+};
+
+int roundUpToEight(int value)
+{
+    return std::max(8, ((std::max(1, value) + 7) / 8) * 8);
+}
+
+PackedBinaryContourFrame packCenteredBinaryContour(
+    uint64_t frameId,
+    uint64_t contourId,
+    const cv::Mat& sourceMask)
+{
+    PackedBinaryContourFrame frame;
+    frame.frameId = frameId;
+    frame.contourId = contourId;
+    frame.sourceSize = sourceMask.size();
+    if (sourceMask.empty() || sourceMask.channels() != 1)
+    {
+        return frame;
+    }
+
+    cv::Mat binaryMask;
+    cv::compare(sourceMask, 0, binaryMask, cv::CMP_GT);
+    std::vector<cv::Point> foregroundPoints;
+    cv::findNonZero(binaryMask, foregroundPoints);
+    if (foregroundPoints.empty())
+    {
+        return frame;
+    }
+
+    frame.sourceBbox = cv::boundingRect(foregroundPoints);
+    frame.contentMask = binaryMask(frame.sourceBbox).clone();
+    const int canvasWidth = roundUpToEight(frame.contentMask.cols);
+    const int canvasHeight = roundUpToEight(frame.contentMask.rows);
+    frame.centeredMask = cv::Mat::zeros(canvasHeight, canvasWidth, CV_8UC1);
+    const int offsetX = (canvasWidth - frame.contentMask.cols) / 2;
+    const int offsetY = (canvasHeight - frame.contentMask.rows) / 2;
+    frame.contentMask.copyTo(
+        frame.centeredMask(cv::Rect(offsetX, offsetY, frame.contentMask.cols, frame.contentMask.rows)));
+    frame.foregroundPixels = static_cast<uint64_t>(cv::countNonZero(frame.centeredMask));
+
+    const int blocksX = canvasWidth / 8;
+    const int blocksY = canvasHeight / 8;
+    frame.blocks.reserve(static_cast<size_t>(blocksX) * static_cast<size_t>(blocksY));
+    for (int blockY = 0; blockY < blocksY; ++blockY)
+    {
+        for (int blockX = 0; blockX < blocksX; ++blockX)
+        {
+            uint64_t packed = 0;
+            for (int localY = 0; localY < 8; ++localY)
+            {
+                const unsigned char* row = frame.centeredMask.ptr<unsigned char>(blockY * 8 + localY);
+                for (int localX = 0; localX < 8; ++localX)
+                {
+                    if (row[blockX * 8 + localX] != 0)
+                    {
+                        packed |= uint64_t{1} << static_cast<unsigned int>(localY * 8 + localX);
+                    }
+                }
+            }
+            frame.blocks.push_back(packed);
+        }
+    }
+    return frame;
+}
+
+BinaryContourComparison compareCenteredBinaryContours(
+    const PackedBinaryContourFrame& first,
+    const PackedBinaryContourFrame& second)
+{
+    BinaryContourComparison comparison;
+    if (first.contentMask.empty() || second.contentMask.empty())
+    {
+        return comparison;
+    }
+
+    const int width = roundUpToEight(std::max(first.contentMask.cols, second.contentMask.cols));
+    const int height = roundUpToEight(std::max(first.contentMask.rows, second.contentMask.rows));
+    cv::Mat firstCentered = cv::Mat::zeros(height, width, CV_8UC1);
+    cv::Mat secondCentered = cv::Mat::zeros(height, width, CV_8UC1);
+    first.contentMask.copyTo(firstCentered(cv::Rect(
+        (width - first.contentMask.cols) / 2,
+        (height - first.contentMask.rows) / 2,
+        first.contentMask.cols,
+        first.contentMask.rows)));
+    second.contentMask.copyTo(secondCentered(cv::Rect(
+        (width - second.contentMask.cols) / 2,
+        (height - second.contentMask.rows) / 2,
+        second.contentMask.cols,
+        second.contentMask.rows)));
+
+    cv::Mat changedMask;
+    cv::Mat intersectionMask;
+    cv::Mat unionMask;
+    cv::bitwise_xor(firstCentered, secondCentered, changedMask);
+    cv::bitwise_and(firstCentered, secondCentered, intersectionMask);
+    cv::bitwise_or(firstCentered, secondCentered, unionMask);
+    comparison.comparePixels = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    comparison.changedPixels = static_cast<uint64_t>(cv::countNonZero(changedMask));
+    comparison.intersectionPixels = static_cast<uint64_t>(cv::countNonZero(intersectionMask));
+    comparison.unionPixels = static_cast<uint64_t>(cv::countNonZero(unionMask));
+    comparison.similarityPercent = comparison.comparePixels > 0
+        ? 100.0 * static_cast<double>(comparison.comparePixels - comparison.changedPixels) /
+            static_cast<double>(comparison.comparePixels)
+        : 0.0;
+    comparison.iouPercent = comparison.unionPixels > 0
+        ? 100.0 * static_cast<double>(comparison.intersectionPixels) /
+            static_cast<double>(comparison.unionPixels)
+        : 100.0;
+    return comparison;
+}
+
+void writeLittleEndian32(std::ofstream& stream, uint32_t value)
+{
+    std::array<unsigned char, 4> bytes{};
+    for (size_t index = 0; index < bytes.size(); ++index)
+    {
+        bytes[index] = static_cast<unsigned char>((value >> (index * 8)) & 0xffu);
+    }
+    stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+void writeLittleEndian64(std::ofstream& stream, uint64_t value)
+{
+    std::array<unsigned char, 8> bytes{};
+    for (size_t index = 0; index < bytes.size(); ++index)
+    {
+        bytes[index] = static_cast<unsigned char>((value >> (index * 8)) & 0xffu);
+    }
+    stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+void writePackedBinaryContourFile(
+    const std::filesystem::path& output,
+    const PackedBinaryContourFrame& frame)
+{
+    std::ofstream stream(output, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!stream.is_open())
+    {
+        throw std::runtime_error("Failed to open binary contour file: " + output.string());
+    }
+
+    constexpr std::array<char, 8> magic{'B', '8', 'X', '8', 'C', 'N', 'T', '\0'};
+    constexpr uint32_t version = 1;
+    constexpr uint32_t headerBytes = 88;
+    stream.write(magic.data(), static_cast<std::streamsize>(magic.size()));
+    writeLittleEndian32(stream, version);
+    writeLittleEndian32(stream, headerBytes);
+    writeLittleEndian64(stream, frame.frameId);
+    writeLittleEndian64(stream, frame.contourId);
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.sourceSize.width));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.sourceSize.height));
+    writeLittleEndian32(stream, static_cast<uint32_t>(static_cast<int32_t>(frame.sourceBbox.x)));
+    writeLittleEndian32(stream, static_cast<uint32_t>(static_cast<int32_t>(frame.sourceBbox.y)));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.sourceBbox.width));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.sourceBbox.height));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.centeredMask.cols));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.centeredMask.rows));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.centeredMask.cols / 8));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.centeredMask.rows / 8));
+    writeLittleEndian32(stream, static_cast<uint32_t>(frame.blocks.size()));
+    writeLittleEndian64(stream, frame.foregroundPixels);
+    writeLittleEndian32(stream, 1u); // bit 0: contour is centered in its padded canvas.
+    for (const uint64_t block : frame.blocks)
+    {
+        writeLittleEndian64(stream, block);
+    }
+    if (!stream.good())
+    {
+        throw std::runtime_error("Failed to write binary contour file: " + output.string());
+    }
+}
+
+class BinaryContourStabilityWriter
+{
+public:
+    explicit BinaryContourStabilityWriter(const BinaryContourStabilityConfig& config)
+        : config_(config)
+    {
+        if (config_.enabled)
+        {
+            open();
+        }
+    }
+
+    ~BinaryContourStabilityWriter()
+    {
+        close();
+    }
+
+    void write(
+        uint64_t frameId,
+        const std::vector<ObservationMaterial>& stableMaterials,
+        const cv::Size& sourceSize,
+        const cv::Mat& confirmedHoleMask)
+    {
+        if (!config_.enabled || frameId < static_cast<uint64_t>(config_.warmupFrames))
+        {
+            return;
+        }
+        const uint64_t sampleIndex = frameId - static_cast<uint64_t>(config_.warmupFrames);
+        if (sampleIndex % static_cast<uint64_t>(config_.saveEveryN) != 0)
+        {
+            return;
+        }
+
+        uint64_t frameForegroundPixels = 0;
+        uint64_t frameBlockCount = 0;
+        int savedContourCount = 0;
+        for (const ObservationMaterial& material : stableMaterials)
+        {
+            if (material.contour.size() < 3)
+            {
+                continue;
+            }
+            cv::Mat contourMask = cv::Mat::zeros(sourceSize, CV_8UC1);
+            const std::vector<std::vector<cv::Point>> contours{material.contour};
+            cv::drawContours(contourMask, contours, 0, cv::Scalar(255), cv::FILLED, cv::LINE_8);
+            if (!confirmedHoleMask.empty() && confirmedHoleMask.size() == contourMask.size())
+            {
+                contourMask.setTo(0, confirmedHoleMask);
+            }
+
+            PackedBinaryContourFrame frame = packCenteredBinaryContour(
+                frameId,
+                material.observationId,
+                contourMask);
+            if (frame.contentMask.empty())
+            {
+                continue;
+            }
+
+            std::ostringstream name;
+            name << "frame_" << std::setw(6) << std::setfill('0') << frameId
+                << "_contour_" << std::setw(6) << material.observationId << ".b8x8";
+            const std::filesystem::path filePath = framesDir_ / name.str();
+            writePackedBinaryContourFile(filePath, frame);
+
+            BinaryContourComparison previousComparison;
+            uint64_t previousFrameId = 0;
+            const auto previousIt = previousById_.find(material.observationId);
+            const bool hasPreviousComparison = previousIt != previousById_.end();
+            if (hasPreviousComparison)
+            {
+                previousComparison = compareCenteredBinaryContours(previousIt->second, frame);
+                previousFrameId = previousIt->second.frameId;
+            }
+            auto referenceIt = referenceById_.find(material.observationId);
+            if (referenceIt == referenceById_.end())
+            {
+                referenceIt = referenceById_.emplace(material.observationId, frame).first;
+            }
+            const BinaryContourComparison referenceComparison =
+                compareCenteredBinaryContours(referenceIt->second, frame);
+
+            csv_ << frameId << ',' << material.observationId << ','
+                << frame.sourceSize.width << ',' << frame.sourceSize.height << ','
+                << frame.sourceBbox.x << ',' << frame.sourceBbox.y << ','
+                << frame.sourceBbox.width << ',' << frame.sourceBbox.height << ','
+                << frame.centeredMask.cols << ',' << frame.centeredMask.rows << ','
+                << frame.centeredMask.cols / 8 << ',' << frame.centeredMask.rows / 8 << ','
+                << frame.blocks.size() << ',' << frame.foregroundPixels << ','
+                << "frames/" << name.str() << ','
+                << (hasPreviousComparison ? previousFrameId : 0) << ','
+                << (hasPreviousComparison ? frameId - previousFrameId : 0) << ',';
+            writeComparison(hasPreviousComparison, previousComparison);
+            csv_ << ',' << referenceIt->second.frameId << ',';
+            writeComparison(true, referenceComparison);
+            csv_ << '\n';
+
+            previousById_[material.observationId] = std::move(frame);
+            frameForegroundPixels += previousById_[material.observationId].foregroundPixels;
+            frameBlockCount += previousById_[material.observationId].blocks.size();
+            ++savedContourCount;
+            ++savedContours_;
+        }
+        frameCsv_ << frameId << ',' << savedContourCount << ','
+            << frameForegroundPixels << ',' << frameBlockCount << '\n';
+        ++savedFrames_;
+    }
+
+    void close()
+    {
+        if (csv_.is_open())
+        {
+            csv_.close();
+            frameCsv_.close();
+            std::cout << "Binary contour stability saved: " << outputDir_.string()
+                << " frames=" << savedFrames_
+                << " contours=" << savedContours_ << '\n';
+        }
+    }
+
+private:
+    void open()
+    {
+        outputDir_ = resolveProjectOutputPath(std::filesystem::path(config_.outputDir), "");
+        framesDir_ = outputDir_ / "frames";
+        if (std::filesystem::exists(framesDir_))
+        {
+            for (const std::filesystem::directory_entry& entry :
+                std::filesystem::directory_iterator(framesDir_))
+            {
+                if (entry.is_regular_file() && entry.path().extension() == ".b8x8")
+                {
+                    throw std::runtime_error(
+                        "Binary contour output already contains .b8x8 files; use a new output directory: " +
+                        outputDir_.string());
+                }
+            }
+        }
+        std::filesystem::create_directories(framesDir_);
+        const std::filesystem::path csvPath = outputDir_ / "binary_contour_similarity.csv";
+        csv_.open(csvPath, std::ios::out | std::ios::trunc);
+        if (!csv_.is_open())
+        {
+            throw std::runtime_error("Failed to open binary contour CSV file: " + csvPath.string());
+        }
+        const std::filesystem::path frameCsvPath = outputDir_ / "binary_contour_frames.csv";
+        frameCsv_.open(frameCsvPath, std::ios::out | std::ios::trunc);
+        if (!frameCsv_.is_open())
+        {
+            throw std::runtime_error("Failed to open binary contour frame CSV file: " + frameCsvPath.string());
+        }
+        csv_
+            << "frame_id,contour_id,source_width,source_height,bbox_x,bbox_y,bbox_width,bbox_height,"
+            << "canvas_width,canvas_height,blocks_x,blocks_y,block_count,foreground_pixels,packed_file,"
+            << "previous_frame_id,previous_gap_frames,"
+            << "previous_available,previous_compare_pixels,previous_changed_pixels,"
+            << "previous_similarity_percent,previous_intersection_pixels,previous_union_pixels,previous_iou_percent,"
+            << "reference_frame_id,"
+            << "reference_available,reference_compare_pixels,reference_changed_pixels,"
+            << "reference_similarity_percent,reference_intersection_pixels,reference_union_pixels,reference_iou_percent\n";
+        frameCsv_ << "frame_id,contour_count,total_foreground_pixels,total_block_count\n";
+        std::cout << "Binary contour stability enabled: " << outputDir_.string()
+            << " warmup=" << config_.warmupFrames
+            << " every=" << config_.saveEveryN << '\n';
+    }
+
+    void writeComparison(bool available, const BinaryContourComparison& comparison)
+    {
+        csv_ << (available ? 1 : 0);
+        if (!available)
+        {
+            csv_ << ",,,,,,";
+            return;
+        }
+        csv_ << ',' << comparison.comparePixels
+            << ',' << comparison.changedPixels
+            << ',' << std::fixed << std::setprecision(6) << comparison.similarityPercent
+            << ',' << comparison.intersectionPixels
+            << ',' << comparison.unionPixels
+            << ',' << comparison.iouPercent;
+    }
+
+    BinaryContourStabilityConfig config_;
+    std::filesystem::path outputDir_;
+    std::filesystem::path framesDir_;
+    std::ofstream csv_;
+    std::ofstream frameCsv_;
+    std::map<uint64_t, PackedBinaryContourFrame> previousById_;
+    std::map<uint64_t, PackedBinaryContourFrame> referenceById_;
+    uint64_t savedFrames_ = 0;
+    uint64_t savedContours_ = 0;
+};
+
 std::string companionCsvPathForVideo(const std::string& videoPath)
 {
     std::filesystem::path output = resolveProjectOutputPath(videoPath, ".avi");
@@ -13198,6 +13637,11 @@ void printUsage()
         << "  --acceptance-csv=recordings\\acceptance_baseline.csv\n"
         << "  --profile-csv\n"
         << "  --profile-csv=recordings\\profile.csv\n"
+        << "  --binary-contour-stability\n"
+        << "  --no-binary-contour-stability\n"
+        << "  --binary-contour-output=analysis_runs\\binary_contour_stability\n"
+        << "  --binary-contour-warmup-frames=30\n"
+        << "  --binary-contour-save-every-n=1\n"
         << "  --pose-read\n"
         << "  --no-pose-read\n"
         << "  --pose-overlay\n"
@@ -13531,6 +13975,8 @@ int runReplayDirectory(
         << " analysis_export_every_n=" << config.analysisExportEveryN << '\n';
 
     ProfileCsvWriter profileCsv(parseProfileCsvConfig(argc, argv));
+    BinaryContourStabilityWriter binaryContourStability(
+        parseBinaryContourStabilityConfig(argc, argv));
     SegmentationTracker tracker;
     ExistenceContourHoleFilter existenceHoleFilter;
     std::vector<ObservationMaterial> pclCandidateCache;
@@ -14024,6 +14470,13 @@ int runReplayDirectory(
             frameId);
         timingStats.diagnosticsMs += takeSectionMs();
 
+        binaryContourStability.write(
+            frameId,
+            stableMaterials,
+            colorBgr.size(),
+            existenceHoleResult.confirmedHoleMask);
+        timingStats.diagnosticsMs += takeSectionMs();
+
         if (config.qualitySegmentation)
         {
             lastFinalSegmentationFrame = buildFinalSegmentationFrame(
@@ -14168,6 +14621,7 @@ int runReplayDirectory(
     }
 
     profileCsv.close();
+    binaryContourStability.close();
     if (config.clusterMap && hasLastClusterMapFrame)
     {
         writeClusterMapExport(lastClusterMapFrame, lastClusterMapColor, config);
@@ -14608,6 +15062,8 @@ int main(int argc, char** argv)
         }
         AcceptanceMetricsWriter acceptanceMetrics(acceptanceConfig, poseConfig.enabled, motionConfig.enabled);
         ProfileCsvWriter profileCsv(profileCsvConfig);
+        BinaryContourStabilityWriter binaryContourStability(
+            parseBinaryContourStabilityConfig(argc, argv));
         PoseReader poseReader(poseConfig, poseAccelStreamEnabled, poseGyroStreamEnabled);
         MotionDiagnostics motionDiagnostics(motionConfig);
         ClusterMapFrame lastClusterMapFrame;
@@ -15137,6 +15593,13 @@ int main(int argc, char** argv)
                 frameId);
             timingStats.diagnosticsMs += takeSectionMs();
 
+            binaryContourStability.write(
+                frameId,
+                stableMaterials,
+                colorBgr.size(),
+                existenceHoleResult.confirmedHoleMask);
+            timingStats.diagnosticsMs += takeSectionMs();
+
             if (config.qualitySegmentation)
             {
                 lastFinalSegmentationFrame = buildFinalSegmentationFrame(
@@ -15533,6 +15996,7 @@ int main(int argc, char** argv)
 
         acceptanceMetrics.close();
         profileCsv.close();
+        binaryContourStability.close();
         if (config.clusterMap && hasLastClusterMapFrame)
         {
             writeClusterMapExport(lastClusterMapFrame, lastClusterMapColor, config);

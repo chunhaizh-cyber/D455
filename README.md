@@ -50,6 +50,10 @@
 
 第三阶段使用曝光30000重新采集600帧，完成逐像素空间噪声、多帧收敛和孔洞连续长度测试，结果见 `资料/D455深度空间噪声与多帧收敛测试报告_v0.1.md`。有效深度现在明确排除 `0` 和毫米转换饱和值 `65535`。当前场景中，持续有效内部像素的简单平均将p95重复性误差从单帧约40.25mm降到3帧约24.42mm、5帧约20.30mm、32帧约13.09mm；但边缘跳变候选即使32帧处理后p95仍超过160mm，禁止直接平均。三帧历史保持可覆盖约75.17%的已恢复孔洞事件，只能维持归属连续性，不能升级为当前帧精确深度。
 
+主分割链新增默认关闭的 `--binary-contour-stability` 诊断，用于测试静止场景中最终稳定 ownership 轮廓的连续帧形状差异。程序按稳定 `observation_id` 分离轮廓，每个轮廓先裁到最小包围框，再放到最小 8 倍数宽高的矩形画布中央；每个 `8x8` 块无损压成一个 little-endian `uint64_t`，同时保存原图尺寸、原始包围框位置和 contour ID。在线 CSV 和离线脚本只在同一 ID 内计算相邻帧/首参考帧的 Hamming 一致率、前景 IoU 和变化像素数，并单独记录每帧轮廓数；形状判断优先看前景 IoU，不能用大量黑背景造成的高 Hamming 一致率单独宣布稳定。格式、参数和复核命令见 `docs/BINARY_CONTOUR_STABILITY.md`。
+
+首轮使用 `static_stability_locked_001` 前120帧、忽略前30帧完成正式回放：90个采样帧生成1059个压缩轮廓，C++与Python逐位复核通过，载荷相对居中8-bit二值图固定压缩为8:1。同一回放重复执行两次后1059/1059个文件SHA-256完全相同，证明固定输入下处理确定；但连续输入的同ID相邻前景IoU只有p50=88.6134%、min=4.0848%，长期主轮廓ID 1的p50=98.5753%，小碎片和ID 12则明显不稳定。完整结果、track接替证据和下一步因果定位见 `资料/D455二值轮廓居中压缩与静态相似度测试报告_v0.1.md`。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
