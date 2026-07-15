@@ -9228,6 +9228,8 @@ struct BinaryContourComparison
     uint64_t unionPixels = 0;
     double similarityPercent = 0.0;
     double iouPercent = 0.0;
+    double centerShiftPixels = 0.0;
+    double positionSimilarityPercent = 0.0;
 };
 
 int roundUpToEight(int value)
@@ -9337,6 +9339,19 @@ BinaryContourComparison compareCenteredBinaryContours(
         ? 100.0 * static_cast<double>(comparison.intersectionPixels) /
             static_cast<double>(comparison.unionPixels)
         : 100.0;
+    const cv::Point2d firstCenter(
+        first.sourceBbox.x + (first.sourceBbox.width - 1) * 0.5,
+        first.sourceBbox.y + (first.sourceBbox.height - 1) * 0.5);
+    const cv::Point2d secondCenter(
+        second.sourceBbox.x + (second.sourceBbox.width - 1) * 0.5,
+        second.sourceBbox.y + (second.sourceBbox.height - 1) * 0.5);
+    comparison.centerShiftPixels = cv::norm(firstCenter - secondCenter);
+    const double sourceDiagonal = std::hypot(
+        static_cast<double>(std::max(first.sourceSize.width, second.sourceSize.width)),
+        static_cast<double>(std::max(first.sourceSize.height, second.sourceSize.height)));
+    comparison.positionSimilarityPercent = sourceDiagonal > 0.0
+        ? 100.0 * std::clamp(1.0 - comparison.centerShiftPixels / sourceDiagonal, 0.0, 1.0)
+        : 0.0;
     return comparison;
 }
 
@@ -9483,6 +9498,25 @@ public:
             const BinaryContourComparison referenceComparison =
                 compareCenteredBinaryContours(referenceIt->second, frame);
 
+            const double sourcePixels =
+                static_cast<double>(std::max(1, frame.sourceSize.area()));
+            const double bboxAreaPercent =
+                100.0 * static_cast<double>(frame.sourceBbox.area()) / sourcePixels;
+            const double foregroundAreaPercent =
+                100.0 * static_cast<double>(frame.foregroundPixels) / sourcePixels;
+            const cv::Point2d frameCenter(
+                (frame.sourceSize.width - 1) * 0.5,
+                (frame.sourceSize.height - 1) * 0.5);
+            const cv::Point2d contourCenter(
+                frame.sourceBbox.x + (frame.sourceBbox.width - 1) * 0.5,
+                frame.sourceBbox.y + (frame.sourceBbox.height - 1) * 0.5);
+            const double halfDiagonal = 0.5 * std::hypot(
+                static_cast<double>(frame.sourceSize.width),
+                static_cast<double>(frame.sourceSize.height));
+            const double centerRadiusPercent = halfDiagonal > 0.0
+                ? 100.0 * cv::norm(contourCenter - frameCenter) / halfDiagonal
+                : 0.0;
+
             csv_ << frameId << ',' << material.observationId << ','
                 << frame.sourceSize.width << ',' << frame.sourceSize.height << ','
                 << frame.sourceBbox.x << ',' << frame.sourceBbox.y << ','
@@ -9490,6 +9524,11 @@ public:
                 << frame.centeredMask.cols << ',' << frame.centeredMask.rows << ','
                 << frame.centeredMask.cols / 8 << ',' << frame.centeredMask.rows / 8 << ','
                 << frame.blocks.size() << ',' << frame.foregroundPixels << ','
+                << std::fixed << std::setprecision(6)
+                << bboxAreaPercent << ',' << foregroundAreaPercent << ','
+                << material.meanDepthMm << ','
+                << material.observedDepthMinMm << ',' << material.observedDepthMaxMm << ','
+                << centerRadiusPercent << ','
                 << "frames/" << name.str() << ','
                 << (hasPreviousComparison ? previousFrameId : 0) << ','
                 << (hasPreviousComparison ? frameId - previousFrameId : 0) << ',';
@@ -9554,13 +9593,18 @@ private:
         }
         csv_
             << "frame_id,contour_id,source_width,source_height,bbox_x,bbox_y,bbox_width,bbox_height,"
-            << "canvas_width,canvas_height,blocks_x,blocks_y,block_count,foreground_pixels,packed_file,"
+            << "canvas_width,canvas_height,blocks_x,blocks_y,block_count,foreground_pixels,"
+            << "bbox_area_percent,foreground_area_percent,mean_depth_mm,"
+            << "observed_depth_min_mm,observed_depth_max_mm,center_radius_percent,"
+            << "packed_file,"
             << "previous_frame_id,previous_gap_frames,"
             << "previous_available,previous_compare_pixels,previous_changed_pixels,"
             << "previous_similarity_percent,previous_intersection_pixels,previous_union_pixels,previous_iou_percent,"
+            << "previous_center_shift_pixels,previous_position_similarity_percent,"
             << "reference_frame_id,"
             << "reference_available,reference_compare_pixels,reference_changed_pixels,"
-            << "reference_similarity_percent,reference_intersection_pixels,reference_union_pixels,reference_iou_percent\n";
+            << "reference_similarity_percent,reference_intersection_pixels,reference_union_pixels,reference_iou_percent,"
+            << "reference_center_shift_pixels,reference_position_similarity_percent\n";
         frameCsv_ << "frame_id,contour_count,total_foreground_pixels,total_block_count\n";
         std::cout << "Binary contour stability enabled: " << outputDir_.string()
             << " warmup=" << config_.warmupFrames
@@ -9572,7 +9616,7 @@ private:
         csv_ << (available ? 1 : 0);
         if (!available)
         {
-            csv_ << ",,,,,,";
+            csv_ << ",,,,,,,,";
             return;
         }
         csv_ << ',' << comparison.comparePixels
@@ -9580,7 +9624,9 @@ private:
             << ',' << std::fixed << std::setprecision(6) << comparison.similarityPercent
             << ',' << comparison.intersectionPixels
             << ',' << comparison.unionPixels
-            << ',' << comparison.iouPercent;
+            << ',' << comparison.iouPercent
+            << ',' << comparison.centerShiftPixels
+            << ',' << comparison.positionSimilarityPercent;
     }
 
     BinaryContourStabilityConfig config_;

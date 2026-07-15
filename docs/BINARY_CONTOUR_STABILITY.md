@@ -2,7 +2,9 @@
 
 ## 目标
 
-本诊断用于测量同一静止场景连续经过主分割、稳定跟踪和存在内部穿孔过滤后，最终轮廓形状是否变化。输入直接使用 `ExistenceContourHoleResult.ownershipMask`，不重新运行一套独立边缘算法。
+本诊断用于测量同一静止场景连续经过主分割、稳定跟踪和存在内部穿孔过滤后，同一存在的最终轮廓形状和位置是否变化。输入直接使用 `ExistenceContourHoleResult.ownershipMask`，不重新运行一套独立边缘算法。
+
+当前硬目标为：同一 `observation_id` 且 `previous_gap_frames == 1` 的连续帧对，居中轮廓前景 IoU 和位置相似度必须分别严格大于 `99%`。两项不能互相补偿；任一连续帧对未同时过线，整体目标即为 `fail`。
 
 该输出仍是观察候选材料，不是已确认现实存在或世界事实。
 
@@ -48,8 +50,21 @@ payload:uint64[block_count]
 - `iou_percent`：前景交并比；
 - `changed_pixels`：异或后的变化像素数；
 - `foreground_pixels`：当前帧前景像素数。
+- `center_shift_pixels`：两个原始 bbox 中心的欧氏位移；
+- `position_similarity_percent`：`100 * (1 - center_shift_pixels / source_diagonal)`，下限截到 0。
 
 Hamming 一致率包含黑色背景，轮廓较稀疏时可能偏高；判断形状稳定性应优先看前景 IoU，并结合变化像素数和包围框尺寸。
+
+640x480 画面对角线为 800px，因此位置相似度严格 `>99%` 等价于 bbox 中心位移严格 `<8px`；位移刚好 8px 时等于 99%，仍判失败。
+
+每个轮廓还写出：
+
+- `bbox_area_percent`：bbox 面积占原画面的比例；
+- `foreground_area_percent`：二值前景像素占原画面的比例；
+- `mean_depth_mm / observed_depth_min_mm / observed_depth_max_mm`：当前稳定材料的深度摘要；
+- `center_radius_percent`：bbox 中心到画面中心的距离，占画面半对角线的比例。
+
+离线分析只对连续帧对执行 99% 门禁，并按当前帧特征分桶：面积 `<1% / 1%-5% / >=5%`，距离 `<=1500mm / 1500-2500mm / >2500mm / unknown`，中心径向位置 `<=33% / 33%-66% / >66%`。同时输出 `log10(foreground_pixels)`、有效 `mean_depth_mm`、`center_radius_percent` 与轮廓/位置相似度的 Pearson 和 Spearman 系数。分桶和相关性是固定回放内的描述，不证明因果。
 
 ## 运行
 
@@ -60,13 +75,15 @@ Hamming 一致率包含黑色背景，轮廓较稀疏时可能偏高；判断形
   --no-display `
   --existence-contour-hole-filter `
   --binary-contour-stability `
-  --binary-contour-output=analysis_runs\binary_contour_static_locked_001 `
+  --binary-contour-output=analysis_runs\binary_contour_static_99_relation_001 `
   --binary-contour-warmup-frames=30 `
   --binary-contour-save-every-n=1
 
 python .\scripts\analyze_binary_contour_stability.py `
-  --input-dir=analysis_runs\binary_contour_static_locked_001
+  --input-dir=analysis_runs\binary_contour_static_99_relation_001
 ```
+
+需要把 99% 目标失败转换成非零进程退出码时，增加 `--require-target-pass`。文件/指标复核失败返回 1；复核通过但 99% 目标失败返回 2。
 
 主程序按 `frame_id + contour_id` 生成 `.b8x8`、轮廓级 `binary_contour_similarity.csv` 和帧级 `binary_contour_frames.csv`。离线脚本只在同一稳定 `contour_id` 内比较，并重新解析压缩位独立计算相似度，生成：
 
@@ -76,7 +93,7 @@ binary_contour_stability_summary.json
 binary_contour_stability_report.md
 ```
 
-只有离线重算与 C++ CSV 一致、文件格式全部通过校验时，`validation_status` 才为 `pass`。本轮只描述静态差异分布，不预设“轮廓稳定合格”阈值。
+只有离线重算与 C++ CSV 一致、文件格式全部通过校验时，`validation_status` 才为 `pass`。该状态只说明测量链可信，不说明稳定目标达成；目标结论单独记录在 `continuous_frame_target.status`。
 
 ## 开关
 
