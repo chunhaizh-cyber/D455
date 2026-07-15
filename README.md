@@ -54,6 +54,8 @@
 
 首轮使用 `static_stability_locked_001` 前120帧、忽略前30帧完成正式回放：90个采样帧生成1059个压缩轮廓，C++与Python逐位复核通过，载荷相对居中8-bit二值图固定压缩为8:1。同一回放重复执行后1059/1059个文件SHA-256完全相同，证明固定输入下处理确定。严格 99% 目标复核共有1044个同ID连续帧对：轮廓IoU `>99%` 为13.1226%，位置相似度 `>99%` 为85.9195%，两项同时通过为13.1226%，因此当前目标明确失败，主要瓶颈是形状而不是位置。画面越靠边时位置通过率从中心桶95.13%降至最外桶75.57%；面积和距离关系受同一track重复采样及小碎片双峰分布影响，只能作为本场景描述，不能外推为因果规律。完整目标、分桶、相关系数和限制见 `资料/D455静止存在轮廓位置99目标与影响关系测试报告_v0.2.md`。
 
+2026-07-15 新增离线 `scripts/analyze_hierarchical_filled_contour_stability.py`，用于验证“闭合外轮廓内部全部填充 + 正方形分级压缩”口径。脚本读取现有 `.b8x8`，先把所有未连接外部的内部黑洞填为前景，再把轮廓居中到能容纳全部样本的2次幂正方形；本轮主轮廓为512x512，按2x2面积池化依次生成256、128、64、32、16、8级。每级同时比较50%占用阈值后的按位二值IoU和0-255占用相似度，并统计精确重复值。两段锁定静态回放共1140帧中，512/256/128级仍各有1140种二值值，64级首次重复，32级为320种，16级为32种，8级仅2种且1138个重复帧；8级相邻精确重复率99.4728%，但0-255占用值仍为1140种，说明二值粗压缩获得稳定离散值的同时丢失了持续面积差异。该能力只用于外剪影稳定性/快速扫描实验，不得据此删除真实背景穿孔；完整协议和运行命令见 `docs/HIERARCHICAL_FILLED_CONTOUR_STABILITY.md`。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
