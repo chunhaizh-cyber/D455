@@ -62,6 +62,8 @@
 
 上述全轮廓稳定性、跨 ID 碰撞、时间切分识别、跨回放识别、门禁判定和后续真值/未知拒绝测试路线，已汇总为 `资料/D455全轮廓分级压缩与存在区分测试报告_v0.1.md`。
 
+随后新增 `scripts/analyze_32_contour_similarity.py`，直接比较32x32轮廓的同 ID 正样本和同帧不同 ID 负样本，并执行0.1%步进阈值扫描。两段长期 track 合并后，正样本 IoU p05/p50 为63.6408%/91.3793%，负样本 p50/p95 为14.5754%/62.6506%，AUC为0.989862；最佳平衡阈值约64.7%，TPR 94.6983%、FPR 3.4942%，将 FPR 压到1%以内需约71.5%，此时TPR为90.4218%。由于同 ID 突变和 `9/10`、`8/9` 等不同 ID 高相似样本仍有重叠，当前只把 `>=72%` 视为强形状候选、`65%-72%` 视为待联合复核区，低于65%也不能单独断开身份。完整结果追加在 `docs/COMPRESSED_CONTOUR_DISCRIMINATION.md` 和正式测试报告中。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
