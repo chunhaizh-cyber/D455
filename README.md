@@ -60,6 +60,8 @@
 
 同日新增 `scripts/analyze_compressed_contour_discrimination.py`，验证压缩轮廓能否区分不同存在候选。完整8/16/32级按位特征包保存在本地 `analysis_runs/compressed_contour_discrimination_001/compressed_binary_features.npz`，可用 `--reuse-feature-cache` 直接重算；仓库仅保存 `docs/codex_analysis/compressed_contour_discrimination_001/` 下的聚合证据。两段中8级无跨 ID 歧义帧仅63.8456%/65.4423%，单值最多被8/15个 ID 共用；16级无歧义帧为91.8244%/93.0823%；32级在13139条样本中没有跨 ID 精确碰撞。对两段均长期持续的8个 ID，32级双向跨段唯一识别率为99.6930%/99.1886%，但包含接替 track 的段内识别仍只有84.2839%/88.8778%。因此当前默认解释为：8级负责快速扫描，16级负责粗筛，32级提供长期存在的形状身份候选；最终存在归属仍必须结合位置、尺寸、深度、运动和历史，不能只凭压缩轮廓裁决。协议、数据边界和复现命令见 `docs/COMPRESSED_CONTOUR_DISCRIMINATION.md`。
 
+上述全轮廓稳定性、跨 ID 碰撞、时间切分识别、跨回放识别、门禁判定和后续真值/未知拒绝测试路线，已汇总为 `资料/D455全轮廓分级压缩与存在区分测试报告_v0.1.md`。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
