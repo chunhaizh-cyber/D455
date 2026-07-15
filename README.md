@@ -64,6 +64,8 @@
 
 随后新增 `scripts/analyze_32_contour_similarity.py`，直接比较32x32轮廓的同 ID 正样本和同帧不同 ID 负样本，并执行0.1%步进阈值扫描。两段长期 track 合并后，正样本 IoU p05/p50 为63.6408%/91.3793%，负样本 p50/p95 为14.5754%/62.6506%，AUC为0.989862；最佳平衡阈值约64.7%，TPR 94.6983%、FPR 3.4942%，将 FPR 压到1%以内需约71.5%，此时TPR为90.4218%。由于同 ID 突变和 `9/10`、`8/9` 等不同 ID 高相似样本仍有重叠，当前只把 `>=72%` 视为强形状候选、`65%-72%` 视为待联合复核区，低于65%也不能单独断开身份。完整结果追加在 `docs/COMPRESSED_CONTOUR_DISCRIMINATION.md` 和正式测试报告中。
 
+精确值字典路线进一步汇总在 `资料/D455_32x32轮廓精确值检索与多帧存在确认分析报告_v0.1.md`。第一段 ID 1 的570帧有170种32x32值，而第一段和第二段 ID 5 分别有558种和559种；ID 5末尾50/100/200帧新增值率仍为96%-98%，说明570帧不足以覆盖其值空间，但也已经证明不同track的精确复现能力差异明显。有限封闭场景中，经过跨存在排他验证的唯一值可用哈希表作最快第一层，并通过 `3/5`、`5/8` 多帧一致命中确认；精确未命中时再做8/16级粗筛和32级IoU。该结论只适用于固定场景、固定特征版本和已审核存在集合，不把数字 `contour_id` 或当前数据库唯一升级为现实世界全局身份。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001
