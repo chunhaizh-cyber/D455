@@ -56,6 +56,10 @@
 
 2026-07-15 新增离线 `scripts/analyze_hierarchical_filled_contour_stability.py`，用于验证“闭合外轮廓内部全部填充 + 正方形分级压缩”口径。脚本读取现有 `.b8x8`，先把所有未连接外部的内部黑洞填为前景，再把轮廓居中到能容纳全部样本的2次幂正方形；本轮主轮廓为512x512，按2x2面积池化依次生成256、128、64、32、16、8级。每级同时比较50%占用阈值后的按位二值IoU和0-255占用相似度，并统计精确重复值。两段锁定静态回放共1140帧中，512/256/128级仍各有1140种二值值，64级首次重复，32级为320种，16级为32种，8级仅2种且1138个重复帧；8级相邻精确重复率99.4728%，但0-255占用值仍为1140种，说明二值粗压缩获得稳定离散值的同时丢失了持续面积差异。该能力只用于外剪影稳定性/快速扫描实验，不得据此删除真实背景穿孔；完整协议和运行命令见 `docs/HIERARCHICAL_FILLED_CONTOUR_STABILITY.md`。
 
+同日新增 `scripts/analyze_all_hierarchical_filled_contours.py`，把两段静态回放中的全部轮廓纳入同一分级协议。脚本按“两段长期持续 / 单段长期持续 / 中短期或接替轮廓”分桶，只比较段内同 ID 且 `previous_gap_frames=1` 的帧对，并按每个轮廓自己的基础正方形处理；重复值以 `(contour_id, digest)` 计数，避免把不同存在的相同粗位图合并。53个 ID、72个 track、13139条轮廓帧记录的测试中，全部轮廓8级相邻精确重复率为67.2381%，两段长期持续组为76.0545%，明显低于主轮廓 ID 1 的99.4728%；ID 5和9即使长期持续也只有38.6643%和34.7979%。因此8级只能用于快速候选扫描，不能作为所有静态轮廓99%稳定的通用事实；需要用16/32级或原始轮廓复核。逐 track 输出同时记录面积、距离和画面中心位置，本次混合场景未显示可推广的单变量单调规律；建立自适应阈值前需要控制变量数据。完整结果和边界仍见 `docs/HIERARCHICAL_FILLED_CONTOUR_STABILITY.md`。
+
+同日新增 `scripts/analyze_compressed_contour_discrimination.py`，验证压缩轮廓能否区分不同存在候选。完整8/16/32级按位特征包保存在本地 `analysis_runs/compressed_contour_discrimination_001/compressed_binary_features.npz`，可用 `--reuse-feature-cache` 直接重算；仓库仅保存 `docs/codex_analysis/compressed_contour_discrimination_001/` 下的聚合证据。两段中8级无跨 ID 歧义帧仅63.8456%/65.4423%，单值最多被8/15个 ID 共用；16级无歧义帧为91.8244%/93.0823%；32级在13139条样本中没有跨 ID 精确碰撞。对两段均长期持续的8个 ID，32级双向跨段唯一识别率为99.6930%/99.1886%，但包含接替 track 的段内识别仍只有84.2839%/88.8778%。因此当前默认解释为：8级负责快速扫描，16级负责粗筛，32级提供长期存在的形状身份候选；最终存在归属仍必须结合位置、尺寸、深度、运动和历史，不能只凭压缩轮廓裁决。协议、数据边界和复现命令见 `docs/COMPRESSED_CONTOUR_DISCRIMINATION.md`。
+
 ```powershell
 msbuild .\StaticStabilityProbe\StaticStabilityProbe.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 .\x64\Release\StaticStabilityProbe.exe --replay-dir=datasets\near_single_object --repeat-frame=0 --repeat-count=100 --out-dir=analysis_runs\static_stability_repeat_001

@@ -1,0 +1,7 @@
+scope,run,side,frame_count,contour_count,unique_value_count,cross_id_collision_value_count,cross_id_collision_frame_count,cross_id_collision_frame_percent,unambiguous_frame_percent,max_contour_ids_per_value
+within_run,binary_contour_static_long_repeat_001,8,6605,32,167,33,2388,36.15442846328539,63.84557153671461,8
+within_run,binary_contour_static_long_repeat_recheck_001,8,6534,40,186,30,2258,34.55769819406183,65.44230180593817,15
+within_run,binary_contour_static_long_repeat_001,16,6605,32,997,59,540,8.17562452687358,91.82437547312642,5
+within_run,binary_contour_static_long_repeat_recheck_001,16,6534,40,1023,65,452,6.9176614631160085,93.082338536884,6
+within_run,binary_contour_static_long_repeat_001,32,6605,32,3954,0,0,0.0,100.0,1
+within_run,binary_contour_static_long_repeat_recheck_001,32,6534,40,4053,0,0,0.0,100.0,1

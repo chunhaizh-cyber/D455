@@ -1,0 +1,148 @@
+# 压缩轮廓区分存在能力测试
+
+## 测试问题
+
+本测试回答两个不同问题：
+
+1. 同一个静态轮廓连续帧压缩后是否稳定。
+2. 不同轮廓压缩后是否仍能互相区分。
+
+稳定不等于可区分。多个轮廓都稳定地压成同一个8x8值时，该值适合变化扫描，但不能承担身份判断。
+
+本测试中的 `contour_id` 是观察 track 身份，不是已经裁决的现实存在身份。压缩轮廓只能生成“形状身份候选证据”；最终存在归属仍需结合位置、尺寸、深度、时间连续性和遮挡/重现关系。
+
+## 数据存储
+
+完整本地特征包保存在：
+
+```text
+analysis_runs/compressed_contour_discrimination_001/
+  compressed_binary_features.npz
+  compressed_feature_index.csv
+  compressed_collision_metrics.csv
+  compressed_identification_metrics.csv
+  compressed_confusion.csv
+  compressed_discrimination_summary.json
+  compressed_discrimination_report.md
+```
+
+`compressed_binary_features.npz` 保存13139条轮廓帧的8、16、32级按位特征，以及对应回放、帧号、轮廓 ID 和基础画布边长。后续改变识别规则时可用 `--reuse-feature-cache` 直接重算，无需再次解码原始 `.b8x8`。
+
+仓库只保存不含逐帧真实材料的最小聚合证据：
+
+```text
+docs/codex_analysis/compressed_contour_discrimination_001/
+```
+
+该目录包括全轮廓分级汇总、逐轮廓统计、碰撞指标、识别指标和两份报告。原始录制、逐帧索引、压缩特征包和混淆明细不进入云端提交。
+
+## 特征口径
+
+每条轮廓帧执行：
+
+```text
+闭合外轮廓内部全填充
+→ 按同一轮廓ID的最大尺寸选择2次幂基础正方形
+→ 居中放置
+→ 2x2面积池化
+→ 8 / 16 / 32级按50%占用阈值二值化
+→ 行优先按位压缩
+```
+
+识别输入不包含原画面 bbox 坐标。基础正方形分档会保留有限的相对尺寸信息，但不会直接用“物体在画面左边还是右边”取巧。
+
+## 两层测试
+
+### 精确值碰撞
+
+在同一回放段内，若完全相同的按位值被多个 `contour_id` 使用，则这些帧仅靠该压缩值无法区分。
+
+| 回放 | 边长 | ID数 | 跨ID碰撞值 | 无歧义帧 | 单值最多ID |
+|---|---:|---:|---:|---:|---:|
+| 第一段 | 8 | 32 | 33 | 63.8456% | 8 |
+| 第二段 | 8 | 40 | 30 | 65.4423% | 15 |
+| 第一段 | 16 | 32 | 59 | 91.8244% | 5 |
+| 第二段 | 16 | 40 | 65 | 93.0823% | 6 |
+| 第一段 | 32 | 32 | 0 | 100% | 1 |
+| 第二段 | 32 | 40 | 0 | 100% | 1 |
+
+8级碰撞严重，不能作为唯一形状身份。16级大幅减少歧义，但仍存在跨 ID 相同值。32级在本次13139条样本中没有跨 ID 精确碰撞。
+
+### 时间切分识别
+
+每个候选 ID 的前50%帧按逐位多数值生成模板；后50%帧与同一测试范围内所有模板计算二值 IoU。只有正确模板严格高于所有其他模板才算“唯一正确”，并列不算可区分。
+
+| 测试范围 | 边长 | 第一段唯一正确 | 第二段唯一正确 |
+|---|---:|---:|---:|
+| >=60帧的全部track | 8 | 79.0875% | 74.5588% |
+| >=60帧的全部track | 16 | 81.3054% | 87.0463% |
+| >=60帧的全部track | 32 | 84.2839% | 88.8778% |
+| 段覆盖>=90%的长期track | 8 | 97.3489% | 97.9727% |
+| 段覆盖>=90%的长期track | 16 | 97.4269% | 98.8304% |
+| 段覆盖>=90%的长期track | 32 | 98.8304% | 99.2593% |
+
+包含接替 ID 时，32级仍只有84.28%至88.88%。混淆主要集中在 `12→22/59`、`38→12/22`、`24→10/66`、`50→10/24` 等时间接替链。这些错误同时暴露了真值边界：tracker 换号可能把同一现实对象登记为多个观察 ID，不能把所有混淆都解释为轮廓特征失败。
+
+## 跨回放长期ID识别
+
+跨回放只使用两段均覆盖至少90%帧的 `1,2,3,4,5,6,7,9`。一段全部帧建立模板，另一段全部帧验收：
+
+| 边长 | 第一段训练→第二段 | 第二段训练→第一段 | margin p05 |
+|---:|---:|---:|---:|
+| 8 | 97.5877% | 87.0833% | 7.1429% / 0% |
+| 16 | 87.3684% | 87.1930% | -15.2778% / -1.4620% |
+| 32 | 99.6930% | 99.1886% | 7.2368% / 7.1711% |
+
+32级不仅没有精确碰撞，双向跨回放识别也超过99%，且最差5%样本的正确模板 margin 仍为正。它是当前最适合长期静态存在形状身份的压缩层级。
+
+16级并未在所有识别测试中单调优于8级，这是面积池化后50%二值阈值改变边界拓扑造成的量化混叠，不能假设分辨率越高，任意单一指标都必然单调改善。
+
+## 当前结论
+
+- 8x8：适合最快变化扫描；跨 ID 碰撞过多，不能单独区分存在。
+- 16x16：适合粗状态和二次筛选；仍有跨 ID 碰撞，不能独立确认身份。
+- 32x32：可作为长期稳定存在的形状身份候选；当前两段中无精确跨 ID 碰撞，跨段长期 ID 识别超过99%。
+- 32x32仍不是“存在身份证”。短期和接替 track 的识别低于90%，最终归属必须叠加空间位置、尺寸、深度、运动、遮挡和历史关联。
+
+因此，压缩后的数据可以区分一部分存在，且32x32在当前静态长期对象上已达到可用水平；但不能仅凭压缩轮廓对所有画面对象做最终存在裁决。
+
+## 建议使用流程
+
+```text
+8级：扫描是否可能变化
+→ 16级：粗状态复核
+→ 32级：形状身份候选匹配
+→ 位置/尺寸/深度/运动/历史联合门禁
+→ 旧存在、接替track、新存在候选或未知
+```
+
+若32级形状匹配但空间和时间门禁不通过，不得仅因轮廓相似就合并为同一存在。
+
+## 复现命令
+
+首次生成特征并测试：
+
+```powershell
+python .\scripts\analyze_compressed_contour_discrimination.py `
+  --input-dir=analysis_runs\binary_contour_static_long_repeat_001 `
+  --input-dir=analysis_runs\binary_contour_static_long_repeat_recheck_001 `
+  --output-dir=analysis_runs\compressed_contour_discrimination_001 `
+  --side=8 --side=16 --side=32 `
+  --min-track-frames=60 `
+  --train-percent=50 `
+  --cross-run-min-percent=90
+```
+
+复用压缩特征包重算：
+
+```powershell
+python .\scripts\analyze_compressed_contour_discrimination.py `
+  --input-dir=analysis_runs\binary_contour_static_long_repeat_001 `
+  --input-dir=analysis_runs\binary_contour_static_long_repeat_recheck_001 `
+  --output-dir=analysis_runs\compressed_contour_discrimination_001 `
+  --side=8 --side=16 --side=32 `
+  --min-track-frames=60 `
+  --train-percent=50 `
+  --cross-run-min-percent=90 `
+  --reuse-feature-cache
+```
