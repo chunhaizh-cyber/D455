@@ -437,12 +437,15 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 .\x64\Release\D455.exe --pose-read --no-gravity-line
 ```
 
-需要在车辆中采集“画面变化 + IMU姿态/运动 + 分割结果 + 逐帧性能”联合证据时，使用 `tools/Capture-VehicleVisualEvidence.ps1`。脚本按固定帧数自动结束，在 `recordings/vehicle_visual_时间戳/` 保存五画面视频、acceptance CSV、profile CSV、控制台日志和会话 manifest；车辆移动期间不需要操作电脑。该路径不保存确定性 RGBD/双IR replay，不能与 `--capture-replay-dir` 描述成同一同步材料；完整准备、操作安全边界和采后检查见 `docs/VEHICLE_VISUAL_CAPTURE.md`：
+需要在车辆中采集“画面变化 + IMU姿态/运动 + 分割结果 + 逐帧性能”联合证据时，优先运行 `tools/Record-VehicleMenu.cmd`，输入 `1-9` 选择场景；菜单底层调用 `tools/Capture-VehicleVisualEvidence.ps1`。脚本按固定帧数自动结束，在 `recordings/vehicle_编号_场景_时间戳/` 保存五画面视频、acceptance CSV、profile CSV、控制台日志和会话 manifest；车辆移动期间不需要操作电脑。该路径不保存确定性 RGBD/双IR replay，不能与 `--capture-replay-dir` 描述成同一同步材料；完整准备、操作安全边界和采后检查见 `docs/VEHICLE_VISUAL_CAPTURE.md`：
 
 ```powershell
+.\tools\Record-VehicleMenu.cmd
 .\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900 -PlanOnly
 .\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900
 ```
+
+菜单中输入 `1-9` 分别录制静止、缓慢直行、转弯、正常路面振动、停车遮挡重现、停车新占据、远近切换、自然光照切换和综合路线；每段达到对应固定帧数后自动停止并返回菜单，输入 `q` 退出。编号5和6只能在车辆停稳时由乘客操作目标，驾驶员不得参与。
 
 ### IMU Z 轴是否可当作重力轴的确认方案
 

@@ -12,6 +12,7 @@ param(
     [string]$OutputRoot = "recordings",
     [string]$Exe = ".\x64\Release\D455.exe",
     [string]$SessionLabel = "vehicle_visual",
+    [string]$Scenario = "vehicle motion and scene-change evidence",
 
     [switch]$NoPrompt,
     [switch]$PlanOnly,
@@ -93,6 +94,7 @@ try {
     Write-Host "  repository: $repoRoot"
     Write-Host "  output:     $sessionDir"
     Write-Host "  frames:     $Frames processed frames"
+    Write-Host "  scenario:   $Scenario"
     Write-Host "  command:    $displayCommand"
 
     if ($PlanOnly) {
@@ -132,6 +134,7 @@ try {
         branch = Get-GitText @("rev-parse", "--abbrev-ref", "HEAD")
         commit = Get-GitText @("rev-parse", "HEAD")
         frame_budget = $Frames
+        scenario = $Scenario
         record_every_n = $RecordEveryN
         record_scale_percent = $RecordScalePercent
         command_line = $displayCommand

@@ -25,6 +25,26 @@ The recording is evidence material. It does not write Fish Nest world facts and 
 Run from `D:\D455`:
 
 ```powershell
+.\tools\Record-VehicleMenu.cmd
+```
+
+Then enter `1` through `9`; the selected recording starts after a short countdown and stops at its fixed frame budget. After completion, the menu is shown again. Enter `q` to exit.
+
+| Key | Scenario | Default frames | Operating constraint |
+| ---: | --- | ---: | --- |
+| 1 | Parked static baseline | 300 | Vehicle remains parked |
+| 2 | Slow straight motion | 600 | Safe normal driving only |
+| 3 | Turn and pose change | 600 | Safe normal turn |
+| 4 | Normal road vibration | 600 | Do not seek harsh bumps |
+| 5 | Occlusion and reappearance | 450 | Parked; passenger operates target |
+| 6 | New occupied region | 450 | Parked; passenger places/removes object |
+| 7 | Near/far transition | 600 | Camera remains rigidly mounted |
+| 8 | Natural lighting transition | 600 | Do not cover lens while driving |
+| 9 | Mixed route sequence | 900 | Parked start and parked ending |
+
+For direct single-session capture without the menu:
+
+```powershell
 .\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900
 ```
 
@@ -32,6 +52,7 @@ Dry-run the command and output paths without querying the camera:
 
 ```powershell
 .\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900 -PlanOnly
+.\tools\Capture-VehicleVideoMenu.ps1 -Choice 1 -PlanOnly
 ```
 
 The default 900 processed frames are nominally 30 seconds at 30 fps. Actual wall-clock duration may be longer when processing cannot sustain 30 fps.
