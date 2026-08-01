@@ -1357,6 +1357,12 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg.rfind("--record-raw-bag=", 0) == 0 ||
+            arg.rfind("--inspect-raw-bag=", 0) == 0 ||
+            arg.rfind("--record-raw-seconds=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--record-video" ||
             arg == "--no-record-video" ||
             arg == "--record-command-control" ||
@@ -13724,6 +13730,9 @@ void printUsage()
         << "  --capture-replay-dir=datasets\\near_single_object\n"
         << "  --capture-replay-frames=120\n"
         << "  --capture-replay-warmup=30\n"
+        << "  --record-raw-bag=recordings\\raw_capture.bag\n"
+        << "  --record-raw-seconds=60\n"
+        << "  --inspect-raw-bag=recordings\\raw_capture.bag\n"
         << "  --replay-dir=datasets\\near_single_object\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
@@ -14689,6 +14698,143 @@ cv::Mat depthUnitsToMillimeters(const cv::Mat& depthUnits16, float depthScale)
     return depthMm16;
 }
 
+int runRawBagRecording(
+    const std::string& outputText,
+    int argc,
+    char** argv,
+    const rs2::device_list& devices)
+{
+    std::filesystem::path output = resolveProjectOutputPath(std::filesystem::path(outputText), "");
+    if (output.extension() != ".bag")
+    {
+        output += ".bag";
+    }
+    if (!output.parent_path().empty())
+    {
+        std::filesystem::create_directories(output.parent_path());
+    }
+
+    const int durationSeconds = std::max(
+        1,
+        parseIntOptionOrDefault(argc, argv, "--record-raw-seconds=", 60));
+    const bool recordAccel = deviceListSupportsStream(devices, RS2_STREAM_ACCEL);
+    const bool recordGyro = deviceListSupportsStream(devices, RS2_STREAM_GYRO);
+
+    rs2::pipeline pipeline;
+    rs2::config rsConfig;
+    rsConfig.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
+    rsConfig.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
+    rsConfig.enable_stream(RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 30);
+    rsConfig.enable_stream(RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 30);
+    if (recordAccel)
+    {
+        rsConfig.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
+    }
+    if (recordGyro)
+    {
+        rsConfig.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
+    }
+    rsConfig.enable_record_to_file(output.string());
+
+    std::cout << "Raw RealSense recording: " << output.string()
+        << " duration_seconds=" << durationSeconds
+        << " color=1 depth=1 ir_left=1 ir_right=1"
+        << " accel=" << (recordAccel ? 1 : 0)
+        << " gyro=" << (recordGyro ? 1 : 0) << '\n';
+
+    pipeline.start(rsConfig);
+    const auto startedAt = std::chrono::steady_clock::now();
+    int frameSetCount = 0;
+    while (std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - startedAt).count() < durationSeconds)
+    {
+        if (pipeline.wait_for_frames(5000))
+        {
+            ++frameSetCount;
+        }
+    }
+    pipeline.stop();
+
+    const std::uintmax_t bytes = std::filesystem::exists(output)
+        ? std::filesystem::file_size(output)
+        : 0;
+    std::cout << "Raw RealSense recording complete: framesets=" << frameSetCount
+        << " bytes=" << bytes
+        << " output=" << output.string() << '\n';
+    return bytes > 0 ? 0 : 1;
+}
+
+int inspectRawBag(const std::string& inputText)
+{
+    const std::filesystem::path input = resolveProjectOutputPath(std::filesystem::path(inputText), "");
+    if (!std::filesystem::exists(input) || !std::filesystem::is_regular_file(input))
+    {
+        std::cerr << "Raw bag not found: " << input.string() << '\n';
+        return 1;
+    }
+
+    rs2::pipeline pipeline;
+    rs2::config rsConfig;
+    rsConfig.enable_device_from_file(input.string(), false);
+    const rs2::pipeline_profile profile = pipeline.start(rsConfig);
+    const rs2::playback playback = profile.get_device().as<rs2::playback>();
+    playback.set_real_time(false);
+
+    bool hasColor = false;
+    bool hasDepth = false;
+    bool hasLeftIr = false;
+    bool hasRightIr = false;
+    bool hasAccel = false;
+    bool hasGyro = false;
+    std::cout << "Raw bag streams:\n";
+    for (const rs2::stream_profile& stream : profile.get_streams())
+    {
+        const rs2_stream type = stream.stream_type();
+        const int index = stream.stream_index();
+        hasColor = hasColor || type == RS2_STREAM_COLOR;
+        hasDepth = hasDepth || type == RS2_STREAM_DEPTH;
+        hasLeftIr = hasLeftIr || (type == RS2_STREAM_INFRARED && index == 1);
+        hasRightIr = hasRightIr || (type == RS2_STREAM_INFRARED && index == 2);
+        hasAccel = hasAccel || type == RS2_STREAM_ACCEL;
+        hasGyro = hasGyro || type == RS2_STREAM_GYRO;
+        std::cout << "  " << rs2_stream_to_string(type)
+            << " index=" << index
+            << " format=" << rs2_format_to_string(stream.format())
+            << " fps=" << stream.fps();
+        const rs2::video_stream_profile video = stream.as<rs2::video_stream_profile>();
+        if (video)
+        {
+            std::cout << " size=" << video.width() << 'x' << video.height();
+        }
+        std::cout << '\n';
+    }
+
+    int readableFrameSets = 0;
+    while (readableFrameSets < 60)
+    {
+        const rs2::frameset frames = pipeline.wait_for_frames(5000);
+        if (!frames)
+        {
+            break;
+        }
+        ++readableFrameSets;
+    }
+    const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        playback.get_duration()).count();
+    pipeline.stop();
+
+    const bool requiredStreamsPresent = hasColor && hasDepth && hasLeftIr && hasRightIr;
+    std::cout << "Raw bag inspection: duration_ms=" << durationMs
+        << " readable_framesets=" << readableFrameSets
+        << " color=" << (hasColor ? 1 : 0)
+        << " depth=" << (hasDepth ? 1 : 0)
+        << " ir_left=" << (hasLeftIr ? 1 : 0)
+        << " ir_right=" << (hasRightIr ? 1 : 0)
+        << " accel=" << (hasAccel ? 1 : 0)
+        << " gyro=" << (hasGyro ? 1 : 0) << '\n';
+    return requiredStreamsPresent && readableFrameSets == 60 && durationMs > 0 ? 0 : 1;
+}
+
 int runCaptureReplayDirectory(
     const std::string& captureDirText,
     int argc,
@@ -14824,14 +14970,22 @@ int main(int argc, char** argv)
     }
     std::string replayDirPath;
     std::string captureReplayDirPath;
+    std::string rawBagOutputPath;
+    std::string rawBagInspectionPath;
     for (int i = 1; i < argc; ++i)
     {
         parseStringOption(argv[i], "--replay-dir=", replayDirPath);
         parseStringOption(argv[i], "--capture-replay-dir=", captureReplayDirPath);
+        parseStringOption(argv[i], "--record-raw-bag=", rawBagOutputPath);
+        parseStringOption(argv[i], "--inspect-raw-bag=", rawBagInspectionPath);
     }
     if (!replayDirPath.empty())
     {
         return runReplayDirectory(replayDirPath, argc, argv, config, maxFrames);
+    }
+    if (!rawBagInspectionPath.empty())
+    {
+        return inspectRawBag(rawBagInspectionPath);
     }
 
     try
@@ -14859,6 +15013,10 @@ int main(int argc, char** argv)
         {
             std::cerr << "No RealSense device found. Connect D455 and run again.\n";
             return 1;
+        }
+        if (!rawBagOutputPath.empty())
+        {
+            return runRawBagRecording(rawBagOutputPath, argc, argv, devices);
         }
         if (!captureReplayDirPath.empty())
         {

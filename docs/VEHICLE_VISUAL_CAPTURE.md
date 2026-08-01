@@ -30,6 +30,20 @@ Run from `D:\D455`:
 
 The menu, scenario names, operating guidance and input prompt are displayed in Chinese. Enter `1` through `9`; the selected recording starts after a short countdown and stops at its fixed frame budget. After completion, the menu is shown again. Enter `q` to exit.
 
+For unprocessed sensor evidence, record a native RealSense `.bag` instead of the five-panel dashboard:
+
+```powershell
+.\x64\Release\D455.exe --record-raw-bag=recordings\raw_vehicle_motion.bag --record-raw-seconds=60
+```
+
+This path records the 640x480@30 color, depth, left/right infrared streams and available accelerometer/gyroscope streams directly through librealsense. It does not run segmentation, contour extraction, depth filtering, dashboard composition or video overlays.
+
+Verify a completed recording without exporting or transforming its frames:
+
+```powershell
+.\x64\Release\D455.exe --inspect-raw-bag=recordings\raw_vehicle_motion.bag
+```
+
 | Key | Scenario | Default frames | Operating constraint |
 | ---: | --- | ---: | --- |
 | 1 | Parked static baseline | 300 | Vehicle remains parked |
