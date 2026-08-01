@@ -28,7 +28,7 @@ Run from `D:\D455`:
 .\tools\Record-VehicleMenu.cmd
 ```
 
-Then enter `1` through `9`; the selected recording starts after a short countdown and stops at its fixed frame budget. After completion, the menu is shown again. Enter `q` to exit.
+The menu, scenario names, operating guidance and input prompt are displayed in Chinese. Enter `1` through `9`; the selected recording starts after a short countdown and stops at its fixed frame budget. After completion, the menu is shown again. Enter `q` to exit.
 
 | Key | Scenario | Default frames | Operating constraint |
 | ---: | --- | ---: | --- |

@@ -23,6 +23,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+}
+catch {
+}
+
+$menuTextPath = Join-Path $PSScriptRoot "VehicleCaptureMenu.zh-CN.json"
+if (-not (Test-Path -LiteralPath $menuTextPath -PathType Leaf)) {
+    throw "Chinese menu resource not found: $menuTextPath"
+}
+$menuText = Get-Content -LiteralPath $menuTextPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
 $cases = [ordered]@{
     "1" = [ordered]@{
         label = "vehicle_01_parked_static"
@@ -96,35 +108,31 @@ if (-not (Test-Path -LiteralPath $captureScript -PathType Leaf)) {
 
 function Show-CaptureMenu {
     Write-Host ""
-    Write-Host "D455 vehicle video capture"
-    Write-Host "  1  Parked static baseline        (300 frames)"
-    Write-Host "  2  Slow straight motion          (600 frames)"
-    Write-Host "  3  Turn and pose change          (600 frames)"
-    Write-Host "  4  Normal road vibration         (600 frames)"
-    Write-Host "  5  Occlusion and reappearance    (450 frames, parked)"
-    Write-Host "  6  New occupied region           (450 frames, parked)"
-    Write-Host "  7  Near/far transition           (600 frames)"
-    Write-Host "  8  Natural lighting transition   (600 frames)"
-    Write-Host "  9  Mixed route sequence          (900 frames)"
-    Write-Host "  q  Quit"
+    Write-Host $menuText.header
+    foreach ($key in 1..9) {
+        $line = $menuText.lines.PSObject.Properties[[string]$key].Value
+        Write-Host ("  {0}" -f $line)
+    }
+    Write-Host ("  {0}" -f $menuText.quit)
     Write-Host ""
 }
 
 function Start-CaptureCase([string]$SelectedChoice) {
     if (-not $cases.Contains($SelectedChoice)) {
-        throw "Invalid choice '$SelectedChoice'. Enter 1-9."
+        throw ($menuText.invalid_choice -f $SelectedChoice)
     }
 
     $case = $cases[$SelectedChoice]
+    $localizedCase = $menuText.cases.PSObject.Properties[$SelectedChoice].Value
     $frames = if ($FramesOverride -gt 0) { $FramesOverride } else { [int]$case.frames }
     Write-Host ""
-    Write-Host ("Selected {0}: {1}" -f $SelectedChoice, $case.title)
-    Write-Host ("Guidance: {0}" -f $case.guidance)
-    Write-Host ("Recording will stop automatically after {0} processed frames." -f $frames)
+    Write-Host ($menuText.selected -f $SelectedChoice, $localizedCase.title)
+    Write-Host ($menuText.guidance -f $localizedCase.guidance)
+    Write-Host ($menuText.auto_stop -f $frames)
 
     if (-not $PlanOnly -and $CountdownSeconds -gt 0) {
         for ($second = $CountdownSeconds; $second -ge 1; --$second) {
-            Write-Host ("Starting in {0}..." -f $second)
+            Write-Host ($menuText.countdown -f $second)
             Start-Sleep -Seconds 1
         }
     }
@@ -151,12 +159,12 @@ if (-not [string]::IsNullOrWhiteSpace($Choice)) {
 
 while ($true) {
     Show-CaptureMenu
-    $selected = (Read-Host "Enter 1-9 to start recording").Trim()
+    $selected = (Read-Host $menuText.prompt).Trim()
     if ($selected -in @("q", "Q")) {
         break
     }
     if (-not $cases.Contains($selected)) {
-        Write-Warning "Invalid choice. Enter 1-9 or q."
+        Write-Warning $menuText.invalid
         continue
     }
     Start-CaptureCase $selected
