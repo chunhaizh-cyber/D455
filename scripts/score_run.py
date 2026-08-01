@@ -223,6 +223,9 @@ def score_run(run_dir, config):
     ], 50)
     stereo_matched_p50 = percentile([r.get("stereo_matched_cluster_count") for r in frame_rows], 50)
     stereo_failed_p50 = percentile([r.get("stereo_failed_cluster_count") for r in frame_rows], 50)
+    far_distance_evidence_p50 = percentile([
+        r.get("far_distance_evidence_cluster_count") for r in frame_rows
+    ], 50)
     color_refresh_count = sum(int(row_float(r, "color_contour_refreshed") > 0) for r in timing_rows)
     color_cache_reuse_count = sum(int(row_float(r, "color_contour_cache_reused") > 0) for r in timing_rows)
     color_refresh_motion_count = sum(int(row_float(r, "color_contour_refresh_motion") > 0) for r in timing_rows)
@@ -408,12 +411,16 @@ def score_run(run_dir, config):
     if total_pixels_p50 and far_retained_pixels_p50 is not None:
         far_retained_ratio = max(0.0, far_retained_pixels_p50 / total_pixels_p50)
     far_pixel_score = min(1.0, far_retained_ratio / 0.05)
-    stereo_presence_score = 1.0 if stereo_matched_p50 is not None and stereo_matched_p50 > 0 else 0.0
+    far_distance_presence_score = 1.0 if (
+        (stereo_matched_p50 is not None and stereo_matched_p50 > 0)
+        or (far_distance_evidence_p50 is not None and far_distance_evidence_p50 > 0)
+    ) else 0.0
 
     merge_events = event_count(events, "cluster_merge")
     split_events = event_count(events, "cluster_split")
     contour_lost_events = event_count(events, "contour_lost")
     far_failed_events = event_count(events, "far_stereo_failed")
+    far_distance_missing_events = event_count(events, "far_distance_missing")
     unknown_spikes = event_count(events, "unknown_spike")
 
     pixel_cap = caps.get("pixel_clustering", 20.0)
@@ -428,10 +435,10 @@ def score_run(run_dir, config):
     pixel_score = min(pixel_cap, pixel_score)
 
     contour_score = max(0.0, contour_cap - 0.10 * contour_cap * contour_lost_events - 0.05 * contour_cap * merge_events - 0.025 * contour_cap * split_events)
-    spatial_score = max(0.0, spatial_cap - 0.10 * spatial_cap * far_failed_events)
+    spatial_score = max(0.0, spatial_cap - 0.10 * spatial_cap * far_distance_missing_events)
     temporal_score = max(0.0, temporal_cap - 0.10 * temporal_cap * contour_lost_events - (1.0 / 15.0) * temporal_cap * merge_events - (0.5 / 15.0) * temporal_cap * split_events)
-    far_score = far_cap * (0.70 * far_pixel_score + 0.30 * stereo_presence_score)
-    far_score = max(0.0, far_score - 0.20 * far_cap * far_failed_events - 0.10 * far_cap * contour_lost_events)
+    far_score = far_cap * (0.70 * far_pixel_score + 0.30 * far_distance_presence_score)
+    far_score = max(0.0, far_score - 0.20 * far_cap * far_distance_missing_events - 0.10 * far_cap * contour_lost_events)
     performance_score = performance_cap * perf_score
 
     diag_parts = [
@@ -477,13 +484,15 @@ def score_run(run_dir, config):
         top_failures.append(f"cluster_merge events: {merge_events}")
     if far_failed_events:
         top_failures.append(f"far_stereo_failed events: {far_failed_events}")
+    if far_distance_missing_events:
+        top_failures.append(f"far_distance_missing events: {far_distance_missing_events}")
 
     recommended = []
     if unknown_p50 is not None and unknown_p50 > 10:
         recommended.append("increase visual contour/background fallback before depth gating")
     if merge_events:
         recommended.append("inspect PCL vote ratio and split boundary signals for merged near clusters")
-    if far_failed_events or (far_cluster_p50 is not None and far_cluster_p50 <= 0):
+    if far_distance_missing_events or (far_cluster_p50 is not None and far_cluster_p50 <= 0):
         recommended.append("inspect far contour retention and stereo confidence downgrade")
     if frame_ms_p95 is not None and frame_ms_p95 > soft_budget_ms:
         recommended.append("switch to lighter feature profile or sample heavy metrics")
@@ -504,6 +513,7 @@ def score_run(run_dir, config):
             "far_retained_pixels_p50": far_retained_pixels_p50,
             "stereo_matched_cluster_count_p50": stereo_matched_p50,
             "stereo_failed_cluster_count_p50": stereo_failed_p50,
+            "far_distance_evidence_cluster_count_p50": far_distance_evidence_p50,
             "color_contour_refresh_count": color_refresh_count,
             "color_contour_cache_reuse_count": color_cache_reuse_count,
             "color_contour_refresh_motion_count": color_refresh_motion_count,
@@ -585,6 +595,7 @@ def score_run(run_dir, config):
             "merge_event_count": merge_events,
             "split_event_count": split_events,
             "far_stereo_failed_event_count": far_failed_events,
+            "far_distance_missing_event_count": far_distance_missing_events,
             "total_frame_ms_p95": frame_ms_p95,
             "sampled_total_frame_ms_p95": sampled_frame_ms_p95,
             "total_frame_ms_max": frame_ms_max_observed,

@@ -41,6 +41,7 @@ FRAME_FIELDS = [
     "depth_hole_candidate_pixels",
     "near_cluster_count",
     "far_cluster_count",
+    "far_distance_evidence_cluster_count",
     "image_only_cluster_count",
     "background_cluster_count",
     "unknown_cluster_count",
@@ -132,6 +133,7 @@ FRAME_FIELDS = [
     "merge_event",
     "split_event",
     "far_stereo_failed_event",
+    "far_distance_missing_event",
     "contour_lost_event",
     "frame_time_over_budget",
 ]
@@ -390,6 +392,21 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
     stereo_valid = as_int(final_meta.get("stereo_distance_valid_count"))
     color_region_count = as_int(final_meta.get("color_region_count"))
     stereo_failed = max(0, color_region_count - stereo_valid)
+    far_distance_evidence_count = sum(
+        1
+        for cluster in clusters
+        if normalize_mode(cluster.get("mode")) == "ApproxStereoContour"
+        and any(
+            as_float(cluster.get(field), 0.0) > 0.0
+            for field in (
+                "depth_min_mm",
+                "depth_mean_mm",
+                "depth_max_mm",
+                "estimated_distance_mm",
+                "matched_stereo_points",
+            )
+        )
+    )
     total_ms = as_float(
         profile_row.get("total_ms") or
         profile_row.get("processing_ms") or
@@ -427,6 +444,7 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "depth_hole_candidate_pixels": mode_pixels["depth_hole_candidate_pixels"],
         "near_cluster_count": mode_counts.get("PreciseDepth3D", 0),
         "far_cluster_count": mode_counts.get("ApproxStereoContour", 0),
+        "far_distance_evidence_cluster_count": far_distance_evidence_count,
         "image_only_cluster_count": mode_counts.get("ImageOnlyContour", 0),
         "background_cluster_count": mode_counts.get("BackgroundPlane", 0) + mode_counts.get("FarBackground", 0),
         "unknown_cluster_count": mode_counts.get("Unknown", 0),
@@ -608,6 +626,11 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         ),
         "unknown_spike": int(unknown_percent > args.unknown_spike_percent),
         "far_stereo_failed_event": int(color_region_count > 0 and stereo_valid <= 0),
+        "far_distance_missing_event": int(
+            color_region_count > 0
+            and stereo_valid <= 0
+            and far_distance_evidence_count <= 0
+        ),
         "frame_time_over_budget": int(total_ms > args.frame_budget_ms) if total_ms else 0,
     })
     return row
@@ -703,6 +726,18 @@ def collect_events(frame_row):
             "message": "final color regions had no valid stereo distance",
             "value_before": "",
             "value_after": frame_row["stereo_failed_cluster_count"],
+        })
+    if frame_row["far_distance_missing_event"]:
+        events.append({
+            "frame_id": frame_id,
+            "event_type": "far_distance_missing",
+            "severity": "warning",
+            "cluster_id": "",
+            "track_id": "",
+            "related_cluster_id": "",
+            "message": "far contours had neither stereo distance nor depth-interval evidence",
+            "value_before": "",
+            "value_after": frame_row["far_cluster_count"],
         })
     if frame_row.get("color_contour_refreshed"):
         reasons = []

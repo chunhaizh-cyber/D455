@@ -44,6 +44,21 @@ Verify a completed recording without exporting or transforming its frames:
 .\x64\Release\D455.exe --inspect-raw-bag=recordings\raw_vehicle_motion.bag
 ```
 
+Inspection scans each playback sensor for the full recording and reports the actual frame count, non-monotonic timestamp count, estimated missing-frame count and maximum gap for every stream. It counts accelerometer and gyroscope packets directly instead of inferring IMU completeness from video framesets.
+
+Create a deterministic directory replay sample for the existing evaluation pipeline while leaving the raw bag unchanged:
+
+```powershell
+.\x64\Release\D455.exe `
+  --convert-raw-bag=recordings\raw_vehicle_motion.bag `
+  --convert-raw-bag-dir=analysis_runs\generated_cases\raw_vehicle_motion `
+  --convert-raw-bag-start-frame=0 `
+  --convert-raw-bag-every-n=15 `
+  --convert-raw-bag-max-frames=120
+```
+
+The derived replay aligns raw depth to color coordinates and converts depth units to millimeters because that is the current directory replay contract. It does not replace or rewrite the authoritative `.bag`. `source_timestamps.csv` records the source frameset and stream timestamps for every derived frame. Use `--convert-raw-bag-start-frame=N --convert-raw-bag-every-n=1` to preserve a contiguous 30 fps validation window; sparse sampling is only suitable for spatial timeline review, not temporal scoring.
+
 | Key | Scenario | Default frames | Operating constraint |
 | ---: | --- | ---: | --- |
 | 1 | Parked static baseline | 300 | Vehicle remains parked |

@@ -1363,6 +1363,14 @@ SegmentationConfig parseConfig(int argc, char** argv)
         {
             continue;
         }
+        if (arg.rfind("--convert-raw-bag=", 0) == 0 ||
+            arg.rfind("--convert-raw-bag-dir=", 0) == 0 ||
+            arg.rfind("--convert-raw-bag-start-frame=", 0) == 0 ||
+            arg.rfind("--convert-raw-bag-every-n=", 0) == 0 ||
+            arg.rfind("--convert-raw-bag-max-frames=", 0) == 0)
+        {
+            continue;
+        }
         if (arg == "--record-video" ||
             arg == "--no-record-video" ||
             arg == "--record-command-control" ||
@@ -7428,6 +7436,25 @@ int countStereoDistanceValidRegions(const std::vector<ColorContourRegion>& regio
         }
     }
     return count;
+}
+
+bool hasFarDistanceEvidence(
+    const std::vector<ColorContourRegion>& regions,
+    const std::vector<FarDistanceMaterial>& farDistanceMaterials)
+{
+    if (countStereoDistanceValidRegions(regions) > 0)
+    {
+        return true;
+    }
+    return std::any_of(
+        farDistanceMaterials.begin(),
+        farDistanceMaterials.end(),
+        [](const FarDistanceMaterial& material)
+        {
+            return material.observedDepthMinMm > 0 ||
+                material.medianDepthMm > 0 ||
+                material.observedDepthMaxMm > 0;
+        });
 }
 
 void updateRoiStereoRefreshStats(
@@ -13733,6 +13760,11 @@ void printUsage()
         << "  --record-raw-bag=recordings\\raw_capture.bag\n"
         << "  --record-raw-seconds=60\n"
         << "  --inspect-raw-bag=recordings\\raw_capture.bag\n"
+        << "  --convert-raw-bag=recordings\\raw_capture.bag\n"
+        << "  --convert-raw-bag-dir=analysis_runs\\generated_cases\\raw_capture\n"
+        << "  --convert-raw-bag-start-frame=0\n"
+        << "  --convert-raw-bag-every-n=15\n"
+        << "  --convert-raw-bag-max-frames=120\n"
         << "  --replay-dir=datasets\\near_single_object\n"
         << "  --no-display\n"
         << "  --max-frames=0\n"
@@ -14633,7 +14665,7 @@ int runReplayDirectory(
         }
         if (config.colorContourRefreshOnFarLoss &&
             !colorContourRegions.empty() &&
-            countStereoDistanceValidRegions(colorContourRegions) <= 0)
+            !hasFarDistanceEvidence(colorContourRegions, farDistanceMaterials))
         {
             refreshColorContourFromFarLossNextFrame = true;
         }
@@ -14766,6 +14798,17 @@ int runRawBagRecording(
 
 int inspectRawBag(const std::string& inputText)
 {
+    struct StreamContinuity
+    {
+        int frameCount = 0;
+        int nonMonotonicCount = 0;
+        int estimatedMissingCount = 0;
+        double expectedGapMs = 0.0;
+        double firstTimestampMs = 0.0;
+        double lastTimestampMs = 0.0;
+        double maxGapMs = 0.0;
+    };
+
     const std::filesystem::path input = resolveProjectOutputPath(std::filesystem::path(inputText), "");
     if (!std::filesystem::exists(input) || !std::filesystem::is_regular_file(input))
     {
@@ -14773,11 +14816,9 @@ int inspectRawBag(const std::string& inputText)
         return 1;
     }
 
-    rs2::pipeline pipeline;
-    rs2::config rsConfig;
-    rsConfig.enable_device_from_file(input.string(), false);
-    const rs2::pipeline_profile profile = pipeline.start(rsConfig);
-    const rs2::playback playback = profile.get_device().as<rs2::playback>();
+    rs2::context context;
+    rs2::device device = context.load_device(input.string());
+    rs2::playback playback = device.as<rs2::playback>();
     playback.set_real_time(false);
 
     bool hasColor = false;
@@ -14786,53 +14827,280 @@ int inspectRawBag(const std::string& inputText)
     bool hasRightIr = false;
     bool hasAccel = false;
     bool hasGyro = false;
+    std::map<std::pair<int, int>, StreamContinuity> continuityByStream;
+    std::vector<rs2::sensor> sensors = device.query_sensors();
     std::cout << "Raw bag streams:\n";
-    for (const rs2::stream_profile& stream : profile.get_streams())
+    for (const rs2::sensor& sensor : sensors)
     {
-        const rs2_stream type = stream.stream_type();
-        const int index = stream.stream_index();
-        hasColor = hasColor || type == RS2_STREAM_COLOR;
-        hasDepth = hasDepth || type == RS2_STREAM_DEPTH;
-        hasLeftIr = hasLeftIr || (type == RS2_STREAM_INFRARED && index == 1);
-        hasRightIr = hasRightIr || (type == RS2_STREAM_INFRARED && index == 2);
-        hasAccel = hasAccel || type == RS2_STREAM_ACCEL;
-        hasGyro = hasGyro || type == RS2_STREAM_GYRO;
-        std::cout << "  " << rs2_stream_to_string(type)
-            << " index=" << index
-            << " format=" << rs2_format_to_string(stream.format())
-            << " fps=" << stream.fps();
-        const rs2::video_stream_profile video = stream.as<rs2::video_stream_profile>();
-        if (video)
+        for (const rs2::stream_profile& stream : sensor.get_stream_profiles())
         {
-            std::cout << " size=" << video.width() << 'x' << video.height();
+            const rs2_stream type = stream.stream_type();
+            const int index = stream.stream_index();
+            hasColor = hasColor || type == RS2_STREAM_COLOR;
+            hasDepth = hasDepth || type == RS2_STREAM_DEPTH;
+            hasLeftIr = hasLeftIr || (type == RS2_STREAM_INFRARED && index == 1);
+            hasRightIr = hasRightIr || (type == RS2_STREAM_INFRARED && index == 2);
+            hasAccel = hasAccel || type == RS2_STREAM_ACCEL;
+            hasGyro = hasGyro || type == RS2_STREAM_GYRO;
+            StreamContinuity& continuity = continuityByStream[{ static_cast<int>(type), index }];
+            continuity.expectedGapMs = stream.fps() > 0 ? 1000.0 / stream.fps() : 0.0;
+            std::cout << "  " << rs2_stream_to_string(type)
+                << " index=" << index
+                << " format=" << rs2_format_to_string(stream.format())
+                << " fps=" << stream.fps();
+            const rs2::video_stream_profile video = stream.as<rs2::video_stream_profile>();
+            if (video)
+            {
+                std::cout << " size=" << video.width() << 'x' << video.height();
+            }
+            std::cout << '\n';
         }
-        std::cout << '\n';
     }
 
-    int readableFrameSets = 0;
-    while (readableFrameSets < 60)
+    std::mutex continuityMutex;
+    std::mutex statusMutex;
+    std::condition_variable statusChanged;
+    bool playbackStopped = false;
+    playback.set_status_changed_callback([&](rs2_playback_status status)
     {
-        const rs2::frameset frames = pipeline.wait_for_frames(5000);
-        if (!frames)
+        if (status == RS2_PLAYBACK_STATUS_STOPPED)
         {
-            break;
+            {
+                std::lock_guard<std::mutex> lock(statusMutex);
+                playbackStopped = true;
+            }
+            statusChanged.notify_all();
         }
-        ++readableFrameSets;
+    });
+
+    for (rs2::sensor& sensor : sensors)
+    {
+        const std::vector<rs2::stream_profile> profiles = sensor.get_stream_profiles();
+        sensor.open(profiles);
+        sensor.start([&](rs2::frame frame)
+        {
+            const rs2::stream_profile stream = frame.get_profile();
+            const std::pair<int, int> key(
+                static_cast<int>(stream.stream_type()),
+                stream.stream_index());
+            const double timestampMs = frame.get_timestamp();
+            std::lock_guard<std::mutex> lock(continuityMutex);
+            StreamContinuity& continuity = continuityByStream[key];
+            if (continuity.frameCount == 0)
+            {
+                continuity.firstTimestampMs = timestampMs;
+            }
+            else
+            {
+                const double gapMs = timestampMs - continuity.lastTimestampMs;
+                if (gapMs <= 0.0)
+                {
+                    ++continuity.nonMonotonicCount;
+                }
+                else
+                {
+                    continuity.maxGapMs = std::max(continuity.maxGapMs, gapMs);
+                    if (continuity.expectedGapMs > 0.0 && gapMs > continuity.expectedGapMs * 1.5)
+                    {
+                        continuity.estimatedMissingCount += std::max(
+                            1,
+                            static_cast<int>(std::llround(gapMs / continuity.expectedGapMs)) - 1);
+                    }
+                }
+            }
+            continuity.lastTimestampMs = timestampMs;
+            ++continuity.frameCount;
+        });
+    }
+
+    playback.seek(std::chrono::nanoseconds(0));
+    playback.resume();
+    {
+        std::unique_lock<std::mutex> lock(statusMutex);
+        statusChanged.wait_for(lock, std::chrono::minutes(2), [&]() { return playbackStopped; });
+    }
+    for (rs2::sensor& sensor : sensors)
+    {
+        sensor.stop();
+        sensor.close();
     }
     const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         playback.get_duration()).count();
-    pipeline.stop();
+    context.unload_device(input.string());
 
     const bool requiredStreamsPresent = hasColor && hasDepth && hasLeftIr && hasRightIr;
     std::cout << "Raw bag inspection: duration_ms=" << durationMs
-        << " readable_framesets=" << readableFrameSets
+        << " playback_stopped=" << (playbackStopped ? 1 : 0)
         << " color=" << (hasColor ? 1 : 0)
         << " depth=" << (hasDepth ? 1 : 0)
         << " ir_left=" << (hasLeftIr ? 1 : 0)
         << " ir_right=" << (hasRightIr ? 1 : 0)
         << " accel=" << (hasAccel ? 1 : 0)
         << " gyro=" << (hasGyro ? 1 : 0) << '\n';
-    return requiredStreamsPresent && readableFrameSets == 60 && durationMs > 0 ? 0 : 1;
+    for (const auto& [key, continuity] : continuityByStream)
+    {
+        std::cout << "Raw bag continuity: stream="
+            << rs2_stream_to_string(static_cast<rs2_stream>(key.first))
+            << " index=" << key.second
+            << " frames=" << continuity.frameCount
+            << " non_monotonic=" << continuity.nonMonotonicCount
+            << " estimated_missing=" << continuity.estimatedMissingCount
+            << " max_gap_ms=" << fixedNumber(continuity.maxGapMs, 3)
+            << " span_ms=" << fixedNumber(
+                std::max(0.0, continuity.lastTimestampMs - continuity.firstTimestampMs),
+                3) << '\n';
+    }
+    return requiredStreamsPresent && playbackStopped && durationMs > 0 ? 0 : 1;
+}
+
+int convertRawBagToReplayDirectory(
+    const std::string& inputText,
+    const std::string& outputText,
+    int argc,
+    char** argv)
+{
+    const std::filesystem::path input = resolveProjectOutputPath(std::filesystem::path(inputText), "");
+    if (!std::filesystem::exists(input) || !std::filesystem::is_regular_file(input))
+    {
+        std::cerr << "Raw bag not found: " << input.string() << '\n';
+        return 1;
+    }
+    if (outputText.empty())
+    {
+        std::cerr << "Raw bag conversion requires --convert-raw-bag-dir.\n";
+        return 1;
+    }
+
+    const std::filesystem::path output = resolveProjectOutputPath(std::filesystem::path(outputText), "");
+    const std::filesystem::path framesDir = output / "frames";
+    std::filesystem::create_directories(framesDir);
+    const int sampleEveryN = std::max(
+        1,
+        parseIntOptionOrDefault(argc, argv, "--convert-raw-bag-every-n=", 15));
+    const int startSourceFrame = std::max(
+        0,
+        parseIntOptionOrDefault(argc, argv, "--convert-raw-bag-start-frame=", 0));
+    const int maxOutputFrames = std::max(
+        1,
+        parseIntOptionOrDefault(argc, argv, "--convert-raw-bag-max-frames=", 120));
+
+    rs2::pipeline pipeline;
+    rs2::config rsConfig;
+    rsConfig.enable_device_from_file(input.string(), false);
+    const rs2::pipeline_profile profile = pipeline.start(rsConfig);
+    rs2::playback playback = profile.get_device().as<rs2::playback>();
+    playback.set_real_time(false);
+    const float depthScale = findDepthScale(profile);
+    rs2::align alignToColor(RS2_STREAM_COLOR);
+    const auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        playback.get_duration()).count();
+
+    std::ofstream timestamps(output / "source_timestamps.csv", std::ios::out | std::ios::trunc);
+    timestamps
+        << "sample_index,source_frameset_index,color_frame_number,depth_frame_number,"
+        << "ir_left_frame_number,ir_right_frame_number,color_timestamp_ms,depth_timestamp_ms,"
+        << "ir_left_timestamp_ms,ir_right_timestamp_ms\n";
+
+    int sourceFrameSetIndex = 0;
+    int outputFrameCount = 0;
+    int lastSourceFrameSetIndex = -1;
+    while (outputFrameCount < maxOutputFrames)
+    {
+        if (sourceFrameSetIndex > 0 && playback.current_status() == RS2_PLAYBACK_STATUS_STOPPED)
+        {
+            break;
+        }
+
+        rs2::frameset rawFrames;
+        try
+        {
+            rawFrames = pipeline.wait_for_frames(5000);
+        }
+        catch (const rs2::error&)
+        {
+            if (playback.current_status() == RS2_PLAYBACK_STATUS_STOPPED)
+            {
+                break;
+            }
+            throw;
+        }
+        if (!rawFrames)
+        {
+            continue;
+        }
+
+        if (sourceFrameSetIndex >= startSourceFrame &&
+            (sourceFrameSetIndex - startSourceFrame) % sampleEveryN == 0)
+        {
+            const rs2::frameset alignedFrames = alignToColor.process(rawFrames);
+            const rs2::video_frame colorFrame = alignedFrames.get_color_frame();
+            const rs2::depth_frame depthFrame = alignedFrames.get_depth_frame();
+            const rs2::video_frame leftIrFrame = rawFrames.get_infrared_frame(1);
+            const rs2::video_frame rightIrFrame = rawFrames.get_infrared_frame(2);
+            if (!colorFrame || !depthFrame || !leftIrFrame || !rightIrFrame)
+            {
+                throw std::runtime_error("Raw bag sampled frameset is missing a required video stream.");
+            }
+
+            const cv::Mat colorBgr = colorFrameToBgr(colorFrame);
+            const cv::Mat depthMm16 = depthUnitsToMillimeters(depthFrameToMat(depthFrame), depthScale);
+            const cv::Mat leftIr = videoFrameToGray8(leftIrFrame);
+            const cv::Mat rightIr = videoFrameToGray8(rightIrFrame);
+            std::ostringstream prefix;
+            prefix << std::setw(6) << std::setfill('0') << outputFrameCount;
+            const std::string stem = prefix.str();
+            const bool written =
+                cv::imwrite((framesDir / (stem + "_color.png")).string(), colorBgr) &&
+                cv::imwrite((framesDir / (stem + "_depth16.png")).string(), depthMm16) &&
+                cv::imwrite((framesDir / (stem + "_ir_left.png")).string(), leftIr) &&
+                cv::imwrite((framesDir / (stem + "_ir_right.png")).string(), rightIr);
+            if (!written)
+            {
+                throw std::runtime_error("Failed to write a converted raw bag replay frame.");
+            }
+
+            timestamps << outputFrameCount << ',' << sourceFrameSetIndex << ','
+                << colorFrame.get_frame_number() << ',' << depthFrame.get_frame_number() << ','
+                << leftIrFrame.get_frame_number() << ',' << rightIrFrame.get_frame_number() << ','
+                << fixedNumber(colorFrame.get_timestamp(), 3) << ','
+                << fixedNumber(depthFrame.get_timestamp(), 3) << ','
+                << fixedNumber(leftIrFrame.get_timestamp(), 3) << ','
+                << fixedNumber(rightIrFrame.get_timestamp(), 3) << '\n';
+            lastSourceFrameSetIndex = sourceFrameSetIndex;
+            ++outputFrameCount;
+        }
+        ++sourceFrameSetIndex;
+    }
+    timestamps.close();
+    pipeline.stop();
+
+    std::ofstream manifest(output / "case_manifest.json", std::ios::out | std::ios::trunc);
+    manifest << "{\n";
+    manifest << "  \"case_id\": \"" << output.filename().string() << "\",\n";
+    manifest << "  \"frame_count\": " << outputFrameCount << ",\n";
+    manifest << "  \"format\": \"d455_directory_replay_v1\",\n";
+    manifest << "  \"depth_unit\": \"millimeter_uint16\",\n";
+    manifest << "  \"color_resolution\": [640, 480],\n";
+    manifest << "  \"depth_resolution\": [640, 480],\n";
+    manifest << "  \"ir_left_present\": true,\n";
+    manifest << "  \"ir_right_present\": true,\n";
+    manifest << "  \"reviewed\": false,\n";
+    manifest << "  \"source_bag\": \"" << input.generic_string() << "\",\n";
+    manifest << "  \"source_duration_ms\": " << durationMs << ",\n";
+    manifest << "  \"start_source_frameset_index\": " << startSourceFrame << ",\n";
+    manifest << "  \"sample_every_n_framesets\": " << sampleEveryN << ",\n";
+    manifest << "  \"last_source_frameset_index\": " << lastSourceFrameSetIndex << ",\n";
+    manifest << "  \"notes\": \"Derived replay sample; raw bag remains authoritative and unchanged.\"\n";
+    manifest << "}\n";
+    manifest.close();
+
+    std::cout << "Raw bag conversion complete: source=" << input.string()
+        << " output=" << output.string()
+        << " frames=" << outputFrameCount
+        << " start_source_frameset_index=" << startSourceFrame
+        << " sample_every_n=" << sampleEveryN
+        << " last_source_frameset_index=" << lastSourceFrameSetIndex << '\n';
+    return outputFrameCount > 0 ? 0 : 1;
 }
 
 int runCaptureReplayDirectory(
@@ -14972,12 +15240,16 @@ int main(int argc, char** argv)
     std::string captureReplayDirPath;
     std::string rawBagOutputPath;
     std::string rawBagInspectionPath;
+    std::string rawBagConversionPath;
+    std::string rawBagConversionOutputPath;
     for (int i = 1; i < argc; ++i)
     {
         parseStringOption(argv[i], "--replay-dir=", replayDirPath);
         parseStringOption(argv[i], "--capture-replay-dir=", captureReplayDirPath);
         parseStringOption(argv[i], "--record-raw-bag=", rawBagOutputPath);
         parseStringOption(argv[i], "--inspect-raw-bag=", rawBagInspectionPath);
+        parseStringOption(argv[i], "--convert-raw-bag=", rawBagConversionPath);
+        parseStringOption(argv[i], "--convert-raw-bag-dir=", rawBagConversionOutputPath);
     }
     if (!replayDirPath.empty())
     {
@@ -14986,6 +15258,14 @@ int main(int argc, char** argv)
     if (!rawBagInspectionPath.empty())
     {
         return inspectRawBag(rawBagInspectionPath);
+    }
+    if (!rawBagConversionPath.empty())
+    {
+        return convertRawBagToReplayDirectory(
+            rawBagConversionPath,
+            rawBagConversionOutputPath,
+            argc,
+            argv);
     }
 
     try
@@ -15905,7 +16185,7 @@ int main(int argc, char** argv)
             }
             if (config.colorContourRefreshOnFarLoss &&
                 !colorContourRegions.empty() &&
-                countStereoDistanceValidRegions(colorContourRegions) <= 0)
+                !hasFarDistanceEvidence(colorContourRegions, farDistanceMaterials))
             {
                 refreshColorContourFromFarLossNextFrame = true;
             }

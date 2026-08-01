@@ -114,7 +114,7 @@ analysis_runs/<run_id>/notes.md
 
 `configs/best/best_replay_static_far_distance.json` 把 `candidate_0014` 固化为阶段性 best bucket：只用于 deterministic/static replay gate，不替换 `best_overall`。`replay_small_matrix_static_001` 跑了 baseline/default、candidate_0001、candidate_0002、candidate_0013、candidate_0014 × 三个固定 case；6/15 通过 hard gate，baseline/0001/0002 全部因 `total_frame_ms_p95 > 100` 失败。`candidate_0014` 平均分略高于 `candidate_0013`，并拿到完整远场保留分，但 p95 已接近 100ms；`candidate_0013` 仍是更快的速度基线。最小 leaderboard 摘要提交在 `leaderboards/replay_small_matrix_static_001/`，完整 `analysis_runs/` 仍只作为本地证据。
 
-`configs/candidates/round_001/candidate_0015.json` 是运动敏感缓存候选：在 `--color-contour-frame-interval=120` 基础上增加 `--color-contour-refresh-on-motion`、`--color-contour-refresh-on-unknown-spike` 和 `--color-contour-refresh-on-far-loss`。视觉运动触发使用下采样灰度差分，当前阈值为保守的 `--color-contour-refresh-motion-delta-percent=25`；unknown spike 和 far stereo loss 是下一帧恢复触发。静态 smoke 中 0015 仍有 2/3 case 因 p95 略超 100ms 未通过，因此它只代表已实现的待测策略，不进入 best。`eval/cases.yaml` 已新增 `slow_pan_far_object` 与 `hand_occlusion_reappear` 合同，用来专门暴露缓存轮廓滞后、遮挡后重现和粗距延迟更新问题；在这些数据集录入并通过验证前，`candidate_0015` 不代表已优于 `candidate_0014`。
+`configs/candidates/round_001/candidate_0015.json` 是运动敏感缓存候选：在 `--color-contour-frame-interval=120` 基础上增加 `--color-contour-refresh-on-motion`、`--color-contour-refresh-on-unknown-spike` 和 `--color-contour-refresh-on-far-loss`。视觉运动触发使用下采样灰度差分，当前阈值为保守的 `--color-contour-refresh-motion-delta-percent=25`；unknown spike 和 far distance evidence loss 是下一帧恢复触发。静态 smoke 中 0015 仍有 2/3 case 因 p95 略超 100ms 未通过，因此它只代表已实现的待测策略，不进入 best。`eval/cases.yaml` 已新增 `slow_pan_far_object` 与 `hand_occlusion_reappear` 合同，用来专门暴露缓存轮廓滞后、遮挡后重现和粗距延迟更新问题；在这些数据集录入并通过验证前，`candidate_0015` 不代表已优于 `candidate_0014`。
 
 缓存刷新现在会进入可度量输出：D455 在 `profile.csv` 追加 `color_contour_refreshed`、`color_contour_cache_reused`、`color_contour_refresh_motion`、`color_contour_refresh_unknown_spike`、`color_contour_refresh_far_loss`、`color_contour_motion_delta_percent`、ROI 刷新/候选面积/拒绝原因、ROI motion mask 像素、motion bbox、padding 后 bbox、ROI 面积上限、ROI 内刷新 region 数、ROI stereo reuse/failed 数和 preserved stereo 数；converter 会把它们写入 `frame_metrics.csv`，并在刷新帧写 `events.csv` 的 `color_contour_refresh` 事件。`run_score.json` 也汇总 refresh/cache/reuse/ROI 计数，后续 motion gate 不再只靠 p95 和 far_score 间接推断触发策略是否有效。
 
@@ -159,6 +159,8 @@ G3 review 已升级为优先使用 `final_segmentation_frame_*_ids.png` 做像�
 第一版多线程实现为 `--async-color-contour-refresh`：启动帧仍同步建立首个 cache；之后 motion/interval/unknown/far-loss 触发只在后台 worker 空闲时提交彩图轮廓刷新任务，主线程继续使用旧 cache；worker 完成后按 bbox IoU/中心距离转移 cached stereo 粗距并切换新 cache。`--async-color-contour-low-priority` 会在 Windows 下把 worker 线程降为 `THREAD_PRIORITY_BELOW_NORMAL`；0026 实测没有改善 slow-pan p95/尖峰，只保留为可控开关。`--color-contour-refresh-min-gap-frames=N` 会跳过过近的非 startup 刷新请求并复用 cache，profile/leaderboard 记录 `color_contour_refresh_cooldown_skipped_count`。`--color-contour-refresh-motion-roi` 会尝试只刷新 motion diff 对应区域，并用 `--color-contour-refresh-roi-padding-px` 与 `--color-contour-refresh-max-roi-area-percent` 控制 ROI；如果相机平移或手部遮挡导致稀疏 motion 点被单个 union bbox 包成近整帧，会退回全图刷新并记录 `color_contour_refresh_roi_rejected_large_count`、motion mask/bbox/padding/max-threshold 诊断。score 同时保留全帧 `color_contour_async_worker_ms_p95` 和只统计非零 worker 帧的 `color_contour_async_worker_ms_positive_p95`；0030 的 positive worker p95 为 21.9194ms。下一步 ROI 方向应优先做多 ROI/分片处理，而不是继续放宽单个大 ROI 的面积阈值。
 
 评分器同步收紧了远场保留口径：`far_retention` 不再只看是否没有 `far_stereo_failed` 事件，而是先按 `approx_stereo_contour_pixels + image_only_contour_pixels + depth_hole_candidate_pixels` 的像素占比给基础分，再用 `stereo_matched_cluster_count` 给双目粗距加分。converter 也只在“存在彩图轮廓但完全没有有效 stereo 距离”时记录 `far_stereo_failed`，避免把部分轮廓未匹配误判成整帧远场粗距失败。这样自动优化不会因为关闭彩图/双目而虚假拿到远场满分。
+
+车载原始 `.bag` 连续窗口验证进一步拆开了“方法失败”和“目标证据缺失”：`far_stereo_failed` 继续记录彩图轮廓双目估距失败，但不再直接扣空间/远场分；新增 `far_distance_evidence_cluster_count` 统计带正数深度区间或 stereo 距离的远场簇，只有两种粗距来源都不存在时才产生 `far_distance_missing` 并参与评分扣分。运行时 `--color-contour-refresh-on-far-loss` 也采用相同的证据级定义，已有 `far_depth_interval` 时不再因 stereo 单方法失败重复刷新。三个连续车载窗口复跑后 far-loss 刷新从 0/7/7 次统一降为 0，p95 为 48.66-54.82ms，且仍保持远场证据 p50=2；但 `PreciseDepth3D` p50=0%、证据解决率只有 26.00%-29.83%，当前只能判定硬门槛通过。完整结论、真实流缺口和彩图到双 IR 坐标风险见 `资料/D455_车载原始包首轮验证报告_v0.1.md`。
 
 确定性目录 replay 是自动优化进入真实评测的入口。目录格式为 `datasets/<case_id>/frames/000000_color.png`、`000000_depth16.png`、`000000_ir_left.png`、`000000_ir_right.png` 和 `case_manifest.json`；`depth16.png` 按 16-bit 毫米深度读取，右红外缺失时只影响双目轮廓粗距。D455 支持 `--replay-dir=datasets\<case_id>`，不需要连接相机；`scripts/run_batch.py --execute` 会按 `eval/cases.yaml` 的 `replay:` 字段依次执行 D455、converter 和 `score_run.py`。为避免启动帧污染 p95 和 unknown 指标，converter 和 run_batch 支持 `--ignore-first-n-frames=30`：
 
@@ -455,7 +457,9 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 
 该入口固定录制 `640x480@30` 彩图、深度、左右红外流，并在设备支持时同时录制加速度计和陀螺仪；录制完成后自动停止。验证方法是构建 `Release|x64`，连接 D455 录制短样本，确认 `.bag` 非空且控制台报告实际 frameset 数。
 
-可用 `--inspect-raw-bag=录制文件.bag` 只读检查流清单、录制时长和前 60 个可读 frameset；该检查不导出或转换图像。
+可用 `--inspect-raw-bag=录制文件.bag` 逐传感器只读扫描完整录制，检查流清单、录制时长、实际帧数、时间戳单调性、估计缺帧数和最大帧间隔；该检查不导出或转换图像。不要使用 pipeline frameset 数量代替原始 IMU 包计数。
+
+需要接入现有确定性目录回放评测时，使用 `--convert-raw-bag`、`--convert-raw-bag-dir`、`--convert-raw-bag-start-frame`、`--convert-raw-bag-every-n` 和 `--convert-raw-bag-max-frames` 生成派生样本。派生过程按现有回放契约将原始深度对齐到彩图坐标并转换为毫米，同时写出来源帧号和时间戳；原始 `.bag` 保持不变并作为权威材料。时间稳定性评分必须使用 `every-n=1` 的连续窗口，稀疏抽样只用于空间时间线检查。
 
 ### IMU Z 轴是否可当作重力轴的确认方案
 
