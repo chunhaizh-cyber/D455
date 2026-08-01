@@ -437,6 +437,13 @@ P0 基线验收模式默认打开录制，并为视频生成同名 CSV 指标文
 .\x64\Release\D455.exe --pose-read --no-gravity-line
 ```
 
+需要在车辆中采集“画面变化 + IMU姿态/运动 + 分割结果 + 逐帧性能”联合证据时，使用 `tools/Capture-VehicleVisualEvidence.ps1`。脚本按固定帧数自动结束，在 `recordings/vehicle_visual_时间戳/` 保存五画面视频、acceptance CSV、profile CSV、控制台日志和会话 manifest；车辆移动期间不需要操作电脑。该路径不保存确定性 RGBD/双IR replay，不能与 `--capture-replay-dir` 描述成同一同步材料；完整准备、操作安全边界和采后检查见 `docs/VEHICLE_VISUAL_CAPTURE.md`：
+
+```powershell
+.\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900 -PlanOnly
+.\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900
+```
+
 ### IMU Z 轴是否可当作重力轴的确认方案
 
 不要直接假设 D455 IMU 的 Z 轴就是重力方向轴。静止时 accelerometer 给出的是当前相机姿态下的重力/支撑加速度方向在 IMU 坐标系中的投影；如果相机发生俯仰或横滚，重力方向会在 X/Y/Z 三轴之间重新分配。因此确认口径分两层：

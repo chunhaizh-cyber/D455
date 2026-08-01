@@ -1,0 +1,115 @@
+# Vehicle Visual Evidence Capture
+
+## Purpose
+
+This capture profile prepares real D455 evidence for reviewing:
+
+```text
+stable observation material
++ camera/vehicle motion
++ relative IMU pose and motion diagnostics
++ occlusion or temporary loss
++ newly occupied image/space regions
+```
+
+It supports the feasibility review in:
+
+```text
+D:\数字生命思路\方案\方案_视觉系统鱼巢实现方案_待核验可行性_20260625.md
+```
+
+The recording is evidence material. It does not write Fish Nest world facts and does not by itself validate `SceneVoxelPrior`.
+
+## Current capture contract
+
+Run from `D:\D455`:
+
+```powershell
+.\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900
+```
+
+Dry-run the command and output paths without querying the camera:
+
+```powershell
+.\tools\Capture-VehicleVisualEvidence.ps1 -Frames 900 -PlanOnly
+```
+
+The default 900 processed frames are nominally 30 seconds at 30 fps. Actual wall-clock duration may be longer when processing cannot sustain 30 fps.
+
+Each session is written under the ignored directory:
+
+```text
+recordings/vehicle_visual_YYYYMMDD_HHMMSS/
+  dashboard.avi
+  acceptance.csv
+  profile.csv
+  console.log
+  session_manifest.json
+```
+
+`acceptance.csv` includes the latest accel/gyro sample timestamps, roll, pitch, relative yaw, acceleration vector, gyro vector and motion diagnostics for each processed RGBD frame. `profile.csv` preserves per-frame processing cost. The manifest records branch, commit, command and output sizes.
+
+## Safe operating sequence
+
+1. Mount the D455 rigidly before the vehicle moves. Avoid glass reflections, dashboard obstruction and a loose USB cable.
+2. Connect power and confirm at least 10 GiB free on the output drive.
+3. Start the script while parked. The script probes the D455 before creating the session.
+4. Keep the vehicle and camera still for the opening segment so the recording contains a motion baseline.
+5. Let the vehicle move normally. Useful evidence includes a slow straight segment, a turn, normal vibration and a full stop.
+6. Do not operate the computer while the vehicle is moving. A passenger should supervise capture if supervision is needed.
+7. Let the fixed frame budget stop the session, or press `q` only after the vehicle is safely stopped.
+
+Recommended material sequence inside one clip:
+
+```text
+parked baseline
+→ gentle start
+→ slow translation
+→ turn or viewpoint change
+→ temporary foreground occlusion if safely available
+→ stop and remain still
+```
+
+Do not stage an occlusion or interact with the camera while driving.
+
+## Evidence mapping
+
+| Scheme question | Capture evidence | Boundary |
+| --- | --- | --- |
+| D455 observation remains stable | dashboard video, acceptance metrics | Describes D455 output; does not confirm a Fish Nest fact |
+| Camera pose is available | pose fields and IMU timestamps in `acceptance.csv` | Yaw is relative and may drift |
+| Motion can explain changed image state | visual motion plus gyro/accel diagnostics | Vehicle acceleration is not pure gravity |
+| Occlusion/reappearance can be separated from disappearance | contour video and per-frame cluster/track metrics | Requires later review or replay scoring |
+| New occupied regions can be proposed | cluster-map and segmentation views | A new occupied region remains a candidate |
+| Processing is timely enough | `profile.csv` p50/p95/max | Must still pass the repository performance gate |
+
+## Important limitation
+
+This profile records the rendered dashboard and synchronized metrics, but it does not save deterministic raw directory replay frames. The existing `--capture-replay-dir` mode saves color, aligned depth16, left IR and right IR, but it runs as a separate capture path and currently does not save IMU or the rendered dashboard.
+
+Therefore:
+
+```text
+vehicle dashboard session
+  = best current material for visible behavior + pose/motion timing
+
+directory replay session
+  = best current material for deterministic algorithm reruns
+```
+
+They must not be described as the same synchronized capture. If the feasibility review requires raw RGBD/IR and IMU from exactly the same frames, the next implementation should add RealSense bag recording or extend directory capture with synchronized IMU records before collecting the formal gate dataset.
+
+## Post-capture checks
+
+The script verifies that video, acceptance CSV and profile CSV are non-empty. Before using a session as evidence, also check:
+
+```text
+session_manifest.json status == complete
+acceptance.csv contains pose_accel_valid and pose_gyro_valid samples
+video includes parked baseline and moving interval
+profile.csv contains enough frames for p95
+camera did not shift relative to its mount
+no private or identifying material should be uploaded without review
+```
+
+Recordings remain ignored by Git. Uploading or moving a real vehicle recording requires a separate privacy and size decision.
