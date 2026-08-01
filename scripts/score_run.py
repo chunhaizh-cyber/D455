@@ -350,6 +350,32 @@ def score_run(run_dir, config):
     attention_stale_result_count = sum(
         int(row_float(r, "attention_stale_result_count")) for r in timing_rows
     )
+    driving_risk_roi_enabled_count = sum(
+        int(row_float(r, "driving_risk_roi_enabled") > 0) for r in timing_rows
+    )
+    driving_risk_roi_pixels_p50 = percentile(
+        [r.get("driving_risk_roi_pixels") for r in timing_rows], 50
+    )
+    driving_risk_roi_percent_p50 = percentile(
+        [r.get("driving_risk_roi_percent") for r in timing_rows], 50
+    )
+    driving_risk_roi_clipped_all_dirty_count = sum(
+        int(row_float(r, "driving_risk_roi_clipped_all_dirty") > 0) for r in timing_rows
+    )
+    semantic_processed_percents = [
+        row_float(r, "semantic_processed_percent") for r in timing_rows
+    ]
+    semantic_processing_frame_count = sum(
+        int(value > 0) for value in semantic_processed_percents
+    )
+    semantic_processed_percent_p50 = percentile(semantic_processed_percents, 50)
+    semantic_processed_percent_p95 = percentile(semantic_processed_percents, 95)
+    semantic_processed_percent_mean = (
+        sum(semantic_processed_percents) / len(semantic_processed_percents)
+        if semantic_processed_percents else 0.0
+    )
+    semantic_full_frame_equivalent = sum(semantic_processed_percents) / 100.0
+    semantic_workload_reduction_percent = max(0.0, 100.0 - semantic_processed_percent_mean)
     existence_hole_filter_enabled_count = sum(
         int(row_float(r, "existence_hole_filter_enabled") > 0) for r in timing_rows
     )
@@ -578,6 +604,17 @@ def score_run(run_dir, config):
             "attention_merge_ms_p95": attention_merge_ms_p95,
             "attention_apply_ms_p95": attention_apply_ms_p95,
             "attention_stale_result_count": attention_stale_result_count,
+            "driving_risk_roi_enabled_count": driving_risk_roi_enabled_count,
+            "driving_risk_roi_pixels_p50": driving_risk_roi_pixels_p50,
+            "driving_risk_roi_percent_p50": driving_risk_roi_percent_p50,
+            "driving_risk_roi_clipped_all_dirty_count":
+                driving_risk_roi_clipped_all_dirty_count,
+            "semantic_processing_frame_count": semantic_processing_frame_count,
+            "semantic_processed_percent_p50": semantic_processed_percent_p50,
+            "semantic_processed_percent_p95": semantic_processed_percent_p95,
+            "semantic_processed_percent_mean": semantic_processed_percent_mean,
+            "semantic_full_frame_equivalent": semantic_full_frame_equivalent,
+            "semantic_workload_reduction_percent": semantic_workload_reduction_percent,
             "existence_hole_filter_enabled_count": existence_hole_filter_enabled_count,
             "existence_hole_tracked_count_p50": existence_hole_tracked_count_p50,
             "existence_hole_retained_no_depth_pixels_p50":

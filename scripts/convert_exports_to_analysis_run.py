@@ -118,6 +118,12 @@ FRAME_FIELDS = [
     "attention_merge_ms",
     "attention_apply_ms",
     "attention_stale_result_count",
+    "driving_risk_roi_enabled",
+    "driving_risk_roi_pixels",
+    "driving_risk_roi_percent",
+    "driving_risk_roi_clipped_all_dirty",
+    "semantic_processed_pixels",
+    "semantic_processed_percent",
     "existence_hole_filter_enabled",
     "existence_hole_tracked_count",
     "existence_hole_retained_no_depth_pixels",
@@ -590,6 +596,20 @@ def summarize_frame(run_dir, cluster_meta, final_meta, profile_row, clusters, ar
         "attention_apply_ms": round(as_float(profile_row.get("attention_apply_ms")), 3),
         "attention_stale_result_count": as_int(
             profile_row.get("attention_stale_result_count")
+        ),
+        "driving_risk_roi_enabled": as_int(
+            profile_row.get("driving_risk_roi_enabled")
+        ),
+        "driving_risk_roi_pixels": as_int(profile_row.get("driving_risk_roi_pixels")),
+        "driving_risk_roi_percent": round(
+            as_float(profile_row.get("driving_risk_roi_percent")), 3
+        ),
+        "driving_risk_roi_clipped_all_dirty": as_int(
+            profile_row.get("driving_risk_roi_clipped_all_dirty")
+        ),
+        "semantic_processed_pixels": as_int(profile_row.get("semantic_processed_pixels")),
+        "semantic_processed_percent": round(
+            as_float(profile_row.get("semantic_processed_percent")), 3
         ),
         "existence_hole_filter_enabled": as_int(
             profile_row.get("existence_hole_filter_enabled")

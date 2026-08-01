@@ -1,0 +1,11 @@
+slot,candidate_id,total_score,near_score,far_score,performance_score,unknown_p50,frame_ms_p95,run_id
+best_overall,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_far_retention,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_realtime,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_low_unknown,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_low_merge,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_low_split,candidate_0052,95.555,20.0,10.0,6.555,0.0,56.27579999999998,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_050s_candidate_0052
+best_roi_refresh,candidate_0052,94.75,20.0,10.0,5.75,0.0,61.64559999999999,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_035s_candidate_0052
+best_roi_stereo_preservation,candidate_0051,94.121,20.0,10.0,5.121,0.0,65.841,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_005s_candidate_0051
+best_roi_stereo_rebuild,candidate_0053,94.807,20.0,10.0,5.807,0.0,61.264199999999974,replay_driving_risk_roi_ablation_001_vehicle_motion_contiguous_005s_candidate_0053
+best_roi_stereo_direct_build,no_pass_candidate,,,,,,,

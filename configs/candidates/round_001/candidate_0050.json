@@ -1,0 +1,33 @@
+{
+  "candidate_id": "candidate_0050",
+  "parent": "candidate_0030",
+  "purpose": "Driving ROI ablation A: full-frame color semantic refresh on every frame.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-contour-frame-interval=1",
+    "--color-contour-refresh-min-gap-frames=0",
+    "--no-color-contour-refresh-on-motion",
+    "--no-color-contour-refresh-on-unknown-spike",
+    "--no-color-contour-refresh-on-far-loss",
+    "--no-attention-difference-scan",
+    "--no-driving-risk-roi",
+    "--no-async-color-contour-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000"
+  ],
+  "expected_effect": [
+    "Provide the 100 percent per-frame semantic workload reference.",
+    "Leave the full-frame depth and spatial ownership pipeline unchanged."
+  ],
+  "risk": [
+    "This is an intentionally expensive reference and is not a production candidate."
+  ]
+}

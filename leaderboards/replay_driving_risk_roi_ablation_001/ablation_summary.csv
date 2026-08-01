@@ -1,0 +1,5 @@
+candidate_id,run_count,hard_pass_count,coverage_p50_min,unknown_p50_max,contour_lost_events,merge_events,split_events,frame_ms_p95_mean,semantic_processed_percent_mean,semantic_full_frame_equivalent,semantic_processing_frame_count,driving_risk_roi_percent_p50,driving_risk_clipped_all_dirty_count,ledger_proxy_pass,temporal_proxy_pass,semantic_workload_reduction_vs_baseline_percent,workload_proxy_pass,mechanism_proxy_pass
+candidate_0050,3,3,100.0,0.0,0,0,0,91.219,100.0,315.0,315,0.0,0,True,True,0.0,True,True
+candidate_0051,3,2,100.0,0.0,0,0,0,121.706,39.0,122.85,315,39.0,0,True,True,61.0,True,True
+candidate_0052,3,3,100.0,0.0,0,0,0,63.492,2.291,7.218,288,39.0,19,True,True,97.709,True,True
+candidate_0053,3,3,100.0,0.0,0,0,0,61.714,0.385,1.211,21,39.0,0,True,True,99.615,True,True

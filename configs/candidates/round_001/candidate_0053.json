@@ -1,0 +1,51 @@
+{
+  "candidate_id": "candidate_0053",
+  "parent": "candidate_0052",
+  "purpose": "Driving ROI ablation D: corridor-constrained visual refresh with cooldown, cache age gate and asynchronous processing.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-contour-frame-interval=120",
+    "--color-contour-refresh-min-gap-frames=15",
+    "--color-contour-refresh-on-motion",
+    "--no-color-contour-refresh-on-unknown-spike",
+    "--no-color-contour-refresh-on-far-loss",
+    "--color-contour-refresh-motion-roi",
+    "--color-contour-refresh-roi-padding-px=24",
+    "--color-contour-refresh-roi-min-component-px=12",
+    "--color-contour-refresh-max-component-rois=8",
+    "--attention-difference-scan",
+    "--attention-scan-width-px=160",
+    "--attention-diff-threshold=24",
+    "--attention-min-dirty-percent=1",
+    "--attention-max-dirty-percent=25",
+    "--attention-roi-workers=4",
+    "--attention-max-cache-shift-px=5",
+    "--attention-max-result-age-frames=15",
+    "--driving-risk-roi",
+    "--driving-risk-roi-top-percent=35",
+    "--driving-risk-roi-bottom-percent=100",
+    "--driving-risk-roi-near-width-percent=90",
+    "--driving-risk-roi-far-width-percent=30",
+    "--driving-risk-roi-center-offset-percent=0",
+    "--driving-risk-roi-slices=4",
+    "--async-color-contour-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000"
+  ],
+  "expected_effect": [
+    "Measure additional savings from tiered refresh frequency and asynchronous cache reuse.",
+    "Reject results older than 15 frames or built from an obsolete cache version."
+  ],
+  "risk": [
+    "Async scheduling can introduce run-to-run timing variance.",
+    "This remains an offline mechanism probe until synchronized vehicle state and safety ground truth exist."
+  ]
+}

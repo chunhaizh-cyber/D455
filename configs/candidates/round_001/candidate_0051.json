@@ -1,0 +1,39 @@
+{
+  "candidate_id": "candidate_0051",
+  "parent": "candidate_0050",
+  "purpose": "Driving ROI ablation B: refresh a fixed image-space driving corridor on every frame.",
+  "args": [
+    "--cluster-map",
+    "--quality-segmentation",
+    "--color-segmentation",
+    "--color-refine-depth-masks",
+    "--stereo-contour-distance",
+    "--stereo-contour-reuse-cached-on-refresh",
+    "--color-contour-frame-interval=1",
+    "--color-contour-refresh-min-gap-frames=0",
+    "--no-color-contour-refresh-on-motion",
+    "--no-color-contour-refresh-on-unknown-spike",
+    "--no-color-contour-refresh-on-far-loss",
+    "--no-attention-difference-scan",
+    "--driving-risk-roi",
+    "--driving-risk-roi-top-percent=35",
+    "--driving-risk-roi-bottom-percent=100",
+    "--driving-risk-roi-near-width-percent=90",
+    "--driving-risk-roi-far-width-percent=30",
+    "--driving-risk-roi-center-offset-percent=0",
+    "--driving-risk-roi-slices=4",
+    "--no-async-color-contour-refresh",
+    "--color-segmentation-mean-shift-spatial=0",
+    "--color-segmentation-mean-shift-color=0",
+    "--color-segmentation-color-bins=3",
+    "--color-segmentation-max-regions=4",
+    "--color-segmentation-min-area-px=3000"
+  ],
+  "expected_effect": [
+    "Separate spatial crop savings from cache and refresh-frequency savings.",
+    "Keep pixels outside the corridor in the full-frame spatial ledger without running color semantics there."
+  ],
+  "risk": [
+    "The corridor is injected image-space geometry, not a measured planned trajectory."
+  ]
+}

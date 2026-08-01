@@ -194,6 +194,12 @@ struct SegmentationConfig
     int attentionRoiWorkers = 0;
     int attentionMaxCacheShiftPixels = 2;
     int attentionMaxResultAgeFrames = 15;
+    int drivingRiskRoiTopPercent = 35;
+    int drivingRiskRoiBottomPercent = 100;
+    int drivingRiskRoiNearWidthPercent = 90;
+    int drivingRiskRoiFarWidthPercent = 30;
+    int drivingRiskRoiCenterOffsetPercent = 0;
+    int drivingRiskRoiSlices = 4;
     int stereoContourMinDisparityTenthsPx = 5;
     int stereoContourMaxVerticalShiftPixels = 12;
     int stereoContourSearchMarginPixels = 48;
@@ -252,6 +258,7 @@ struct SegmentationConfig
     bool colorContourRefreshOnUnknownSpike = false;
     bool colorContourRefreshOnFarLoss = false;
     bool attentionDifferenceScan = false;
+    bool drivingRiskRoi = false;
     bool showPartNumbers = false;
     double contourApproxRatio = 0.0015;
     std::string clusterMapExportPath;
@@ -512,6 +519,12 @@ struct ColorContourRefreshStats
     double attentionMergeMs = 0.0;
     double attentionApplyMs = 0.0;
     int attentionStaleResultCount = 0;
+    bool drivingRiskRoiEnabled = false;
+    int drivingRiskRoiPixels = 0;
+    double drivingRiskRoiPercent = 0.0;
+    bool drivingRiskRoiClippedAllDirty = false;
+    int semanticProcessedPixels = 0;
+    double semanticProcessedPercent = 0.0;
 };
 
 struct ExistenceContourHoleStats
@@ -886,6 +899,12 @@ SegmentationConfig parseConfig(int argc, char** argv)
             parseIntOption(arg, "--attention-roi-workers=", config.attentionRoiWorkers) ||
             parseIntOption(arg, "--attention-max-cache-shift-px=", config.attentionMaxCacheShiftPixels) ||
             parseIntOption(arg, "--attention-max-result-age-frames=", config.attentionMaxResultAgeFrames) ||
+            parseIntOption(arg, "--driving-risk-roi-top-percent=", config.drivingRiskRoiTopPercent) ||
+            parseIntOption(arg, "--driving-risk-roi-bottom-percent=", config.drivingRiskRoiBottomPercent) ||
+            parseIntOption(arg, "--driving-risk-roi-near-width-percent=", config.drivingRiskRoiNearWidthPercent) ||
+            parseIntOption(arg, "--driving-risk-roi-far-width-percent=", config.drivingRiskRoiFarWidthPercent) ||
+            parseIntOption(arg, "--driving-risk-roi-center-offset-percent=", config.drivingRiskRoiCenterOffsetPercent) ||
+            parseIntOption(arg, "--driving-risk-roi-slices=", config.drivingRiskRoiSlices) ||
             parseIntOption(arg, "--stereo-contour-min-disparity-tenths-px=", config.stereoContourMinDisparityTenthsPx) ||
             parseIntOption(arg, "--stereo-contour-max-vertical-shift-px=", config.stereoContourMaxVerticalShiftPixels) ||
             parseIntOption(arg, "--stereo-contour-search-margin-px=", config.stereoContourSearchMarginPixels) ||
@@ -1252,6 +1271,16 @@ SegmentationConfig parseConfig(int argc, char** argv)
         if (arg == "--no-attention-difference-scan")
         {
             config.attentionDifferenceScan = false;
+            continue;
+        }
+        if (arg == "--driving-risk-roi")
+        {
+            config.drivingRiskRoi = true;
+            continue;
+        }
+        if (arg == "--no-driving-risk-roi")
+        {
+            config.drivingRiskRoi = false;
             continue;
         }
         if (arg == "--color-contour-refresh-motion-roi")
@@ -6834,6 +6863,136 @@ int sumRectAreas(const std::vector<cv::Rect>& rois)
     return total;
 }
 
+std::vector<cv::Rect> buildDrivingRiskCorridorRois(
+    const cv::Size& frameSize,
+    const SegmentationConfig& config)
+{
+    std::vector<cv::Rect> rois;
+    if (!config.drivingRiskRoi || frameSize.width <= 0 || frameSize.height <= 0)
+    {
+        return rois;
+    }
+
+    const int topPercent = std::clamp(config.drivingRiskRoiTopPercent, 0, 99);
+    const int bottomPercent = std::clamp(
+        config.drivingRiskRoiBottomPercent,
+        topPercent + 1,
+        100);
+    const int topY = frameSize.height * topPercent / 100;
+    const int bottomY = std::clamp(
+        frameSize.height * bottomPercent / 100,
+        topY + 1,
+        frameSize.height);
+    const int corridorHeight = bottomY - topY;
+    const int sliceCount = std::clamp(config.drivingRiskRoiSlices, 1, 16);
+    const int farWidthPercent = std::clamp(config.drivingRiskRoiFarWidthPercent, 1, 100);
+    const int nearWidthPercent = std::clamp(config.drivingRiskRoiNearWidthPercent, 1, 100);
+    const int centerX = frameSize.width / 2 +
+        frameSize.width * std::clamp(config.drivingRiskRoiCenterOffsetPercent, -50, 50) / 100;
+    const cv::Rect frameRect(0, 0, frameSize.width, frameSize.height);
+
+    for (int sliceIndex = 0; sliceIndex < sliceCount; ++sliceIndex)
+    {
+        const int y0 = topY + corridorHeight * sliceIndex / sliceCount;
+        const int y1 = topY + corridorHeight * (sliceIndex + 1) / sliceCount;
+        const double progress = (static_cast<double>(sliceIndex) + 0.5) /
+            static_cast<double>(sliceCount);
+        const double widthPercent = static_cast<double>(farWidthPercent) +
+            static_cast<double>(nearWidthPercent - farWidthPercent) * progress;
+        const int width = std::clamp(
+            static_cast<int>(std::round(frameSize.width * widthPercent / 100.0)),
+            1,
+            frameSize.width);
+        const cv::Rect roi(centerX - width / 2, y0, width, std::max(1, y1 - y0));
+        const cv::Rect clipped = roi & frameRect;
+        if (!clipped.empty())
+        {
+            rois.push_back(clipped);
+        }
+    }
+    return rois;
+}
+
+std::vector<cv::Rect> intersectRois(
+    const std::vector<cv::Rect>& source,
+    const std::vector<cv::Rect>& limits)
+{
+    std::vector<cv::Rect> intersections;
+    for (const cv::Rect& sourceRoi : source)
+    {
+        for (const cv::Rect& limitRoi : limits)
+        {
+            const cv::Rect intersection = sourceRoi & limitRoi;
+            if (!intersection.empty())
+            {
+                intersections.push_back(intersection);
+            }
+        }
+    }
+    return intersections;
+}
+
+void initializeDrivingRiskStats(
+    ColorContourRefreshStats& stats,
+    const cv::Size& frameSize,
+    const SegmentationConfig& config)
+{
+    stats.drivingRiskRoiEnabled = config.drivingRiskRoi;
+    if (!config.drivingRiskRoi || frameSize.area() <= 0)
+    {
+        return;
+    }
+    const std::vector<cv::Rect> corridor = buildDrivingRiskCorridorRois(frameSize, config);
+    stats.drivingRiskRoiPixels = std::min(frameSize.area(), sumRectAreas(corridor));
+    stats.drivingRiskRoiPercent = 100.0 * static_cast<double>(stats.drivingRiskRoiPixels) /
+        static_cast<double>(frameSize.area());
+}
+
+bool constrainRefreshToDrivingRiskCorridor(
+    std::vector<cv::Rect>& refreshRois,
+    bool allowSkipWhenOutside,
+    const cv::Size& frameSize,
+    const SegmentationConfig& config,
+    ColorContourRefreshStats& stats)
+{
+    if (!config.drivingRiskRoi)
+    {
+        return false;
+    }
+    const std::vector<cv::Rect> corridor = buildDrivingRiskCorridorRois(frameSize, config);
+    if (refreshRois.empty())
+    {
+        refreshRois = corridor;
+        return false;
+    }
+
+    std::vector<cv::Rect> constrained = intersectRois(refreshRois, corridor);
+    if (constrained.empty() && allowSkipWhenOutside)
+    {
+        stats.drivingRiskRoiClippedAllDirty = true;
+        refreshRois.clear();
+        return true;
+    }
+    refreshRois = constrained.empty() ? corridor : std::move(constrained);
+    return false;
+}
+
+void markSemanticProcessingWorkload(
+    ColorContourRefreshStats& stats,
+    const std::vector<cv::Rect>& refreshRois,
+    const cv::Size& frameSize)
+{
+    if (frameSize.area() <= 0)
+    {
+        return;
+    }
+    stats.semanticProcessedPixels = refreshRois.empty()
+        ? frameSize.area()
+        : std::min(frameSize.area(), sumRectAreas(refreshRois));
+    stats.semanticProcessedPercent = 100.0 * static_cast<double>(stats.semanticProcessedPixels) /
+        static_cast<double>(frameSize.area());
+}
+
 bool intersectsAnyRect(const cv::Rect& roi, const std::vector<cv::Rect>& rois)
 {
     for (const cv::Rect& candidate : rois)
@@ -11059,6 +11218,12 @@ public:
             << colorContourRefreshStats.attentionMergeMs << ','
             << colorContourRefreshStats.attentionApplyMs << ','
             << colorContourRefreshStats.attentionStaleResultCount << ','
+            << (colorContourRefreshStats.drivingRiskRoiEnabled ? 1 : 0) << ','
+            << colorContourRefreshStats.drivingRiskRoiPixels << ','
+            << colorContourRefreshStats.drivingRiskRoiPercent << ','
+            << (colorContourRefreshStats.drivingRiskRoiClippedAllDirty ? 1 : 0) << ','
+            << colorContourRefreshStats.semanticProcessedPixels << ','
+            << colorContourRefreshStats.semanticProcessedPercent << ','
             << (existenceHoleStats.enabled ? 1 : 0) << ','
             << existenceHoleStats.trackedExistenceCount << ','
             << existenceHoleStats.retainedNoDepthPixels << ','
@@ -11154,6 +11319,9 @@ private:
             << "attention_worker_task_count,attention_worker_queue_ms,attention_worker_ms,"
             << "attention_worker_longest_ms,attention_merge_ms,attention_apply_ms,"
             << "attention_stale_result_count,"
+            << "driving_risk_roi_enabled,driving_risk_roi_pixels,driving_risk_roi_percent,"
+            << "driving_risk_roi_clipped_all_dirty,semantic_processed_pixels,"
+            << "semantic_processed_percent,"
             << "existence_hole_filter_enabled,existence_hole_tracked_count,"
             << "existence_hole_retained_no_depth_pixels,"
             << "existence_hole_candidate_count,existence_hole_candidate_pixels,"
@@ -13816,6 +13984,14 @@ void printUsage()
         << "  --attention-roi-workers=0 (auto, max 4)\n"
         << "  --attention-max-cache-shift-px=2\n"
         << "  --attention-max-result-age-frames=15\n"
+        << "  --driving-risk-roi\n"
+        << "  --no-driving-risk-roi\n"
+        << "  --driving-risk-roi-top-percent=35\n"
+        << "  --driving-risk-roi-bottom-percent=100\n"
+        << "  --driving-risk-roi-near-width-percent=90\n"
+        << "  --driving-risk-roi-far-width-percent=30\n"
+        << "  --driving-risk-roi-center-offset-percent=0\n"
+        << "  --driving-risk-roi-slices=4\n"
         << "  --final-segmentation-export=recordings\\final_segmentation_sample\n"
         << "  --color-segmentation-min-area-px=700\n"
         << "  --color-segmentation-max-roi-area-percent=55\n"
@@ -14149,6 +14325,7 @@ int runReplayDirectory(
         std::vector<ColorContourRegion> colorContourRegions;
         ColorContourRefreshStats colorContourRefreshStats;
         colorContourRefreshStats.attentionScanEnabled = config.attentionDifferenceScan;
+        initializeDrivingRiskStats(colorContourRefreshStats, colorBgr.size(), config);
         if (asyncColorContourWorker)
         {
             AsyncColorContourRefreshResult asyncResult;
@@ -14286,6 +14463,17 @@ int runReplayDirectory(
             {
                 colorContourRefreshStats.roiRejectedLarge = true;
             }
+            const bool onlyMotionRefresh = refreshBecauseOfMotion &&
+                !refreshBecauseOfStartup &&
+                !colorContourRefreshStats.reasonInterval &&
+                !colorContourRefreshStats.reasonUnknownSpike &&
+                !colorContourRefreshStats.reasonFarLoss;
+            const bool skipDrivingRiskOutsideRefresh = constrainRefreshToDrivingRiskCorridor(
+                refreshRois,
+                onlyMotionRefresh,
+                colorBgr.size(),
+                config,
+                colorContourRefreshStats);
             colorContourRefreshStats.roiMotionBBoxX = motionRoiBBox.x;
             colorContourRefreshStats.roiMotionBBoxY = motionRoiBBox.y;
             colorContourRefreshStats.roiMotionBBoxW = motionRoiBBox.width;
@@ -14296,7 +14484,7 @@ int runReplayDirectory(
             colorContourRefreshStats.roiAfterPaddingW = motionRoiAfterPadding.width;
             colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
             colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
-            colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
+            colorContourRefreshStats.roiRefresh = !refreshRois.empty();
             colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
             colorContourRefreshStats.attentionDirtyRoiCount = static_cast<int>(refreshRois.size());
             const bool skipRejectedMotionRoiRefresh =
@@ -14312,8 +14500,11 @@ int runReplayDirectory(
                 (colorContourRefreshStats.roiRejectedEmpty ||
                     colorContourRefreshStats.roiRejectedLarge);
             colorContourRefreshStats.attentionFullRefresh =
-                config.attentionDifferenceScan && !skipRejectedMotionRoiRefresh && refreshRois.empty();
-            if (skipRejectedMotionRoiRefresh)
+                config.attentionDifferenceScan &&
+                !skipRejectedMotionRoiRefresh &&
+                !skipDrivingRiskOutsideRefresh &&
+                refreshRois.empty();
+            if (skipRejectedMotionRoiRefresh || skipDrivingRiskOutsideRefresh)
             {
                 colorContourRegions = cachedColorContourRegions;
                 colorContourRefreshStats.cacheReused = true;
@@ -14330,6 +14521,10 @@ int runReplayDirectory(
                         ? makeColorContourMotionSignature(segmentationGray)
                         : currentColorContourMotionSignature;
                     colorContourRefreshStats.asyncSubmitted = true;
+                    markSemanticProcessingWorkload(
+                        colorContourRefreshStats,
+                        refreshRois,
+                        colorBgr.size());
                     colorContourRefreshStats.asyncDropped = asyncColorContourWorker->submitLatest(
                         frameId,
                         colorContourCacheVersion,
@@ -14349,6 +14544,10 @@ int runReplayDirectory(
             else
             {
                 colorContourRefreshStats.refreshed = true;
+                markSemanticProcessingWorkload(
+                    colorContourRefreshStats,
+                    refreshRois,
+                    colorBgr.size());
                 ColorContourRoiParallelStats parallelStats;
                 colorContourRegions = extractColorContourRegionsInRois(
                     colorBgr,
@@ -15662,6 +15861,7 @@ int main(int argc, char** argv)
             std::vector<ColorContourRegion> colorContourRegions;
             ColorContourRefreshStats colorContourRefreshStats;
             colorContourRefreshStats.attentionScanEnabled = config.attentionDifferenceScan;
+            initializeDrivingRiskStats(colorContourRefreshStats, colorBgr.size(), config);
             if (asyncColorContourWorker)
             {
                 AsyncColorContourRefreshResult asyncResult;
@@ -15799,6 +15999,17 @@ int main(int argc, char** argv)
                 {
                     colorContourRefreshStats.roiRejectedLarge = true;
                 }
+                const bool onlyMotionRefresh = refreshBecauseOfMotion &&
+                    !refreshBecauseOfStartup &&
+                    !colorContourRefreshStats.reasonInterval &&
+                    !colorContourRefreshStats.reasonUnknownSpike &&
+                    !colorContourRefreshStats.reasonFarLoss;
+                const bool skipDrivingRiskOutsideRefresh = constrainRefreshToDrivingRiskCorridor(
+                    refreshRois,
+                    onlyMotionRefresh,
+                    colorBgr.size(),
+                    config,
+                    colorContourRefreshStats);
                 colorContourRefreshStats.roiMotionBBoxX = motionRoiBBox.x;
                 colorContourRefreshStats.roiMotionBBoxY = motionRoiBBox.y;
                 colorContourRefreshStats.roiMotionBBoxW = motionRoiBBox.width;
@@ -15809,7 +16020,7 @@ int main(int argc, char** argv)
                 colorContourRefreshStats.roiAfterPaddingW = motionRoiAfterPadding.width;
                 colorContourRefreshStats.roiAfterPaddingH = motionRoiAfterPadding.height;
                 colorContourRefreshStats.roiAfterPaddingPixels = motionRoiAfterPadding.area();
-                colorContourRefreshStats.roiRefresh = !refreshRoi.empty();
+                colorContourRefreshStats.roiRefresh = !refreshRois.empty();
                 colorContourRefreshStats.roiPixels = sumRectAreas(refreshRois);
                 colorContourRefreshStats.attentionDirtyRoiCount = static_cast<int>(refreshRois.size());
                 const bool skipRejectedMotionRoiRefresh =
@@ -15825,8 +16036,11 @@ int main(int argc, char** argv)
                     (colorContourRefreshStats.roiRejectedEmpty ||
                         colorContourRefreshStats.roiRejectedLarge);
                 colorContourRefreshStats.attentionFullRefresh =
-                    config.attentionDifferenceScan && !skipRejectedMotionRoiRefresh && refreshRois.empty();
-                if (skipRejectedMotionRoiRefresh)
+                    config.attentionDifferenceScan &&
+                    !skipRejectedMotionRoiRefresh &&
+                    !skipDrivingRiskOutsideRefresh &&
+                    refreshRois.empty();
+                if (skipRejectedMotionRoiRefresh || skipDrivingRiskOutsideRefresh)
                 {
                     colorContourRegions = cachedColorContourRegions;
                     colorContourRefreshStats.cacheReused = true;
@@ -15843,6 +16057,10 @@ int main(int argc, char** argv)
                             ? makeColorContourMotionSignature(segmentationGray)
                             : currentColorContourMotionSignature;
                         colorContourRefreshStats.asyncSubmitted = true;
+                        markSemanticProcessingWorkload(
+                            colorContourRefreshStats,
+                            refreshRois,
+                            colorBgr.size());
                         colorContourRefreshStats.asyncDropped = asyncColorContourWorker->submitLatest(
                             frameId,
                             colorContourCacheVersion,
@@ -15862,6 +16080,10 @@ int main(int argc, char** argv)
                 else
                 {
                     colorContourRefreshStats.refreshed = true;
+                    markSemanticProcessingWorkload(
+                        colorContourRefreshStats,
+                        refreshRois,
+                        colorBgr.size());
                     ColorContourRoiParallelStats parallelStats;
                     colorContourRegions = extractColorContourRegionsInRois(
                         colorBgr,
