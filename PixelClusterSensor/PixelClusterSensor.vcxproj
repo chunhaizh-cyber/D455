@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <ProjectGuid>{C837A3C9-852E-48DC-BDA0-D786BD370105}</ProjectGuid>
+    <RootNamespace>PixelClusterSensor</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <VcpkgRoot Condition="'$(VcpkgRoot)'==''">D:\vcpkg\</VcpkgRoot>
+    <DependencyRoot>$(VcpkgRoot)installed\x64-windows\</DependencyRoot>
+    <DependencyVariant Condition="'$(Configuration)'=='Debug'">debug\</DependencyVariant>
+    <LibrarySuffix Condition="'$(Configuration)'=='Debug'">d</LibrarySuffix>
+    <BuildDefines Condition="'$(Configuration)'=='Debug'">_DEBUG</BuildDefines>
+    <BuildDefines Condition="'$(Configuration)'=='Release'">NDEBUG</BuildDefines>
+    <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\x64\$(Configuration)\PixelClusterSensor\</IntDir>
+    <TargetName>PixelClusterSensor</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode><LanguageStandard>stdcpp20</LanguageStandard>
+      <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
+      <Optimization Condition="'$(Configuration)'=='Debug'">Disabled</Optimization>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>$(BuildDefines);NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(DependencyRoot)include;$(DependencyRoot)include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalLibraryDirectories>$(DependencyRoot)$(DependencyVariant)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>realsense2$(LibrarySuffix).lib;opencv_core4$(LibrarySuffix).lib;opencv_imgproc4$(LibrarySuffix).lib;opencv_imgcodecs4$(LibrarySuffix).lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>"$(SystemRoot)\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -noprofile -File "$(VcpkgRoot)scripts\buildsystems\msbuild\applocal.ps1" "$(TargetPath)" "$(DependencyRoot)$(DependencyVariant)bin" "$(IntDir)$(ProjectName).write.1u.tlog" "$(IntDir)vcpkg.applocal.log"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" /><ClCompile Include="Observation.cpp" /><ClCompile Include="Source.cpp" />
+    <ClInclude Include="Sensor.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
