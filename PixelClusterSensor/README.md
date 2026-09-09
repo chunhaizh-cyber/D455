@@ -64,6 +64,19 @@ python .\PixelClusterSensor\test_temporal_estimator.py --output .codex_tmp/Pixel
 
 输出包含 `paired_metrics.csv`、`summary.json` 和各会话第一有效单元的估计样本NPZ，样本保存当前原始深度、独立估计及状态、样本数、拒绝位和支持样本年龄；源帧信息在summary样本目录中，标定需通过其输入probe复核。它们位于原始深度像面，**不是**可直接替换彩图配准深度的 `PCS.Observation/1` 包。年龄由源时间戳计算，不是已校准的曝光到结果延迟。实测及运动反例见 [时域估计报告](../docs/codex_analysis/pixel_cluster_sensor_temporal_20260909.md)。
 
+### 静态累积探针
+
+按“保留已有信息，当前帧修正”的路线增加 `static_accumulator.py`。不是多帧平均：当前可用深度直接更新账本，当前0缺测才尝试复用至少3次相容观测支持、最近实测年龄不超过200ms的历史值。缺测复用不刷新历史年龄；源中断、彩图相对静态参考图变化、局部深度冲突及其邻域、范围外/饱和或超龄会使活动历史失效。原始文件不删除，但缓存不是永久无损历史仓库。
+
+```powershell
+python .\PixelClusterSensor\static_accumulator.py PATH\probe.json --output .codex_tmp/PixelClusterSensor/accumulator_new --repeats 3 --save-every-n 30
+python .\PixelClusterSensor\test_static_accumulator.py --output .codex_tmp/PixelClusterSensor/accumulator_tests_new
+```
+
+每次update输出当前彩图、原始深度、累积深度、证据状态、最近实测年龄、来源索引和支持次数，全部为独立快照。状态明确分开当前观测与历史候选；彩图/深度仍各自在原始坐标系，不是新 `PCS.Observation/1`，暂不进入正常供包或分割。默认每30帧及末帧保存NPZ，设 `--save-every-n=1` 可逐帧保存；CSV逐帧记录，输出目录禁止覆盖。
+
+360帧与另段120帧复验中，状态闪烁减少，但当前有效数值波动不变；同色遮挡且缺深度仍能留下旧候选。固定阈值、Python层计时对照、内存边界、字段及读回证据见 [静态累积验证](../docs/codex_analysis/pixel_cluster_sensor_accumulation_20260909.md)。不因缺测看起来减少就宣称物理深度更完整或方法可以晋级。
+
 ### 正常供包
 
 1. 复核原始颜色、depth16、内外参、单位、尺寸和逐流时间。未知畸变模型、损坏材料及不相容时间明确失败。
