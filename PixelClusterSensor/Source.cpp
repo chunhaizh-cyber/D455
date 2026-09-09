@@ -1,4 +1,5 @@
 #include "Sensor.h"
+#include "SourceTiming.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include <opencv2/imgcodecs.hpp>
@@ -240,6 +241,8 @@ class CameraSource final : public Source {
     Json info_;
     uint64_t lastColor_ = 0;
     uint64_t lastDepth_ = 0;
+    uint64_t startupRejected_ = 0;
+    Json lastStartupRejected_ = nullptr;
 public:
     explicit CameraSource(const std::string& serial) {
         auto devices = context_.query_devices();
@@ -262,20 +265,46 @@ public:
                 {"彩图内参", intrinsicsJson(ci)}, {"深度内参", intrinsicsJson(di)},
                 {"深度到彩图外参", extrinsicsJson(ex)},
                 {"深度单位米", profile.get_device().first<rs2::depth_sensor>().get_depth_scale()},
-                {"宽", 640}, {"高", 480}, {"帧率", 30}, {"预热状态", "未证明稳定"}};
+                {"宽", 640}, {"高", 480}, {"帧率", 30}, {"预热状态", "未证明稳定"},
+                {"启动筛帧", "首帧配对通过前，在单次1000ms采集预算内跳过不相容帧对；不改变50ms门槛"}};
         } catch (...) { pipeline_.stop(); started_ = false; throw; }
     }
     ~CameraSource() override {
         if (started_) { try { pipeline_.stop(); } catch (...) {} }
     }
     RawFrame next() override {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+        auto remainingMs = [&]() {
+            return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count());
+        };
         rs2::frameset frames;
-        require(pipeline_.try_wait_for_frames(&frames, 1000), "capture_timeout", "采集超时");
+        // Only startup may discard incompatible pairs. Established sessions fail explicitly.
+        for (;;) {
+            const int remaining = remainingMs();
+            require(remaining > 0 && pipeline_.try_wait_for_frames(&frames, static_cast<unsigned>(remaining)),
+                    "capture_timeout", "采集超时；最近启动拒绝: " + lastStartupRejected_.dump());
+            const auto color = frames.get_color_frame();
+            const auto depth = frames.get_depth_frame();
+            const PairTiming pair{bool(color), bool(depth), color ? color.get_frame_number() : 0,
+                depth ? depth.get_frame_number() : 0, color ? color.get_timestamp() : 0,
+                depth ? depth.get_timestamp() : 0, color ? int(color.get_frame_timestamp_domain()) : -1,
+                depth ? int(depth.get_frame_timestamp_domain()) : -1};
+            const auto issue = checkPair(pair, lastColor_, lastDepth_);
+            if (issue == PairIssue::None) break;
+            const std::string code = issue == PairIssue::MissingStream ? "missing_stream" :
+                issue == PairIssue::StaleFrame ? "stale_frame" : "unsynchronized_frame";
+            const Json detail = {{"代码", code}, {"彩图源帧号", std::to_string(pair.colorNumber)},
+                {"深度源帧号", std::to_string(pair.depthNumber)}, {"彩图时间戳毫秒", pair.colorMs},
+                {"深度时间戳毫秒", pair.depthMs},
+                {"彩图时间域", color ? rs2_timestamp_domain_to_string(color.get_frame_timestamp_domain()) : "缺流"},
+                {"深度时间域", depth ? rs2_timestamp_domain_to_string(depth.get_frame_timestamp_domain()) : "缺流"}};
+            if (!lastColor_) { ++startupRejected_; lastStartupRejected_ = detail; }
+            require(retryStartupPair(issue, lastColor_ != 0, remainingMs()), code,
+                    "帧对被拒绝，未生成观察包: " + detail.dump());
+        }
         const auto color = frames.get_color_frame();
         const auto depth = frames.get_depth_frame();
-        require(color && depth, "missing_stream", "缺少颜色或深度流");
-        require(color.get_frame_number() > lastColor_ && depth.get_frame_number() > lastDepth_,
-                "stale_frame", "流帧号重复或倒退");
         RawFrame result;
         result.colorBgr = cv::Mat(color.get_height(), color.get_width(), CV_8UC3,
             const_cast<void*>(color.get_data()), color.get_stride_in_bytes()).clone();
@@ -287,8 +316,6 @@ public:
         result.depthScale = info_.at("深度单位米").get<float>();
         const auto colorDomain = color.get_frame_timestamp_domain();
         const auto depthDomain = depth.get_frame_timestamp_domain();
-        require(colorDomain == depthDomain && std::abs(color.get_timestamp() - depth.get_timestamp()) <= 50,
-                "unsynchronized_frame", "双流时间不相容，未生成观察包");
         result.source = {{"类型", "实时相机"}, {"设备标识", info_.at("设备标识")},
             {"源帧号", std::to_string(color.get_frame_number())},
             {"彩图源帧号", std::to_string(color.get_frame_number())}, {"深度源帧号", std::to_string(depth.get_frame_number())},
@@ -297,11 +324,19 @@ public:
             {"彩图源帧缺口", lastColor_ ? color.get_frame_number() - lastColor_ - 1 : 0},
             {"深度源帧缺口", lastDepth_ ? depth.get_frame_number() - lastDepth_ - 1 : 0},
             {"接收Unix毫秒", nowMs()}, {"绝对采集时间已校准", false},
+            {"启动拒绝帧对累计数", startupRejected_}, {"最近启动拒绝帧对", lastStartupRejected_},
+            {"预热状态", "未证明稳定"},
             {"新帧语义", "本会话未交付过的源帧，不保证曝光晚于请求时刻"}};
         lastColor_ = color.get_frame_number(); lastDepth_ = depth.get_frame_number();
         return result;
     }
-    Json description() const override { return info_; }
+    Json description() const override {
+        auto info = info_;
+        info["首帧配对已通过"] = lastColor_ != 0;
+        info["启动拒绝帧对累计数"] = startupRejected_;
+        info["最近启动拒绝帧对"] = lastStartupRejected_;
+        return info;
+    }
 };
 }
 

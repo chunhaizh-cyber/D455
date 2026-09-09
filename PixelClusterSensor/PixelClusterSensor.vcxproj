@@ -51,7 +51,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" /><ClCompile Include="Observation.cpp" /><ClCompile Include="Source.cpp" />
-    <ClInclude Include="Sensor.h" />
+    <ClInclude Include="Sensor.h" /><ClInclude Include="SourceTiming.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

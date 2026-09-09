@@ -28,7 +28,11 @@
 
 新工程无显示窗口，通过本机UTF-8 JSONL提供查询、打开/关闭、配置读回、单帧、连续观察、结果拉取及取消。默认相机规格为RGBD `640x480@30`，默认启用有界当前帧颜色引导补全；其它成像参数和IMU/关注区域扩展尚未实现并明确拒绝。主要入口为 `--stdio`、`--list-devices`、`--output-root`、`--max-packets`、`--max-bytes`，完整输出格式、参数与边界见 [子工程说明](PixelClusterSensor/README.md) 和 [控制/材料协议](PixelClusterSensor/PROTOCOL.md)。
 
-验证使用独立读回脚本及合成反例，不以画面重建一致代替真实分簇质量。本轮21组测试通过；新工程Debug/Release和原主工程Release构建通过。当前设备枚举为空，实时D455采集和正式自我接收端尚未验证；不能因此宣称替换了原有分割路线。阶段及证据见 [实施计划](PixelClusterSensor/IMPLEMENTATION_PLAN.md) 和 [首轮验证记录](docs/codex_analysis/pixel_cluster_sensor_initial_20260908.md)。
+验证使用独立读回脚本及合成反例，不以画面重建一致代替真实分簇质量。2026-09-08 的首轮21组合成测试通过，当时未连接设备；见 [首轮验证记录](docs/codex_analysis/pixel_cluster_sensor_initial_20260908.md)。
+
+2026-09-09 已用真实D455完成供包链路调试：启动阶段SDK返回的首批RGBD帧对存在较大时间差，现仅在首帧配对通过前、单次1000ms采集预算内筛除不相容帧对，50ms时间差门槛不变；首帧通过后仍严格拒绝缺流、旧帧或不同步。源信息与配置读回新增启动拒绝累计数、最近拒绝帧对，逐帧明确标记预热未证明稳定。不修改成像参数、分簇/补全算法、原主程序或best配置。
+
+新增 `python .\PixelClusterSensor\test_camera.py --continuous-frames 20 --output .codex_tmp/PixelClusterSensor/camera_new_run`，覆盖单帧、实时优先连续观察、源帧缺口拒绝、取消、重开和EOF释放；输出目录必须不存在。最终6次会话、30包全部独立读回通过，但首帧原始深度缺测比例中位数74.40%，后续42.63%，时间配对不等于预热稳定；实时优先任务仍有源帧缺口，不代表完整30fps采样。新工程Debug/Release各21组合成测试、时间门禁各23项断言及原主工程Release构建通过。真实分割质量、绝对测距、运动同步精度和正式自我接收仍未验收。阶段及边界见 [实施计划](PixelClusterSensor/IMPLEMENTATION_PLAN.md) 和 [真实相机调试记录](docs/codex_analysis/pixel_cluster_sensor_camera_20260909.md)。
 
 ## 外围轮廓内部保留与真实穿孔过滤
 

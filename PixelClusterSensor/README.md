@@ -24,6 +24,9 @@ python .\PixelClusterSensor\client.py --camera --frames 1 --validate
 python .\PixelClusterSensor\client.py --replay PATH\sequence.json --frames 2 --validate
 python .\PixelClusterSensor\validate_packet.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\review
 python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSensor\tests_new_run
+python .\PixelClusterSensor\test_camera.py --continuous-frames 20 --output .codex_tmp\PixelClusterSensor\camera_new_run
+msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+.\x64\Release\SourceTimingTests.exe
 ```
 
 客户端本身仅用 Python 标准库；独立读回和测试需要 NumPy、Pillow。测试输出目录必须不存在，以免覆盖旧证据。项目不下载库、不自动安装环境、不改写 `datasets/`、历史 `analysis_runs/` 或用户录制材料。
@@ -65,6 +68,8 @@ python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSen
 
 - 实时相机首版仅支持 `640x480@30` 的 RGBD 组合；具体硬件能否打开仍以实际 SDK 返回为准。请求其它组合拒绝，不静默降级。
 - 打开时不修改曝光、白平衡、增益或发射器。首帧不宣称已预热稳定；源时间域保留，不把宿主接收时间当曝光时间。
+- 启动阶段首帧配对尚未通过时，在单次1000ms采集预算内筛除缺流、旧帧、时间域不同或时间差超过50ms的帧对；预算耗尽明确失败，不发布错误配对。首帧配对通过后不自动筛掉异常，仍明确失败。配置读回的 `首帧配对已通过` 仅指输入门禁通过，不代表包已发布或曝光/深度质量已稳定。
+- 实时源信息和配置读回保留 `启动拒绝帧对累计数`、`最近启动拒绝帧对`；拒绝诊断带原生帧号、时间戳、时间域及原因。逐帧 `预热状态=未证明稳定`，不会把启动缺测多的帧包装成稳定观测。这是2026-09-09实机发现后的默认采集修正，不改变算法配置。
 - 单帧含义是本会话未交付过的源帧，不承诺曝光发生在请求之后，不提供“缓存当新帧”。
 - 处理参数通过预期配置版本门禁修改，未指定字段保持现值；整组校验通过后生效。连续观察中必须先停止任务再修改。
 - 连续任务以请求编号为任务编号，结果经 `读取观察结果` 拉取；队列最多32份引用。`完整处理` 队列满后背压，若任务内实际输入出现源帧缺口则失败，不能宣称完整连续采样；`实时优先` 可丢弃最旧未消费引用，但准确计数且保留已写材料。
@@ -82,4 +87,6 @@ python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSen
 
 独立读回验证内容长度、SHA256、标签与簇目录、内外环、原色重建、深度有效性、原始深度保留和几何重投影。合成反例同时检查深度台阶、斜面、彩绘平面、背景开口、孤立缺测、颜色权重及不确定降级。同输入重复验证完整数组一致；没有证明跨平台逐位一致。
 
-协议见 [PROTOCOL.md](PROTOCOL.md)，实施阶段见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)。当前检验记录见 [首轮验证记录](../docs/codex_analysis/pixel_cluster_sensor_initial_20260908.md)。重建一致不能代替真实分割质量、绝对测距准确性或现有 fixed replay gate；本轮不晋级任何 best 配置。
+`test_camera.py` 必须显式运行才打开硬件，不纳入无人值守的合成测试。默认12帧实时优先任务，可设2至20帧；另测试单帧、故意150ms间隔引起的完整模式源缺口、停止/读完结果、同进程重开三次、EOF释放后跨进程重开。每个包都独立读回，校验放在关闭相机后执行，避免改变采集负载。报告分开统计会话首帧、后续帧和实时优先任务；单帧往返时间包含等待、处理和写盘，不是曝光到结果的真实年龄。输出为本地 `camera_report.json`、原始RGBD与处理材料、第二帧读回图，不自动上传。故意制造的 `source_gap` 是拒绝机制通过，不能计作完整连续采集成功。
+
+协议见 [PROTOCOL.md](PROTOCOL.md)，实施阶段见 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)。检验记录见 [首轮验证](../docs/codex_analysis/pixel_cluster_sensor_initial_20260908.md) 和 [真实相机调试](../docs/codex_analysis/pixel_cluster_sensor_camera_20260909.md)。实机供包已验证，但重建一致不能代替真实分割质量、绝对测距准确性或现有 fixed replay gate；本轮不晋级任何 best 配置。
