@@ -33,6 +33,24 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 ## 处理路径
 
+### 原始启动诊断
+
+```powershell
+.\x64\Release\PixelClusterSensor.exe --probe-startup --frames=120 --sessions=3 --output-root=.codex_tmp/PixelClusterSensor/startup_new
+python .\PixelClusterSensor\analyze_startup.py .codex_tmp/PixelClusterSensor/startup_new/probe.json --output .codex_tmp/PixelClusterSensor/startup_analysis_new
+python .\PixelClusterSensor\test_startup.py --output .codex_tmp/PixelClusterSensor/startup_test_new
+```
+
+这是诊断入口，不是自我的新控制指令。它复用 `Source`，不运行后续分割，先把原始输入保存在有界内存中，关闭源后再写PNG，避免本轮PNG写盘改变读取负载。默认120帧、3次会话，范围为2至300帧、1至5次会话；原图缓冲上限512MiB，单会话读取预算20秒、尝试次数不超过请求帧数三倍。超时检查在调用边界，SDK单次等待仍有原来的1000ms预算，不承诺操作系统硬实时。每次打开重置源，不改曝光、增益和发射器。
+
+原始诊断明确记录并重试 `stale_frame/unsynchronized_frame/missing_stream`，但不改变正常 `--stdio` 的严格失败语义。任意重试/源帧缺口都必须进入离线连续性检查；“请求数量完成”不是“无漏帧采集通过”。异常结束也保存已完成帧，诊断目录禁止覆盖。支持 `--replay-manifest=PCS.RawSequence清单` 做合成和EOF反例测试，保留原材料来源，不能标成实拍。
+
+离线窗口使用固定15对帧、0.4至1秒窗口。按全帧及4x4分区的深度有效比例、有效/缺测翻转、共同有效点深度差、RGB平均差和变化像素比判定；缺测过多、时间不连续或样本不足时不产生“变化较小候选”。后验距离分带和区域统计仅解释失败，不改变门槛。即使产生候选，也不证明曝光/热稳定、物理静止或绝对测距正确；本轮实测联合门禁全部未通过，正常供包的 `预热状态=未证明稳定` 不变。
+
+真实数据与诊断结果仅保存本地，不上传原始图片。完整规格与证据见 [启动验证报告](../docs/codex_analysis/pixel_cluster_sensor_startup_20260909.md)。
+
+### 正常供包
+
 1. 复核原始颜色、depth16、内外参、单位、尺寸和逐流时间。未知畸变模型、损坏材料及不相容时间明确失败。
 2. 使用 RealSense SDK 从原始深度像素反投影，经真实深度到颜色外参变换，再投影到彩图像面。按最近像素中心落点并用 Z-buffer 解决竞争，同时保存源深度像素索引。不以 `resize` 代替配准，不复制源相机 Z 冒充彩图相机 Z。
 3. 当前可用深度建立四邻接连续表面区域。连通判据为局部深度差不超过 `邻接深度差米 + 邻接深度相对差 * min(Z1,Z2)`；颜色不强制拆开有深度支撑的彩绘平面。

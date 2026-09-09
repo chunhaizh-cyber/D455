@@ -137,6 +137,24 @@ rs2_extrinsics parseExtrinsics(const Json& j) {
 }
 
 namespace {
+Json frameMetadata(const rs2::frame& frame) {
+    Json result = Json::object();
+    for (const auto field : {RS2_FRAME_METADATA_FRAME_TIMESTAMP, RS2_FRAME_METADATA_SENSOR_TIMESTAMP,
+            RS2_FRAME_METADATA_ACTUAL_EXPOSURE, RS2_FRAME_METADATA_GAIN_LEVEL,
+            RS2_FRAME_METADATA_AUTO_EXPOSURE, RS2_FRAME_METADATA_TIME_OF_ARRIVAL,
+            RS2_FRAME_METADATA_BACKEND_TIMESTAMP, RS2_FRAME_METADATA_ACTUAL_FPS}) {
+        Json entry = {{"支持", false}, {"原始值", nullptr}};
+        try {
+            if (frame.supports_frame_metadata(field)) {
+                entry["原始值"] = std::to_string(frame.get_frame_metadata(field));
+                entry["支持"] = true;
+            }
+        } catch (const rs2::error& error) { entry["读取错误"] = error.what(); }
+        result[rs2_frame_metadata_to_string(field)] = entry;
+    }
+    return result;
+}
+
 fs::path containedPath(const fs::path& root, const std::string& relative) {
     require(relative.size() <= 1024 && relative.find('\0') == std::string::npos, "invalid_path", "材料路径非法");
     const auto requested = fs::path(std::u8string(relative.begin(), relative.end()));
@@ -326,6 +344,7 @@ public:
             {"接收Unix毫秒", nowMs()}, {"绝对采集时间已校准", false},
             {"启动拒绝帧对累计数", startupRejected_}, {"最近启动拒绝帧对", lastStartupRejected_},
             {"预热状态", "未证明稳定"},
+            {"逐流元数据", {{"彩图", frameMetadata(color)}, {"深度", frameMetadata(depth)}}},
             {"新帧语义", "本会话未交付过的源帧，不保证曝光晚于请求时刻"}};
         lastColor_ = color.get_frame_number(); lastDepth_ = depth.get_frame_number();
         return result;

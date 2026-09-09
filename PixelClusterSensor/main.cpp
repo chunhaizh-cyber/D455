@@ -312,8 +312,32 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (argc < 2 || std::wstring(argv[1]) == L"--help") {
             std::cout << "PixelClusterSensor --stdio [--output-root=PATH] [--max-packets=128] [--max-bytes=268435456]\n"
-                         "PixelClusterSensor --list-devices\n";
+                         "PixelClusterSensor --list-devices\n"
+                         "PixelClusterSensor --probe-startup --output-root=NEW_PATH [--frames=120] [--sessions=3] [--replay-manifest=PATH]\n";
             return 0;
+        }
+        if (std::wstring(argv[1]) == L"--probe-startup") {
+            pcs::fs::path root, replay;
+            int frames = 120, sessions = 3;
+            auto integer = [](const std::wstring& value, int lo, int hi) {
+                pcs::require(!value.empty() && value.size() <= 5 && value.find_first_not_of(L"0123456789") == std::wstring::npos,
+                             "invalid_argument", "诊断计数必须是有界正整数");
+                const int n = std::stoi(value);
+                pcs::require(n >= lo && n <= hi, "invalid_argument", "诊断计数越界");
+                return n;
+            };
+            for (int i = 2; i < argc; ++i) {
+                const std::wstring arg = argv[i];
+                if (arg.starts_with(L"--output-root=")) root = pcs::fs::path(arg.substr(14));
+                else if (arg.starts_with(L"--frames=")) frames = integer(arg.substr(9), 2, 300);
+                else if (arg.starts_with(L"--sessions=")) sessions = integer(arg.substr(11), 1, 5);
+                else if (arg.starts_with(L"--replay-manifest=")) replay = pcs::fs::path(arg.substr(18));
+                else throw pcs::Error("invalid_argument", "未知原始诊断参数");
+            }
+            pcs::require(!root.empty(), "invalid_argument", "原始诊断必须指定新的输出目录");
+            const pcs::Json input = replay.empty() ? pcs::Json{{"来源", "实时相机"}} :
+                pcs::Json{{"来源", "目录回放"}, {"清单", pcs::utf8(pcs::fs::absolute(replay))}};
+            return pcs::probeStartup(pcs::fs::absolute(root), frames, sessions, input);
         }
         pcs::require(std::wstring(argv[1]) == L"--stdio", "invalid_argument", "未知启动参数");
         pcs::fs::path root = pcs::fs::current_path() / ".codex_tmp" / "PixelClusterSensor";

@@ -92,4 +92,5 @@ public:
 };
 Json deviceCapabilities();
 std::unique_ptr<Source> openSource(const Json& parameters);
+int probeStartup(const fs::path& root, int frames, int sessions, const Json& sourceParameters);
 }
