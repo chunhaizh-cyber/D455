@@ -77,6 +77,17 @@ python .\PixelClusterSensor\test_static_accumulator.py --output .codex_tmp/Pixel
 
 360帧与另段120帧复验中，状态闪烁减少，但当前有效数值波动不变；同色遮挡且缺深度仍能留下旧候选。固定阈值、Python层计时对照、内存边界、字段及读回证据见 [静态累积验证](../docs/codex_analysis/pixel_cluster_sensor_accumulation_20260909.md)。不因缺测看起来减少就宣称物理深度更完整或方法可以晋级。
 
+### 旧动态录制测试
+
+`evaluate_dynamic_accumulation.py` 可直接读取旧 `d455_directory_replay_v1` 的配准彩图/毫米深度序列，算法仍使用上述静态累积器，不更改门槛。缺少时间戳时必须明确 `--nominal-fps 30`，其时效只是假设值；有 `source_timestamps.csv` 时不使用nominal时间。输出声明旧坐标与时间证据限制，不生成虚假 `PCS.RawStartupProbe/1`。
+
+```powershell
+python .\PixelClusterSensor\evaluate_dynamic_accumulation.py datasets/hand_occlusion_reappear --nominal-fps 30 --repeats 3 --output .codex_tmp/PixelClusterSensor/dynamic_new
+python .\PixelClusterSensor\test_dynamic_accumulation.py --output .codex_tmp/PixelClusterSensor/dynamic_tests_new
+```
+
+慢移、手部遮挡和车载合计420帧全部没有历史复用；颜色门禁频繁整帧重置，动态累积收益未成立。局部颜色冲突、重观测深度冲突无历史分母时输出null，而非0%错误。详见 [动态累积测试](../docs/codex_analysis/pixel_cluster_sensor_dynamic_accumulation_20260909.md)。默认供包不变。
+
 ### 正常供包
 
 1. 复核原始颜色、depth16、内外参、单位、尺寸和逐流时间。未知畸变模型、损坏材料及不相容时间明确失败。
