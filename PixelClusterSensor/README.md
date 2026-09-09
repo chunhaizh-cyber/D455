@@ -49,6 +49,21 @@ python .\PixelClusterSensor\test_startup.py --output .codex_tmp/PixelClusterSens
 
 真实数据与诊断结果仅保存本地，不上传原始图片。完整规格与证据见 [启动验证报告](../docs/codex_analysis/pixel_cluster_sensor_startup_20260909.md)。
 
+### 离线时域估计探针
+
+时域估计是独立离线探针，不在下面的正常供包路径中。运行方式：
+
+```powershell
+python .\PixelClusterSensor\temporal_estimator.py PATH\probe.json --output .codex_tmp/PixelClusterSensor/temporal_new
+python .\PixelClusterSensor\test_temporal_estimator.py --output .codex_tmp/PixelClusterSensor/temporal_test_new
+```
+
+输入为 `PCS.RawStartupProbe/1`；默认跳过每会话前30帧，不声称第31帧已预热稳定。每18帧为独立评测单元，前后各9帧，3/5/9帧方法分别使用各半段末尾的N帧，输出时刻一致。前后估计之间、不同单元之间均无共享输入。每对仅在全部18帧共同有效的像素及[0.3,3.5)m分带上作公平比较，拒绝集合、覆盖率和原始对照另外记录；不能把这一条件化样本当作全画面质量。
+
+估计要求最新帧有效、至少80%样本有效、有效历史均在[0.3,3.5)m内。门禁中位数还要求时间深度跨度不超过 `0.04 + 0.02 * 最小深度米`，并检查窗口内各彩图对最新彩图的全局变化；彩图门禁只提供全局否决，没有把未配准的彩图像素直接映射到原始深度像素。无空间混合、无递归补全、无相机运动补偿，无法保证缓慢运动时不滞后。所有参数固化于脚本CONFIG及输出 `config_snapshot.json`，本次新采复验前已固定，没有按结果放宽。
+
+输出包含 `paired_metrics.csv`、`summary.json` 和各会话第一有效单元的估计样本NPZ，样本保存当前原始深度、独立估计及状态、样本数、拒绝位和支持样本年龄；源帧信息在summary样本目录中，标定需通过其输入probe复核。它们位于原始深度像面，**不是**可直接替换彩图配准深度的 `PCS.Observation/1` 包。年龄由源时间戳计算，不是已校准的曝光到结果延迟。实测及运动反例见 [时域估计报告](../docs/codex_analysis/pixel_cluster_sensor_temporal_20260909.md)。
+
 ### 正常供包
 
 1. 复核原始颜色、depth16、内外参、单位、尺寸和逐流时间。未知畸变模型、损坏材料及不相容时间明确失败。
