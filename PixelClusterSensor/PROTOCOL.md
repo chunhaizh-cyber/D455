@@ -105,7 +105,7 @@
 
 相机只能产生前两者。自我绑定令牌可由自我提供且相机原样回传，但相机不解释、不新建、不修改其含义。
 
-### P0/P1/P2 当前实现范围
+### P0/P1/P2/P3 当前实现范围
 
 已提供独立严格读回器 `cluster_protocol.py`、无状态转换器 `convert_cluster_observation.py` 与离线短期跟踪器 `cluster_tracker.py`。转换器只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包；跟踪器再将连续的全量快照转成首帧全量、后续增量：
 
@@ -114,6 +114,7 @@
 - 未实现实时 C++ 供包接线、心跳生产、扫描/观察/跟踪调度指令、姿态补偿或详细材料租约。
 - 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
+- P3 `cluster_stream.py` 是 Python 影子/评测桥，唯一相机所有者仍是它通过 `Client` 启动的 C++ 服务。它逐帧执行 P1 转换和 P2 跟踪，写出 `cluster_packets/`、`run_manifest.json`、`packet_metrics.csv` 和 `events.csv`；合成三帧静态回放已验证首帧全量、后续增量、连续候选号和重建。它不等于 C++ 实时接线、心跳生产或扫描/观察/跟踪控制指令。
 
 ### 包头和簇记录
 
@@ -131,8 +132,10 @@
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
 python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
+python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
 python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
+python .\PixelClusterSensor\cluster_stream.py --replay PATH\sequence.json --frames 3 --output .codex_tmp\PixelClusterSensor\cluster_stream_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 ```
 
