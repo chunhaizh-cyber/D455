@@ -11,9 +11,11 @@ import time
 
 from client import Client
 from cluster_protocol import validate_cluster_packet
+from cluster_protocol import pack_ring
 from cluster_tracker import ClusterTracker, reconstruct, write_packets
 from convert_cluster_observation import convert
 from test_cluster_conversion import make_replay
+from test_cluster_protocol import digest, package
 
 
 def check(condition: bool, message: str) -> None:
@@ -28,6 +30,24 @@ def write_packet(directory: Path, data: dict, source_contours: Path) -> Path:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     validate_cluster_packet(path)
     return path
+
+
+def moved_snapshot(root: Path) -> tuple[Path, Path]:
+    base = package(root / "base")
+    shifted = json.loads(base.read_text(encoding="utf-8"))
+    shifted["输出序号"], shifted["场景版本"], shifted["包标识"] = "2", "2", "packet-2"
+    entry = shifted["簇变化"][0]
+    entry["范围XYWH"], entry["图像中心XY"] = [3, 2, 3, 3], [4.0, 3.0]
+    ring, raw, bits = pack_ring([(3, 2), (4, 2), (5, 2), (5, 3), (5, 4), (4, 4), (3, 4), (3, 3)], inner=False)
+    entry["轮廓"][0].update({"字节偏移": 0, "有效位数": bits, "起点XY": list(ring[0]), "点数": len(ring)})
+    shifted["材料"]["精确轮廓链"].update({"字节数": len(raw), "SHA256": digest(raw)})
+    directory = root / "shifted"
+    directory.mkdir()
+    (directory / "contours.bin").write_bytes(raw)
+    path = directory / "packet.json"
+    path.write_text(json.dumps(shifted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validate_cluster_packet(path)
+    return base, path
 
 
 def main() -> None:
@@ -87,6 +107,13 @@ def main() -> None:
         run("second_missing_frame_is_explicit_lost_tombstone", lambda: check(lost["簇变化"][0]["变化类型"] == "Lost" and
                                                                                 lost["簇变化"][0]["跟踪状态"] == "Retired", "Lost tombstone is wrong"))
         run("lost_tombstone_removes_reconstructed_track", lambda: check(not reconstruct([full, occluded, lost]), "Lost track remained reconstructed"))
+
+        move_base, move_shifted = moved_snapshot(root / "movement")
+        moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked")
+        moved = [json.loads(path.read_text(encoding="utf-8")) for path in moved_paths]
+        run("small_position_shift_keeps_track_id", lambda: check(moved[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and
+                                                                  moved[1]["簇变化"][0]["相机跟踪候选编号"] == "1", "Small movement switched ID"))
+        run("small_position_shift_is_moved_event", lambda: check(moved[1]["簇变化"][0]["变化类型"] == "Moved", "Movement was not explicit"))
         report["status"] = "pass"
     except Exception as error:
         report["status"] = "fail"

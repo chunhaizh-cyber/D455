@@ -173,7 +173,7 @@ class ClusterTracker:
                 track = prior[matched_by_cluster[cluster_index]]
                 shift = math.dist(track.record["图像中心XY"], entry["图像中心XY"])
                 entry["相机跟踪候选编号"] = track.identifier
-                entry["变化类型"] = "Moved" if shift > 1.0 else "Updated"
+                entry["变化类型"] = "Moved" if shift >= 1.0 else "Updated"
                 entry["跟踪状态"] = "Reappeared" if track.missing_frames else "Active"
                 entry["时效"] = {"连续可见帧数": track.visible_frames + 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": edges[(matched_by_cluster[cluster_index], cluster_index)]}
