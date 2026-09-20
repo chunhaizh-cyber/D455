@@ -1,6 +1,6 @@
 # 像素簇视觉外设协议 v0.1
 
-这是新子工程的供包与控制协议，不是数字生命项目现有 ABI 或事实格式的替代。首版命名为 `PCS.Control/1`、`PCS.RawSequence/1`、`PCS.Observation/1`，不预分配受端的正式类型编码。
+这是新子工程的供包与控制协议，不是数字生命项目现有 ABI 或事实格式的替代。现有格式为 `PCS.Control/1`、`PCS.RawSequence/1`、`PCS.Observation/1`和 2026-09-20 新增的 `PCS.ClusterObservation/1`，不预分配受端的正式类型编码。
 
 ## 控制传输
 
@@ -92,6 +92,46 @@
 边界原因位：1算法区域分界，2相邻深度缺测，4视野截断，可组合。区域闭合不等于物体完整；所有 `物理孔洞确认` 当前为false，不把内环拓扑升级为真实开口确认。真实背景有观测时保留为另一簇，不用填充覆盖；完全缺测且颜色相同的穿孔仍存在不可判定歧义。
 
 包不携带已确认存在身份、体素、完整物体尺寸或世界位置。原图大小、颜色和来源不因归一化轮廓比较被覆盖。
+
+## 簇级观察包
+
+`PCS.ClusterObservation/1` 是供自我高频读取的簇级包，不是取代 `PCS.Observation/1` 的原始材料包。正常情况下它不重复输出 RGB、Depth、IR、标签图或逐像素数组；需要实际材料时由后续有界租约句柄读取。
+
+簇级包的三个身份必须分开：
+
+```text
+帧内簇编号 != 相机跟踪候选编号 != 自我确认的存在身份
+```
+
+相机只能产生前两者。自我绑定令牌可由自我提供且相机原样回传，但相机不解释、不新建、不修改其含义。
+
+### P0/P1 当前实现范围
+
+已提供独立严格读回器 `cluster_protocol.py` 与无状态转换器 `convert_cluster_observation.py`。后者只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包：
+
+- 未实现跨帧跟踪，因此 `相机跟踪候选编号=null`、跟踪状态为 `Tentative`。
+- 未实现增量包生产、心跳生产、调度指令、姿态补偿或详细材料租约。读回器已验证这些包类型的基本结构和约束，生产端还不生成。
+- 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
+- P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
+
+### 包头和簇记录
+
+包头必须含 `格式`、`发布状态=完整`、`包标识`、`会话标识`、`跟踪时期`、`输出序号`、`场景版本`、`包类型`、`任务意图`、`依赖全量序号`、`源时间`、`发布Unix毫秒`、`结果年龄毫秒`、`配置版本`、`标定版本`、`坐标系`、`图像尺寸WH`、`相机姿态`、`处理区域`、`输入质量`、`全局覆盖摘要`、`材料`和`簇变化`。读回器拒绝未知顶层字段、非法枚举、非有限数值、超界图像/材料和非规范十进制序号。
+
+每个簇记录包含帧内编号、跟踪候选、变化/跟踪状态、图像范围、轮廓、分级形状指纹、颜色、距离模式、深度证据分账、运动、遮挡、关联证据、时效和详细材料句柄。P1 不具备的字段明确为 `null` 或已定义的 `Unknown` 状态，而不冒充具备证据。
+
+### 精确轮廓材料
+
+首版精确轮廓用直接包内的 `contours.bin`，编码 `PCS.ContourChain8/1`。每个环保存规范化起点 `XY`、点数、字节偏移和有效位数；每个边使用 3 bit 表示 8 方向步进。外环顺时针、内环逆时针，起点取 `(y,x)` 字典序最小点；最后一步必须回到起点，编码的高位填充为 0。读回器对环闭合、连通、字典序、孔洞层级和材料 SHA256 进行校验。
+
+目前校验命令：
+
+```powershell
+python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
+python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
+python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
+python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
+```
 
 ## 回放输入
 
