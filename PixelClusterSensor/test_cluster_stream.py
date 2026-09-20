@@ -73,6 +73,11 @@ def main() -> None:
             rows = list(csv.DictReader(file))
         run("metrics_cover_every_source_frame", lambda: check([row["source_frame"] for row in rows] == ["1", "2", "3"],
                                                                 "Metrics do not preserve source frame order"))
+        long_replay = make_static_sequence(root / "long_replay", 129)
+        long_stream = run_stream(executable=args.exe, output=root / "long_stream", frames=129, replay=long_replay)
+        run("released_source_material_allows_more_than_default_packet_limit", lambda: check(
+            long_stream["status"] == "pass" and long_stream["source_observation_count"] == 129,
+            "Source material release did not permit a bounded long stream"))
         report["status"] = "pass"
     except Exception as error:
         report["status"] = "fail"

@@ -198,6 +198,21 @@ def main():
             return {"idempotence": "pass", "stale_guards": "pass", "config_readback": "pass", "malformed_input": "pass"}
         run("control_protocol", protocol)
 
+        def material_release():
+            path = fixture(root, "material_release", color, depth, frames=2)
+            with Client(args.exe, root / "material_release") as client:
+                open_replay(client, path)
+                first = client.call("获取单帧观察")
+                directory = Path(first["材料路径"]).parent
+                check(directory.is_dir(), "Published material directory is missing")
+                released = client.call("释放观察材料", {"输出序号": first["输出序号"]})
+                check(released["已释放输出序号"] == first["输出序号"] and not directory.exists(), "Released material remains visible")
+                check(client.call("查询运行状态")["已发布包数"] == 0, "Released material still consumes package quota")
+                error(client, client.request("释放观察材料", {"输出序号": first["输出序号"]}), "unknown_material")
+                client.call("关闭设备")
+            return {"explicit_release": "pass", "double_release": "rejected"}
+        run("explicit_material_release", material_release)
+
         def invalid_sources():
             def expect_open_failure(name, modify, code):
                 path = fixture(root, name, color, depth, modify=modify)

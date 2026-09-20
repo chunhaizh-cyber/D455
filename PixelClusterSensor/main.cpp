@@ -27,7 +27,7 @@ Json failure(const Json& id, const std::string& code, const std::string& message
 Json capabilities() {
     return {{"设备", deviceCapabilities()}, {"输出格式", "PCS.Observation/1"},
         {"支持指令", {"查询设备能力", "查询运行状态", "打开设备", "关闭设备", "读取配置与标定", "设置处理配置",
-            "获取单帧观察", "开始连续观察", "停止连续观察", "读取观察结果", "取消请求", "退出"}},
+            "获取单帧观察", "开始连续观察", "停止连续观察", "读取观察结果", "释放观察材料", "取消请求", "退出"}},
         {"未实现指令", {"设置成像参数", "设置采集配置", "设置关注区域", "取消关注区域", "请求局部复核", "订阅运动信息",
             "取消订阅", "设置输出订阅", "释放观测材料", "开始录制", "停止录制", "重置临时缓存", "恢复设备连接"}},
         {"相机采集规格", {{"宽", 640}, {"高", 480}, {"帧率", 30}, {"流", {"颜色", "深度"}}, {"通过打开设备请求", true}}},
@@ -50,6 +50,8 @@ class Service {
     ProcessingConfig config_;
     uint64_t revision_ = 1, sequence_ = 0, published_ = 0;
     size_t publishedBytes_ = 0;
+    struct Published { fs::path directory; size_t bytes; };
+    std::map<uint64_t, Published> publications_;
     std::string session_;
     bool exit_ = false;
     Json lastError_ = nullptr;
@@ -84,9 +86,12 @@ class Service {
         }
         const auto observation = process(raw, config_);
         const Json control = {{"请求编号", requestId}, {"连续任务", task_.active}};
-        const auto result = publish(root_, session_, ++sequence_, raw, observation, config_, revision_, control, byteLimit_ - publishedBytes_);
+        const auto sequence = ++sequence_;
+        const auto result = publish(root_, session_, sequence, raw, observation, config_, revision_, control, byteLimit_ - publishedBytes_);
         publishedBytes_ += result.at("字节数").get<size_t>();
         ++published_;
+        const auto material = result.at("材料路径").get<std::string>();
+        publications_.emplace(sequence, Published{fs::path(std::u8string(material.begin(), material.end())).parent_path(), result.at("字节数").get<size_t>()});
         lastFrame_ = result;
         return result;
     }
@@ -182,6 +187,26 @@ class Service {
                 results.push_back(ready_.front()); ready_.pop_front();
             }
             return {{"观察结果", results}, {"任务", taskStatus()}};
+        }
+        if (command == "释放观察材料") {
+            onlyKeys(parameters, {"输出序号"});
+            const auto text = parameters.at("输出序号").get<std::string>();
+            require(!text.empty() && text.size() <= 20 && text.find_first_not_of("0123456789") == std::string::npos,
+                    "invalid_argument", "输出序号必须是十进制字符串");
+            const auto sequence = std::stoull(text);
+            const auto found = publications_.find(sequence);
+            require(found != publications_.end(), "unknown_material", "观察材料不存在、已释放或不属于当前会话");
+            const auto queued = std::any_of(ready_.begin(), ready_.end(), [sequence](const Json& item) {
+                return item.at("输出序号").get<std::string>() == std::to_string(sequence);
+            });
+            require(!queued, "unconsumed_result", "材料仍在连续观察结果队列中，读取后才能释放");
+            std::error_code error;
+            const auto removed = fs::remove_all(found->second.directory, error);
+            require(!error && removed > 0, "io_error", "释放观察材料失败");
+            publishedBytes_ -= found->second.bytes;
+            --published_;
+            publications_.erase(found);
+            return {{"已释放输出序号", text}, {"剩余已发布包数", published_}, {"剩余已发布字节", publishedBytes_}};
         }
         throw Error("unsupported_command", "未实现指令，不产生副作用: " + command);
     }

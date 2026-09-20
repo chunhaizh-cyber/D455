@@ -67,6 +67,7 @@ def export_sequence(*, executable: Path, output: Path, frames: int, replay: Path
                     "源帧号": source["源帧号"], "彩图时间戳毫秒": source["彩图时间戳毫秒"],
                     "深度时间戳毫秒": source["深度时间戳毫秒"], "时间域": source["彩图时间域"],
                 })
+                client.call("释放观察材料", {"输出序号": reference["输出序号"]})
             client.call("关闭设备")
         sequence = {"格式": "PCS.RawSequence/1", "材料来源": "历史回放", "设备标识": actual["设备标识"],
                     **calibration, "帧列表": report["copied_frames"]}

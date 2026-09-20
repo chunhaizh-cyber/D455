@@ -33,8 +33,8 @@ def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
 def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
-    if not 1 <= frames <= 128:
-        raise ValueError("frames must be 1..128")
+    if not 1 <= frames <= 2048:
+        raise ValueError("frames must be 1..2048")
     output.mkdir(parents=True)
     report = {
         "status": "running", "format": "PCS.ClusterStreamRun/1", "requested_frames": frames,
@@ -62,6 +62,7 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 tracked = tracker.update(snapshot)
                 tracked_root = output / "cluster_packets" / f"packet_{index:06d}"
                 tracked_path = write_tracked_packet(tracked, snapshot_root, tracked_root)
+                client.call("释放观察材料", {"输出序号": observation["输出序号"]})
                 elapsed = (time.perf_counter() - started) * 1000.0
                 packet_documents.append(json.loads(tracked_path.read_text(encoding="utf-8")))
                 metrics.append({
