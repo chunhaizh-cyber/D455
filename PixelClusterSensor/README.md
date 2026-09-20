@@ -25,7 +25,9 @@ python .\PixelClusterSensor\client.py --replay PATH\sequence.json --frames 2 --v
 python .\PixelClusterSensor\validate_packet.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\review
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
+python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
+python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSensor\tests_new_run
 python .\PixelClusterSensor\test_camera.py --continuous-frames 20 --output .codex_tmp\PixelClusterSensor\camera_new_run
@@ -35,11 +37,11 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 客户端本身仅用 Python 标准库；独立读回和测试需要 NumPy、Pillow。测试输出目录必须不存在，以免覆盖旧证据。项目不下载库、不自动安装环境、不改写 `datasets/`、历史 `analysis_runs/` 或用户录制材料。
 
-### 簇级供包 P0/P1
+### 簇级供包 P0/P1/P2
 
-`cluster_protocol.py` 是 `PCS.ClusterObservation/1` 的严格读回器和 `PCS.ContourChain8/1` 轮廓编解码器。它校验包头、簇记录、状态枚举、深度证据分账、精确深度越权、轮廓闭合/拓扑、材料 SHA256 和覆盖像素分区。`convert_cluster_observation.py` 是无状态 P1 桥接，只将已发布的 `PCS.Observation/1` 转为 `FullSnapshot + Scan`。
+`cluster_protocol.py` 是 `PCS.ClusterObservation/1` 的严格读回器和 `PCS.ContourChain8/1` 轮廓编解码器。它校验包头、簇记录、状态枚举、深度证据分账、精确深度越权、轮廓闭合/拓扑、材料 SHA256 和覆盖像素分区。`convert_cluster_observation.py` 是无状态 P1 桥接，只将已发布的 `PCS.Observation/1` 转为 `FullSnapshot + Scan`。`cluster_tracker.py` 是离线 P2 短期跟踪器，可产生相机候选号、增量包、遮挡事件和丢失墓碑，并可从全量+增量重建活跃候选。
 
-它不是实时管道的新默认输出：未实现跨帧跟踪、增量生产、调度指令、详细材料租约、姿态补偿或精确三维升级。即使源包包含范围内深度，转换结果也只输出 `UnknownDistance` 和当前/估算/缺失/范围外证据计数，不把配置范围当作精度校准。完整字段、边界和分阶验收见 [PROTOCOL.md](PROTOCOL.md) 和 [簇级测试方案](../资料/20260920_D455簇级扫描观察跟踪稳定供包测试方案_v0.1.md)。
+它不是实时管道的新默认输出：P2 只在合成静态、遮挡和墓碑场景完成验证，未在真实动态回放中通过。未实现 C++ 实时接线、心跳生产、调度指令、详细材料租约、姿态补偿或精确三维升级。即使源包包含范围内深度，转换结果也只输出 `UnknownDistance` 和当前/估算/缺失/范围外证据计数，不把配置范围当作精度校准。完整字段、边界和分阶验收见 [PROTOCOL.md](PROTOCOL.md) 和 [簇级测试方案](../资料/20260920_D455簇级扫描观察跟踪稳定供包测试方案_v0.1.md)。
 
 ## 处理路径
 

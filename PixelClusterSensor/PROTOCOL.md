@@ -105,12 +105,13 @@
 
 相机只能产生前两者。自我绑定令牌可由自我提供且相机原样回传，但相机不解释、不新建、不修改其含义。
 
-### P0/P1 当前实现范围
+### P0/P1/P2 当前实现范围
 
-已提供独立严格读回器 `cluster_protocol.py` 与无状态转换器 `convert_cluster_observation.py`。后者只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包：
+已提供独立严格读回器 `cluster_protocol.py`、无状态转换器 `convert_cluster_observation.py` 与离线短期跟踪器 `cluster_tracker.py`。转换器只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包；跟踪器再将连续的全量快照转成首帧全量、后续增量：
 
-- 未实现跨帧跟踪，因此 `相机跟踪候选编号=null`、跟踪状态为 `Tentative`。
-- 未实现增量包生产、心跳生产、调度指令、姿态补偿或详细材料租约。读回器已验证这些包类型的基本结构和约束，生产端还不生成。
+- P2 按包围矩 IoU、中心位移、颜色差、面积比和 32x32 形状指纹作硬门禁与代价。对每个有限联通竞争组使用全局最小代价一对一分配；节点数超过 64 的组不关联，宁可显式新建候选也不拿不可审核的贪心结果冒充确认。当前仅有合成静态、遮挡、丢失/墓碑和重建验证，未经真实动态回放验收。
+- 首帧返回 `FullSnapshot`，后续帧返回带基线序号的 `Delta`。临时无匹配簇会发布 `Occluded`；连续缺失达期限后发布 `Lost/Retired` 墓碑并从重建状态移除。无帧内簇的遮挡/墓碑记录不携带当前轮廓、深度或材料。
+- 未实现实时 C++ 供包接线、心跳生产、扫描/观察/跟踪调度指令、姿态补偿或详细材料租约。
 - 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
 
@@ -129,7 +130,9 @@
 ```powershell
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
+python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
+python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 ```
 

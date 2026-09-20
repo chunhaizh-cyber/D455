@@ -222,7 +222,6 @@ def _validate_header(packet: dict) -> tuple[int, int]:
 def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, active_track_ids: set[str]) -> dict:
     _only_keys(entry, CLUSTER_KEYS, "Cluster entry")
     check(CLUSTER_KEYS <= set(entry), "Cluster entry is missing required fields")
-    _integer(entry["帧内簇编号"], "Frame cluster ID", 1, MAX_CLUSTERS)
     track = entry["相机跟踪候选编号"]
     if track is not None:
         track = _decimal(track, "Camera tracking candidate ID", 1)
@@ -232,6 +231,28 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
         _string(entry["自我绑定令牌"], "Self binding token", 1, 256)
     check(entry["变化类型"] in CHANGE_TYPES, "Unknown change type")
     check(entry["跟踪状态"] in TRACK_STATES, "Unknown tracking state")
+    if entry["帧内簇编号"] is None:
+        check(entry["变化类型"] in {"Occluded", "Lost", "Removed"} and track is not None and entry["跟踪状态"] in {"Occluded", "Lost", "Retired"},
+              "Absent-cluster event needs a tracked candidate")
+        if entry["变化类型"] == "Occluded":
+            check(entry["跟踪状态"] == "Occluded", "Occlusion event needs Occluded state")
+        else:
+            check(entry["跟踪状态"] in {"Lost", "Retired"}, "Terminal event needs Lost or Retired state")
+        for key in {"范围XYWH", "图像中心XY", "像素数", "触及视野边界", "轮廓", "形状指纹", "颜色摘要", "距离", "三维中心米", "尺寸米", "深度证据", "运动"}:
+            check(entry[key] is None, f"Tombstone field must be null: {key}")
+        occlusion = entry["遮挡"]
+        _only_keys(occlusion, {"状态", "比例", "依据"}, "Tombstone occlusion")
+        check(occlusion.get("状态") == "Occluded" and occlusion.get("比例") is None, "Tombstone must be fully occluded")
+        _string(occlusion.get("依据"), "Tombstone reason", 1, 256)
+        freshness = entry["时效"]
+        _only_keys(freshness, {"连续可见帧数", "连续缺失帧数", "证据年龄毫秒"}, "Tombstone freshness")
+        _integer(freshness.get("连续可见帧数"), "Visible frame count", 0, 1_000_000)
+        _integer(freshness.get("连续缺失帧数"), "Missing frame count", 1, 1_000_000)
+        if freshness.get("证据年龄毫秒") is not None:
+            _finite(freshness["证据年龄毫秒"], "Evidence age", 0)
+        check(entry["关联证据"] is None and entry["详细材料句柄"] is None, "Tombstone cannot carry current association or material")
+        return {"frame_cluster_id": None, "track_id": track, "pixels": 0}
+    _integer(entry["帧内簇编号"], "Frame cluster ID", 1, MAX_CLUSTERS)
     rect = _rect(entry["范围XYWH"], "Cluster bounding box", width, height)
     center = entry["图像中心XY"]
     check(isinstance(center, list) and len(center) == 2, "Cluster center must be XY")
@@ -341,7 +362,7 @@ def validate_cluster_packet(path: Path) -> dict:
         check(not changes, "Heartbeat cannot carry cluster changes")
     active_tracks: set[str] = set()
     records = [_validate_cluster(entry, width, height, contours, active_tracks) for entry in changes]
-    frame_ids = [record["frame_cluster_id"] for record in records]
+    frame_ids = [record["frame_cluster_id"] for record in records if record["frame_cluster_id"] is not None]
     check(len(frame_ids) == len(set(frame_ids)), "Duplicate frame-local cluster ID")
     return {"status": "pass", "format": packet["格式"], "packet_type": packet["包类型"], "intent": packet["任务意图"],
             "clusters": len(records), "contour_bytes": len(contours), "image_pixels": width * height}
