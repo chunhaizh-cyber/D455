@@ -83,11 +83,10 @@ def main() -> None:
         tracked_paths = write_packets([first, second], root / "tracked")
         tracked = [json.loads(path.read_text(encoding="utf-8")) for path in tracked_paths]
         run("first_frame_is_full_snapshot", lambda: check(tracked[0]["包类型"] == "FullSnapshot" and tracked[0]["依赖全量序号"] is None, "First packet is not a snapshot"))
-        run("second_static_frame_is_delta", lambda: check(tracked[1]["包类型"] == "Delta" and tracked[1]["依赖全量序号"] == "1", "Second packet is not based on first snapshot"))
-        run("static_cluster_keeps_camera_track_id", lambda: check(tracked[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and
-                                                                     tracked[1]["簇变化"][0]["相机跟踪候选编号"] == "1", "Static cluster switched ID"))
-        run("static_cluster_becomes_active", lambda: check(tracked[1]["簇变化"][0]["跟踪状态"] == "Active" and
-                                                               tracked[1]["簇变化"][0]["变化类型"] == "Updated", "Static tracking state is wrong"))
+        run("second_static_frame_is_heartbeat", lambda: check(tracked[1]["包类型"] == "Heartbeat" and
+                                                                 tracked[1]["依赖全量序号"] == "1" and not tracked[1]["簇变化"],
+                                                           "Unchanged static frame is not an empty heartbeat"))
+        run("static_cluster_keeps_camera_track_id", lambda: check(tracked[0]["簇变化"][0]["相机跟踪候选编号"] == "1", "Static cluster did not receive a stable ID"))
         run("full_plus_delta_reconstructs_active_state", lambda: check(list(reconstruct(tracked)) == ["1"], "Reconstruction lost active track"))
 
         source = json.loads(first.read_text(encoding="utf-8"))
@@ -107,6 +106,22 @@ def main() -> None:
         run("second_missing_frame_is_explicit_lost_tombstone", lambda: check(lost["簇变化"][0]["变化类型"] == "Lost" and
                                                                                 lost["簇变化"][0]["跟踪状态"] == "Retired", "Lost tombstone is wrong"))
         run("lost_tombstone_removes_reconstructed_track", lambda: check(not reconstruct([full, occluded, lost]), "Lost track remained reconstructed"))
+
+        reappearance_source = copy.deepcopy(source)
+        reappearance_source["输出序号"], reappearance_source["场景版本"], reappearance_source["包标识"] = "3", "3", "cluster-reappeared"
+        reappearance_path = write_packet(root / "reappearance_source", reappearance_source, first.parent / "contours.bin")
+        tracker = ClusterTracker(max_missing_frames=2)
+        first_visible = tracker.update(source)
+        one_missing = tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
+        reappeared = tracker.update(json.loads(reappearance_path.read_text(encoding="utf-8")))
+        run("reappearance_is_delta_not_heartbeat", lambda: check(reappeared["包类型"] == "Delta" and
+                                                                    reappeared["簇变化"][0]["变化类型"] == "Updated" and
+                                                                    reappeared["簇变化"][0]["跟踪状态"] == "Reappeared",
+                                                              "Reappeared track was hidden by a heartbeat"))
+        run("reappearance_keeps_prior_track_id", lambda: check(first_visible["簇变化"][0]["相机跟踪候选编号"] ==
+                                                                  reappeared["簇变化"][0]["相机跟踪候选编号"] and
+                                                                  one_missing["簇变化"][0]["变化类型"] == "Occluded",
+                                                            "Reappearance changed or skipped the candidate ID"))
 
         move_base, move_shifted = moved_snapshot(root / "movement")
         moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked")

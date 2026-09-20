@@ -58,11 +58,12 @@ def main() -> None:
         run("all_published_packets_validate", lambda: [validate_cluster_packet(path) for path in packet_paths])
         run("first_packet_is_full_snapshot", lambda: check(packets[0]["包类型"] == "FullSnapshot" and
                                                              packets[0]["依赖全量序号"] is None, "First packet is not full"))
-        run("static_following_packets_are_deltas", lambda: check(all(packet["包类型"] == "Delta" and
-                                                                      packet["依赖全量序号"] == "1" for packet in packets[1:]),
-                                                                "Static follow-up packets are not deltas"))
-        run("static_candidate_keeps_track_id", lambda: check({packet["簇变化"][0]["相机跟踪候选编号"] for packet in packets} == {"1"},
-                                                               "Static candidate changed camera-local track ID"))
+        run("static_following_packets_are_heartbeats", lambda: check(all(packet["包类型"] == "Heartbeat" and
+                                                                           packet["依赖全量序号"] == "1" and not packet["簇变化"]
+                                                                           for packet in packets[1:]),
+                                                                     "Static follow-up packets are not empty heartbeats"))
+        run("static_candidate_keeps_track_id", lambda: check(packets[0]["簇变化"][0]["相机跟踪候选编号"] == "1",
+                                                               "Static candidate did not receive a camera-local ID"))
         run("full_and_deltas_reconstruct_one_active_track", lambda: check(list(reconstruct(packets)) == ["1"],
                                                                             "Reconstruction lost the active track"))
         run("stream_audit_files_are_complete", lambda: check(all((root / "stream" / name).is_file()

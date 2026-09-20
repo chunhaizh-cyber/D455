@@ -19,6 +19,10 @@ from cluster_protocol import validate_cluster_packet
 
 UNMATCHED_COST = 1_000_000
 INVALID_COST = 10_000_000
+OBSERVATION_FIELDS = (
+    "范围XYWH", "图像中心XY", "像素数", "触及视野边界", "轮廓", "形状指纹", "颜色摘要",
+    "距离", "三维中心米", "尺寸米", "深度证据", "运动", "遮挡",
+)
 
 
 def bbox_iou(first: list[int], second: list[int]) -> float:
@@ -45,6 +49,11 @@ def match_cost(previous: dict, current: dict, diagonal: float) -> int | None:
     shape_b = current["形状指纹"]["层级"][-1]["位图SHA256"]
     shape = 0.0 if shape_a == shape_b else 0.5
     return int(round((0.45 * center + 0.40 * (1.0 - iou) + 0.10 * color + 0.05 * shape) * 1_000_000))
+
+
+def same_observation(previous: dict, current: dict) -> bool:
+    """Compare current observable content, excluding tracker-owned bookkeeping."""
+    return all(previous.get(field) == current.get(field) for field in OBSERVATION_FIELDS)
 
 
 def hungarian(cost: list[list[int]]) -> list[int]:
@@ -149,6 +158,7 @@ class ClusterTracker:
         self.tracks: dict[str, Track] = {}
         self.next_identifier = 1
         self.base_sequence: str | None = None
+        self.scene_version = 0
 
     def update(self, packet: dict) -> dict:
         if packet["包类型"] != "FullSnapshot":
@@ -167,17 +177,22 @@ class ClusterTracker:
         matched_by_track = {track: cluster for track, cluster in matched}
         matched_by_cluster = {cluster: track for track, cluster in matched}
         changes = []
+        meaningful_change = False
         for cluster_index, source in enumerate(current):
             entry = copy.deepcopy(source)
             if cluster_index in matched_by_cluster:
                 track = prior[matched_by_cluster[cluster_index]]
                 shift = math.dist(track.record["图像中心XY"], entry["图像中心XY"])
+                unchanged = same_observation(track.record, entry)
+                was_missing = track.missing_frames > 0
                 entry["相机跟踪候选编号"] = track.identifier
                 entry["变化类型"] = "Moved" if shift >= 1.0 else "Updated"
                 entry["跟踪状态"] = "Reappeared" if track.missing_frames else "Active"
                 entry["时效"] = {"连续可见帧数": track.visible_frames + 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": edges[(matched_by_cluster[cluster_index], cluster_index)]}
                 track.record, track.visible_frames, track.missing_frames = copy.deepcopy(entry), track.visible_frames + 1, 0
+                if not unchanged or was_missing:
+                    meaningful_change = True
             else:
                 identifier = str(self.next_identifier)
                 self.next_identifier += 1
@@ -187,6 +202,7 @@ class ClusterTracker:
                 entry["时效"] = {"连续可见帧数": 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = None
                 self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), 1)
+                meaningful_change = True
             changes.append(entry)
         for track_index, track in enumerate(prior):
             if track_index in matched_by_track:
@@ -204,14 +220,23 @@ class ClusterTracker:
             })
             if terminal:
                 del self.tracks[track.identifier]
+            meaningful_change = True
         output = copy.deepcopy(packet)
         output["包标识"] = "tracked-" + packet["输出序号"]
         output["任务意图"] = "Mixed"
-        output["簇变化"] = changes
         if self.base_sequence is None:
             output["包类型"], output["依赖全量序号"], self.base_sequence = "FullSnapshot", None, output["输出序号"]
+            self.scene_version = 1
+            output["簇变化"] = changes
+        elif not meaningful_change:
+            # The source-time header proves that the supply chain is alive.  The
+            # current schema cannot refresh per-track evidence age in a heartbeat,
+            # so no hidden per-track measurement claim is made here.
+            output["包类型"], output["依赖全量序号"], output["簇变化"] = "Heartbeat", self.base_sequence, []
         else:
-            output["包类型"], output["依赖全量序号"] = "Delta", self.base_sequence
+            output["包类型"], output["依赖全量序号"], output["簇变化"] = "Delta", self.base_sequence, changes
+            self.scene_version += 1
+        output["场景版本"] = str(self.scene_version)
         return output
 
     def active_snapshot(self) -> dict[str, dict]:

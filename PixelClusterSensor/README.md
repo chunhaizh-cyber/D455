@@ -47,7 +47,7 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 `cluster_protocol.py` 是 `PCS.ClusterObservation/1` 的严格读回器和 `PCS.ContourChain8/1` 轮廓编解码器。它校验包头、簇记录、状态枚举、深度证据分账、精确深度越权、轮廓闭合/拓扑、材料 SHA256 和覆盖像素分区。`convert_cluster_observation.py` 是无状态 P1 桥接，只将已发布的 `PCS.Observation/1` 转为 `FullSnapshot + Scan`。`cluster_tracker.py` 是离线 P2 短期跟踪器，可产生相机候选号、增量包、遮挡事件和丢失墓碑，并可从全量+增量重建活跃候选。
 
-`cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。合成三帧静态回放已验证首包全量、后续增量、稳定跟踪号、材料读回和全量加增量重建。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
+`cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。首帧发布全量快照；无簇级变化的后续帧发布空 `Heartbeat`，不重复发送静态轮廓；新增、移动、遮挡、重现和丢失仍发布 `Delta`。合成静态、遮挡和重现测试已验证稳定跟踪号、材料读回和全量加增量重建。心跳只证明供包链在新的源时间上仍工作，当前协议不在心跳中刷新逐簇证据年龄，因此不把它解释成逐簇新测量。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 
