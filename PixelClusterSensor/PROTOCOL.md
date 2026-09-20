@@ -116,6 +116,7 @@
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
 - P3 `cluster_stream.py` 是 Python 影子/评测桥，唯一相机所有者仍是它通过 `Client` 启动的 C++ 服务。它逐帧执行 P1 转换和 P2 跟踪，写出 `cluster_packets/`、`run_manifest.json`、`packet_metrics.csv` 和 `events.csv`；合成三帧静态回放已验证首帧全量、后续增量、连续候选号和重建。它不等于 C++ 实时接线、心跳生产或扫描/观察/跟踪控制指令。
 - `export_raw_sequence.py` 从已发布观察包导出受限的 `PCS.RawSequence/1`：仅复制彩图和原始深度，并保留实际标定、深度单位、帧号、时间戳和共同时间域。导出清单的材料来源恒为 `历史回放`，不把处理派生层或宿主时间写成源证据。合成导出后回放已经验证；当前 C++ 输入未采集 IR/IMU，因此导出不承诺这两类流。
+- `evaluate_cluster_stability.py` 为已完成的 P3 流输出独立决策文件。它验证包、序号和全量加增量重建，并在多次同输入运行间比较归一化包序列；包标识、会话标识、发布宿主时间和包含这些字段的上游观察清单 SHA256 被明确排除，其余源时间、簇证据、轮廓和跟踪关联仍须一致。它不把静态回放一致性解释为物理静止、动态跟踪或世界身份。
 
 ### 包头和簇记录
 
@@ -139,6 +140,8 @@ python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.
 python .\PixelClusterSensor\cluster_stream.py --replay PATH\sequence.json --frames 3 --output .codex_tmp\PixelClusterSensor\cluster_stream_new
 python .\PixelClusterSensor\export_raw_sequence.py --camera --frames 120 --output .codex_tmp\PixelClusterSensor\raw_sequence_capture_new
 python .\PixelClusterSensor\test_export_raw_sequence.py --output .codex_tmp\PixelClusterSensor\raw_sequence_export_tests_new
+python .\PixelClusterSensor\evaluate_cluster_stability.py --runs RUN_A RUN_B RUN_C --output .codex_tmp\PixelClusterSensor\cluster_stability_new
+python .\PixelClusterSensor\test_evaluate_cluster_stability.py --output .codex_tmp\PixelClusterSensor\cluster_stability_tests_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 ```
 

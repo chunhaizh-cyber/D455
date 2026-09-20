@@ -32,6 +32,8 @@ python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.
 python .\PixelClusterSensor\cluster_stream.py --replay PATH\sequence.json --frames 3 --output .codex_tmp\PixelClusterSensor\cluster_stream_new
 python .\PixelClusterSensor\export_raw_sequence.py --camera --frames 120 --output .codex_tmp\PixelClusterSensor\raw_sequence_capture_new
 python .\PixelClusterSensor\test_export_raw_sequence.py --output .codex_tmp\PixelClusterSensor\raw_sequence_export_tests_new
+python .\PixelClusterSensor\evaluate_cluster_stability.py --runs RUN_A RUN_B RUN_C --output .codex_tmp\PixelClusterSensor\cluster_stability_new
+python .\PixelClusterSensor\test_evaluate_cluster_stability.py --output .codex_tmp\PixelClusterSensor\cluster_stability_tests_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSensor\tests_new_run
 python .\PixelClusterSensor\test_camera.py --continuous-frames 20 --output .codex_tmp\PixelClusterSensor\camera_new_run
@@ -48,6 +50,8 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 `cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。合成三帧静态回放已验证首包全量、后续增量、稳定跟踪号、材料读回和全量加增量重建。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
+
+`evaluate_cluster_stability.py` 读取一个或多个已完成的 `cluster_stream.py` 输出目录，产出 `run_decision.json`、逐包指标和事件表。硬判据是严格包读回、连续输出序号、全量加增量重建、同输入多次运行的归一化包序列一致、静态主候选不换相机跟踪号且不出现生命周期事件。归一化只排除包标识、会话标识、发布宿主时间和上游观察包的会话相关清单 SHA256；源时间、簇、轮廓、证据、输出序号和跟踪关联仍必须一致。它只评价已给定流的静态一致性，不能证明物理场景静止、动态跟踪、世界身份或绝对深度精度。
 
 它不是实时管道的新默认输出：P2/P3 只在合成静态、遮挡和墓碑场景完成验证，未在真实动态回放中通过。未实现 C++ 实时接线、心跳生产、调度指令、详细材料租约、姿态补偿或精确三维升级。即使源包包含范围内深度，转换结果也只输出 `UnknownDistance` 和当前/估算/缺失/范围外证据计数，不把配置范围当作精度校准。旧 `datasets/*` 回放缺少 `PCS.RawSequence/1` 所要求的完整标定与逐帧时间域，不能为动态跟踪补造这些事实。完整字段、边界和分阶验收见 [PROTOCOL.md](PROTOCOL.md) 和 [簇级测试方案](../资料/20260920_D455簇级扫描观察跟踪稳定供包测试方案_v0.1.md)。
 
