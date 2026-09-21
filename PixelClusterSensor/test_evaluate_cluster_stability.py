@@ -35,8 +35,15 @@ def main() -> None:
         check(decision["pass"], f"Static stability decision failed: {decision}")
         check(decision["normalized_determinism_pass"], "Repeated static stream was not deterministic")
         check(decision["frame_local_id_reassignment_count"] == 0, "Synthetic stream changed its frame-local mapping")
+        check(decision["main_contour_target_pass"] and decision["main_contour_iou_p50"] == 100.0,
+              "Identical synthetic geometry did not pass the 99 percent contour target")
+        check(len(decision["main_geometry_by_run"]) == 3 and
+              all(row["distinct_32x32_value_count"] == 1 for row in decision["main_geometry_by_run"]),
+              "Synthetic main geometry was not reported deterministically")
         check((root / "decision" / "packet_metrics.csv").is_file() and (root / "decision" / "events.csv").is_file(),
               "Decision evidence files are missing")
+        check((root / "decision" / "track_geometry_metrics.csv").is_file() and
+              (root / "decision" / "geometry_pairs.csv").is_file(), "Geometry evidence files are missing")
         blank_run = root / "blank_run"
         run_stream(executable=args.exe, output=blank_run, frames=3, replay=sequence, minimum_cluster_pixels=1_000_000)
         blank_decision = evaluate_runs([blank_run], root / "blank_decision")

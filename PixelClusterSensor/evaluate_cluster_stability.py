@@ -12,9 +12,13 @@ import copy
 import csv
 import hashlib
 import json
+import math
 from pathlib import Path
 
-from cluster_protocol import validate_cluster_packet
+import cv2
+import numpy as np
+
+from cluster_protocol import unpack_ring, validate_cluster_packet
 from cluster_tracker import reconstruct
 
 
@@ -43,6 +47,162 @@ def load_run(root: Path) -> tuple[list[dict], list[Path]]:
     return packets, paths
 
 
+def percentile(values: list[float], percent: float) -> float | None:
+    if not values:
+        return None
+    return float(np.percentile(np.asarray(values, dtype=np.float64), percent))
+
+
+def contour_material(packet: dict, packet_path: Path) -> bytes:
+    descriptor = packet["材料"]["精确轮廓链"]
+    return (packet_path.parent / descriptor["文件"]).read_bytes()
+
+
+def normalized_filled_mask(entry: dict, contours: bytes, side: int = 32) -> np.ndarray:
+    """Rasterize protocol rings into a centered diagnostic silhouette."""
+    x, y, width, height = entry["范围XYWH"]
+    mask = np.zeros((height, width), dtype=np.uint8)
+    rings = entry["轮廓"]
+    depths: list[int] = []
+    for index, ring in enumerate(rings):
+        depth = 0
+        parent = ring["父环索引"]
+        seen = {index}
+        while parent != -1:
+            if parent in seen:
+                raise ValueError("Contour hierarchy cycle during rasterization")
+            seen.add(parent)
+            depth += 1
+            parent = rings[parent]["父环索引"]
+        depths.append(depth)
+    for index in sorted(range(len(rings)), key=lambda value: (depths[value], value)):
+        ring = rings[index]
+        offset = ring["字节偏移"]
+        length = (ring["有效位数"] + 7) // 8
+        points = unpack_ring(ring["起点XY"], ring["点数"], contours[offset:offset + length], ring["有效位数"])
+        local = np.asarray([(px - x, py - y) for px, py in points], dtype=np.int32)
+        cv2.fillPoly(mask, [local], 0 if ring["内环"] else 1)
+    square_side = max(height, width)
+    square = np.zeros((square_side, square_side), dtype=np.uint8)
+    top = (square_side - height) // 2
+    left = (square_side - width) // 2
+    square[top:top + height, left:left + width] = mask
+    reduced = np.zeros((side, side), dtype=np.uint8)
+    for row in range(side):
+        y0, y1 = row * square_side // side, (row + 1) * square_side // side
+        for column in range(side):
+            x0, x1 = column * square_side // side, (column + 1) * square_side // side
+            reduced[row, column] = 1 if np.any(square[y0:y1, x0:x1]) else 0
+    return reduced
+
+
+def geometry_sample(entry: dict, contours: bytes, sequence: int) -> dict:
+    mask = normalized_filled_mask(entry, contours)
+    packed = np.packbits(mask.reshape(-1), bitorder="little").tobytes()
+    return {
+        "sequence": sequence,
+        "track_id": entry["相机跟踪候选编号"],
+        "frame_cluster_id": entry["帧内簇编号"],
+        "center_x": float(entry["图像中心XY"][0]),
+        "center_y": float(entry["图像中心XY"][1]),
+        "pixels": int(entry["像素数"]),
+        "state": entry["跟踪状态"],
+        "mask": mask,
+        "mask_sha256": hashlib.sha256(packed).hexdigest(),
+    }
+
+
+def compare_geometry(previous: dict, current: dict, carried: bool) -> dict:
+    left, right = previous["mask"].astype(bool), current["mask"].astype(bool)
+    intersection = int(np.count_nonzero(left & right))
+    union = int(np.count_nonzero(left | right))
+    foreground = int(np.count_nonzero(left)) + int(np.count_nonzero(right))
+    equal = int(np.count_nonzero(left == right))
+    return {
+        "track_id": current["track_id"],
+        "previous_sequence": previous["sequence"],
+        "current_sequence": current["sequence"],
+        "sequence_gap": current["sequence"] - previous["sequence"],
+        "carried_state_comparison": int(carried),
+        "mask_agreement_percent": 100.0 * equal / left.size,
+        "foreground_iou_percent": 100.0 * intersection / union if union else 100.0,
+        "foreground_dice_percent": 200.0 * intersection / foreground if foreground else 100.0,
+        "center_displacement_pixels": math.hypot(current["center_x"] - previous["center_x"],
+                                                  current["center_y"] - previous["center_y"]),
+        "exact_value_equal": int(previous["mask_sha256"] == current["mask_sha256"]),
+    }
+
+
+def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) -> tuple[list[dict], list[dict], dict | None]:
+    current: dict[str, dict] = {}
+    updates: dict[str, list[dict]] = {}
+    states: dict[str, list[dict]] = {}
+    state_pairs: list[dict] = []
+    update_pairs: list[dict] = []
+    for packet, path in zip(packets, paths):
+        sequence = int(packet["输出序号"])
+        contours = contour_material(packet, path)
+        updated_tracks: set[str] = set()
+        if packet["包类型"] == "FullSnapshot":
+            current = {}
+        for change in packet["簇变化"]:
+            track = change["相机跟踪候选编号"]
+            if track is None:
+                continue
+            if change["帧内簇编号"] is None:
+                if change["变化类型"] in {"Lost", "Removed"}:
+                    current.pop(track, None)
+                continue
+            sample = geometry_sample(change, contours, sequence)
+            current[track] = sample
+            updated_tracks.add(track)
+            track_updates = updates.setdefault(track, [])
+            if track_updates:
+                update_pairs.append({"run_index": run_index, "comparison_kind": "material_update",
+                                     **compare_geometry(track_updates[-1], sample, False)})
+            track_updates.append(sample)
+        for track, sample in sorted(current.items(), key=lambda item: int(item[0])):
+            state_sample = dict(sample)
+            state_sample["sequence"] = sequence
+            track_states = states.setdefault(track, [])
+            if track_states:
+                state_pairs.append({"run_index": run_index, "comparison_kind": "published_state",
+                                    **compare_geometry(track_states[-1], state_sample, track not in updated_tracks)})
+            track_states.append(state_sample)
+    track_rows: list[dict] = []
+    for track in sorted(set(states) | set(updates), key=int):
+        track_updates = updates.get(track, [])
+        track_states = states.get(track, [])
+        material_pairs = [row for row in update_pairs if row["track_id"] == track]
+        published_pairs = [row for row in state_pairs if row["track_id"] == track]
+        target_pairs = material_pairs if material_pairs else published_pairs
+        displacements = [row["center_displacement_pixels"] for row in target_pairs]
+        ious = [row["foreground_iou_percent"] for row in target_pairs]
+        track_rows.append({
+            "run_index": run_index,
+            "track_id": track,
+            "first_sequence": track_states[0]["sequence"] if track_states else None,
+            "last_sequence": track_states[-1]["sequence"] if track_states else None,
+            "published_state_frame_count": len(track_states),
+            "material_update_count": len(track_updates),
+            "material_pair_count": len(material_pairs),
+            "published_state_pair_count": len(published_pairs),
+            "target_comparison_kind": "material_update" if material_pairs else "published_state",
+            "median_pixels": percentile([sample["pixels"] for sample in track_updates], 50),
+            "distinct_32x32_value_count": len({sample["mask_sha256"] for sample in track_updates}),
+            "exact_repeat_pair_percent": (100.0 * sum(row["exact_value_equal"] for row in target_pairs) / len(target_pairs)) if target_pairs else None,
+            "contour_iou_p50": percentile(ious, 50),
+            "contour_iou_p95": percentile(ious, 95),
+            "center_displacement_p50_px": percentile(displacements, 50),
+            "center_displacement_p95_px": percentile(displacements, 95),
+            "center_displacement_max_px": max(displacements) if displacements else None,
+        })
+    eligible = [row for row in track_rows if row["material_pair_count"] > 0 or row["published_state_pair_count"] > 0]
+    main = max(eligible, key=lambda row: (row["material_update_count"], row["published_state_frame_count"],
+                                          row["median_pixels"] or 0.0, -int(row["track_id"])), default=None)
+    return track_rows, state_pairs + update_pairs, main
+
+
 def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
@@ -64,7 +224,10 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
     tentative_removed_count = 0
     added_candidate_count = 0
     run_max_active_tracks: list[int] = []
-    for run_index, packets in enumerate(packet_lists, start=1):
+    geometry_tracks: list[dict] = []
+    geometry_pairs: list[dict] = []
+    main_geometry: list[dict] = []
+    for run_index, (packets, paths) in enumerate(loaded, start=1):
         previous_sequence = 0
         track_by_frame_cluster: dict[int, str] = {}
         incremental_state: dict[str, dict] = {}
@@ -128,7 +291,18 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
             reconstruction_ok = False
             events.append({"run_index": run_index, "event": "incremental_reconstruction_mismatch", "detail": "final state differs"})
         run_max_active_tracks.append(max_active_tracks)
+        track_rows, pair_rows, main = evaluate_geometry(packets, paths, run_index)
+        geometry_tracks.extend(track_rows)
+        geometry_pairs.extend(pair_rows)
+        if main is not None:
+            main_geometry.append(main)
     candidate_presence_pass = all(value > 0 for value in run_max_active_tracks)
+    main_contour_iou_p50 = percentile([row["contour_iou_p50"] for row in main_geometry
+                                      if row["contour_iou_p50"] is not None], 50)
+    main_center_displacement_p95 = percentile([row["center_displacement_p95_px"] for row in main_geometry
+                                               if row["center_displacement_p95_px"] is not None], 95)
+    main_geometry_present = len(main_geometry) == len(run_roots)
+    main_contour_target_pass = main_geometry_present and main_contour_iou_p50 is not None and main_contour_iou_p50 >= 99.0
     decision = {
         "format": "PCS.ClusterStabilityDecision/1", "scope": "static replay evidence only",
         "run_count": len(run_roots), "frames_per_run": lengths, "packet_validation_pass": all_valid,
@@ -139,7 +313,19 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
         "added_candidate_count": added_candidate_count,
         "run_max_active_tracks": run_max_active_tracks,
         "candidate_presence_pass": candidate_presence_pass,
-        "pass": all_valid and deterministic and reconstruction_ok and candidate_presence_pass and static_lifecycle_events == 0,
+        "main_geometry_by_run": [{"run_index": row["run_index"], "track_id": row["track_id"],
+                                  "material_update_count": row["material_update_count"],
+                                  "distinct_32x32_value_count": row["distinct_32x32_value_count"],
+                                  "contour_iou_p50": row["contour_iou_p50"],
+                                  "center_displacement_p95_px": row["center_displacement_p95_px"]}
+                                 for row in main_geometry],
+        "main_contour_iou_p50": main_contour_iou_p50,
+        "main_contour_iou_target_percent": 99.0,
+        "main_contour_target_pass": main_contour_target_pass,
+        "main_center_displacement_p95_px": main_center_displacement_p95,
+        "center_displacement_status": "baseline_only_no_gate",
+        "pass": (all_valid and deterministic and reconstruction_ok and candidate_presence_pass and
+                 static_lifecycle_events == 0 and main_contour_target_pass),
         "not_proven": ["physical_scene_static", "dynamic_tracking", "world_identity", "absolute_depth_accuracy"],
     }
     (output / "run_decision.json").write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -151,6 +337,18 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
         writer = csv.DictWriter(file, fieldnames=["run_index", "event", "detail"])
         writer.writeheader()
         writer.writerows(events)
+    with (output / "track_geometry_metrics.csv").open("w", newline="", encoding="utf-8") as file:
+        fields = list(geometry_tracks[0]) if geometry_tracks else ["run_index", "track_id"]
+        writer = csv.DictWriter(file, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(geometry_tracks)
+    pair_fields = ["run_index", "comparison_kind", "track_id", "previous_sequence", "current_sequence", "sequence_gap",
+                   "carried_state_comparison", "mask_agreement_percent", "foreground_iou_percent", "foreground_dice_percent",
+                   "center_displacement_pixels", "exact_value_equal"]
+    with (output / "geometry_pairs.csv").open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=pair_fields)
+        writer.writeheader()
+        writer.writerows(geometry_pairs)
     return decision
 
 
