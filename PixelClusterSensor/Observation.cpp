@@ -215,10 +215,10 @@ private:
 };
 
 void partitionContourFirst(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
+    const auto partitionStart = std::chrono::steady_clock::now();
     const auto size = lab.size();
     cv::Mat colorLabels = cv::Mat::zeros(size, CV_32S);
     cv::Mat depthSeeds = cv::Mat::zeros(size, CV_32S);
-    std::vector<std::vector<cv::Point>> colorPixels(1);
     std::vector<cv::Point> queue;
     queue.reserve(lab.total());
 
@@ -227,11 +227,9 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
         if (colorLabels.at<int>(y, x)) continue;
         require(colorCount < MaxClusters, "resource_limit", "彩图候选数量超限");
         const int label = ++colorCount;
-        colorPixels.emplace_back();
         queue.clear(); queue.emplace_back(x, y); colorLabels.at<int>(y, x) = label;
         for (size_t index = 0; index < queue.size(); ++index) {
             const auto point = queue[index];
-            colorPixels[static_cast<size_t>(label)].push_back(point);
             for (const auto delta : Neighbors) {
                 const auto neighbor = point + delta;
                 if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(neighbor)) continue;
@@ -241,15 +239,25 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
             }
         }
     }
+    std::vector<int> colorPixelCounts(static_cast<size_t>(colorCount + 1), 0);
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x)
+        ++colorPixelCounts[static_cast<size_t>(colorLabels.at<int>(y, x))];
+    std::vector<std::vector<cv::Point>> colorPixels(static_cast<size_t>(colorCount + 1));
+    for (int color = 1; color <= colorCount; ++color)
+        colorPixels[static_cast<size_t>(color)].reserve(static_cast<size_t>(colorPixelCounts[static_cast<size_t>(color)]));
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x)
+        colorPixels[static_cast<size_t>(colorLabels.at<int>(y, x))].emplace_back(x, y);
+    const auto colorPartitioned = std::chrono::steady_clock::now();
 
     std::vector<double> seedDepthSum(1, 0.0);
     std::vector<int> seedDepthCount(1, 0);
+    std::vector<int> seedColor(1, 0);
     int seedCount = 0;
     for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
         if (out.depthState.at<uint8_t>(y, x) != 1 || depthSeeds.at<int>(y, x)) continue;
         require(seedCount < MaxClusters, "resource_limit", "深度区域数量超限");
         const int seed = ++seedCount;
-        seedDepthSum.push_back(0.0); seedDepthCount.push_back(0);
+        seedDepthSum.push_back(0.0); seedDepthCount.push_back(0); seedColor.push_back(colorLabels.at<int>(y, x));
         queue.clear(); queue.emplace_back(x, y); depthSeeds.at<int>(y, x) = seed;
         for (size_t index = 0; index < queue.size(); ++index) {
             const auto point = queue[index];
@@ -266,29 +274,35 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
             }
         }
     }
+    const auto depthSeeded = std::chrono::steady_clock::now();
 
     std::map<std::pair<int, int>, int> depthSeedBoundary;
+    std::map<std::pair<int, int>, int> rawCrossColorBoundary;
     for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
         const cv::Point point(x, y);
         for (const cv::Point delta : {cv::Point(1, 0), cv::Point(0, 1)}) {
             const auto neighbor = point + delta;
-            if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(point) != colorLabels.at<int>(neighbor)) continue;
+            if (!inside(size, neighbor.x, neighbor.y)) continue;
             int first = depthSeeds.at<int>(point), second = depthSeeds.at<int>(neighbor);
             if (!first || !second || first == second) continue;
             if (first > second) std::swap(first, second);
-            ++depthSeedBoundary[{first, second}];
+            if (colorLabels.at<int>(point) == colorLabels.at<int>(neighbor)) {
+                ++depthSeedBoundary[{first, second}];
+            } else if (depthContinuous(out, c, point, neighbor)) {
+                ++rawCrossColorBoundary[{first, second}];
+            }
         }
     }
+    const auto seedBoundariesBuilt = std::chrono::steady_clock::now();
 
     DisjointSet sets(seedCount);
+    std::vector<std::vector<int>> colorSeeds(static_cast<size_t>(colorCount + 1));
+    for (int seed = 1; seed <= seedCount; ++seed)
+        colorSeeds[static_cast<size_t>(seedColor[static_cast<size_t>(seed)])].push_back(seed);
     int depthMergesAcrossColor = 0, depthMergesAcrossMissing = 0, ignoredSmallDepthSeeds = 0;
     int retainedUnsupportedDepthSeeds = 0, forcedIncompatibleNoiseMerges = 0;
     for (int color = 1; color <= colorCount; ++color) {
-        std::set<int> unique;
-        for (const auto point : colorPixels[static_cast<size_t>(color)]) {
-            const int seed = depthSeeds.at<int>(point);
-            if (seed) unique.insert(seed);
-        }
+        const auto& unique = colorSeeds[static_cast<size_t>(color)];
         std::vector<int> supported;
         for (const int seed : unique) {
             if (seedDepthCount[static_cast<size_t>(seed)] >= c.depthSplitMinSupportPixels) supported.push_back(seed);
@@ -351,17 +365,11 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
         }
     }
     std::map<std::pair<int, int>, int> continuousCrossColorBoundary;
-    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
-        const cv::Point point(x, y);
-        for (const cv::Point delta : {cv::Point(1, 0), cv::Point(0, 1)}) {
-            const auto neighbor = point + delta;
-            if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(point) == colorLabels.at<int>(neighbor) ||
-                !depthContinuous(out, c, point, neighbor)) continue;
-            int first = sets.find(depthSeeds.at<int>(point)), second = sets.find(depthSeeds.at<int>(neighbor));
-            if (first == second) continue;
-            if (first > second) std::swap(first, second);
-            ++continuousCrossColorBoundary[{first, second}];
-        }
+    for (const auto& [seeds, support] : rawCrossColorBoundary) {
+        int first = sets.find(seeds.first), second = sets.find(seeds.second);
+        if (first == second) continue;
+        if (first > second) std::swap(first, second);
+        continuousCrossColorBoundary[{first, second}] += support;
     }
     int rejectedShortCrossColorBoundaries = 0;
     for (const auto& [roots, support] : continuousCrossColorBoundary) {
@@ -371,6 +379,7 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
         }
         if (sets.merge(roots.first, roots.second)) ++depthMergesAcrossColor;
     }
+    const auto depthConstraintsMerged = std::chrono::steady_clock::now();
 
     out.labels = cv::Mat::zeros(size, CV_32S);
     out.ownership = cv::Mat::zeros(size, CV_8U);
@@ -380,6 +389,7 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
         out.labels.at<int>(y, x) = sets.find(seed);
         out.ownership.at<uint8_t>(y, x) = out.depthState.at<uint8_t>(y, x) == 1 ? 1 : 2;
     }
+    const auto initialLabelsAssigned = std::chrono::steady_clock::now();
 
     int nextLabel = seedCount + 1;
     std::vector<std::vector<cv::Point>> imageComponents(static_cast<size_t>(nextLabel));
@@ -418,6 +428,7 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
             }
         }
     }
+    const auto missingDepthComponentsAssigned = std::chrono::steady_clock::now();
 
     std::vector<uint8_t> hasCurrentDepth(static_cast<size_t>(nextLabel), 0);
     for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x)
@@ -446,6 +457,7 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
             ++enclosedInheritedPixels;
         }
     }
+    const auto enclosedMissingInherited = std::chrono::steady_clock::now();
 
     std::vector<int> remap(static_cast<size_t>(nextLabel), 0);
     int canonical = 0;
@@ -454,6 +466,7 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
         if (!remap[static_cast<size_t>(label)]) remap[static_cast<size_t>(label)] = ++canonical;
         label = remap[static_cast<size_t>(label)];
     }
+    const auto labelsCanonicalized = std::chrono::steady_clock::now();
     out.metrics["簇数量"] = canonical;
     out.metrics["聚簇模式"] = "轮廓主导";
     out.metrics["彩图初始区域数"] = colorCount;
@@ -467,6 +480,14 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
     out.metrics["跨颜色连续边界候选数"] = continuousCrossColorBoundary.size();
     out.metrics["跨颜色短边界拒绝合并数"] = rejectedShortCrossColorBoundaries;
     out.metrics["封闭缺深度继承像素数"] = enclosedInheritedPixels;
+    out.metrics["轮廓分区彩图区域毫秒"] = std::chrono::duration<double, std::milli>(colorPartitioned - partitionStart).count();
+    out.metrics["轮廓分区深度种子毫秒"] = std::chrono::duration<double, std::milli>(depthSeeded - colorPartitioned).count();
+    out.metrics["轮廓分区局部边界毫秒"] = std::chrono::duration<double, std::milli>(seedBoundariesBuilt - depthSeeded).count();
+    out.metrics["轮廓分区深度约束合并毫秒"] = std::chrono::duration<double, std::milli>(depthConstraintsMerged - seedBoundariesBuilt).count();
+    out.metrics["轮廓分区初始标签毫秒"] = std::chrono::duration<double, std::milli>(initialLabelsAssigned - depthConstraintsMerged).count();
+    out.metrics["轮廓分区缺深度组件毫秒"] = std::chrono::duration<double, std::milli>(missingDepthComponentsAssigned - initialLabelsAssigned).count();
+    out.metrics["轮廓分区封闭缺深度继承毫秒"] = std::chrono::duration<double, std::milli>(enclosedMissingInherited - missingDepthComponentsAssigned).count();
+    out.metrics["轮廓分区标签规范化毫秒"] = std::chrono::duration<double, std::milli>(labelsCanonicalized - enclosedMissingInherited).count();
 }
 
 void fillDepth(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
@@ -580,14 +601,24 @@ Observation process(const RawFrame& frame, const ProcessingConfig& config) {
     result.metrics = Json::object();
     const auto start = std::chrono::steady_clock::now();
     alignDepth(frame, result, config);
+    const auto aligned = std::chrono::steady_clock::now();
     cv::Mat floatBgr, lab;
     frame.colorBgr.convertTo(floatBgr, CV_32F, 1.0 / 255.0);
     cv::cvtColor(floatBgr, lab, cv::COLOR_BGR2Lab);
+    const auto colorConverted = std::chrono::steady_clock::now();
     if (config.clusteringMode == "轮廓主导") partitionContourFirst(lab, result, config);
     else partitionDepthFirst(lab, result, config);
+    const auto partitioned = std::chrono::steady_clock::now();
     fillDepth(lab, result, config);
+    const auto depthFilled = std::chrono::steady_clock::now();
     contours(result);
-    result.metrics["处理毫秒"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    const auto contoured = std::chrono::steady_clock::now();
+    result.metrics["配准毫秒"] = std::chrono::duration<double, std::milli>(aligned - start).count();
+    result.metrics["颜色转换毫秒"] = std::chrono::duration<double, std::milli>(colorConverted - aligned).count();
+    result.metrics["分区毫秒"] = std::chrono::duration<double, std::milli>(partitioned - colorConverted).count();
+    result.metrics["补全毫秒"] = std::chrono::duration<double, std::milli>(depthFilled - partitioned).count();
+    result.metrics["轮廓生成毫秒"] = std::chrono::duration<double, std::milli>(contoured - depthFilled).count();
+    result.metrics["处理毫秒"] = std::chrono::duration<double, std::milli>(contoured - start).count();
     result.metrics["像素账本记录数"] = frame.colorBgr.total();
     result.metrics["当前可用深度像素数"] = cv::countNonZero(result.depthState == 1);
     result.metrics["当前范围外深度像素数"] = cv::countNonZero(result.depthState == 2);

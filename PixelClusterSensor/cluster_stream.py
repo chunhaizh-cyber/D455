@@ -136,6 +136,11 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                     "frame_index": index, "source_frame": observation["源帧号"], "output_sequence": tracked["输出序号"],
                     "packet_type": tracked["包类型"], "cluster_changes": len(tracked["簇变化"]), "elapsed_ms": round(elapsed, 4),
                     "active_tracks": len(tracker.tracks), "source_processing_ms": observation["指标"].get("处理毫秒"),
+                    "source_alignment_ms": observation["指标"].get("配准毫秒"),
+                    "source_color_conversion_ms": observation["指标"].get("颜色转换毫秒"),
+                    "source_partition_ms": observation["指标"].get("分区毫秒"),
+                    "source_fill_ms": observation["指标"].get("补全毫秒"),
+                    "source_contour_ms": observation["指标"].get("轮廓生成毫秒"),
                     "filtered_new_clusters": tracked["指标"]["本帧过滤新候选数"],
                     "filtered_new_pixels": tracked["指标"]["本帧过滤新候选像素数"],
                     "source_cluster_count": observation["指标"].get("簇数量"),
@@ -149,6 +154,14 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                     "source_cross_color_boundary_candidate_count": observation["指标"].get("跨颜色连续边界候选数"),
                     "source_rejected_short_cross_color_boundary_count": observation["指标"].get("跨颜色短边界拒绝合并数"),
                     "source_enclosed_missing_inherited_pixels": observation["指标"].get("封闭缺深度继承像素数"),
+                    "source_color_partition_ms": observation["指标"].get("轮廓分区彩图区域毫秒"),
+                    "source_depth_seed_ms": observation["指标"].get("轮廓分区深度种子毫秒"),
+                    "source_seed_boundary_ms": observation["指标"].get("轮廓分区局部边界毫秒"),
+                    "source_depth_constraint_merge_ms": observation["指标"].get("轮廓分区深度约束合并毫秒"),
+                    "source_initial_label_ms": observation["指标"].get("轮廓分区初始标签毫秒"),
+                    "source_missing_depth_component_ms": observation["指标"].get("轮廓分区缺深度组件毫秒"),
+                    "source_enclosed_missing_inheritance_ms": observation["指标"].get("轮廓分区封闭缺深度继承毫秒"),
+                    "source_label_canonicalization_ms": observation["指标"].get("轮廓分区标签规范化毫秒"),
                 })
                 for entry in tracked["簇变化"]:
                     events.append({"frame_index": index, "track_id": entry["相机跟踪候选编号"], "frame_cluster_id": entry["帧内簇编号"],
@@ -169,6 +182,8 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
             writer = csv.DictWriter(file, fieldnames=[
                 "frame_index", "source_frame", "output_sequence", "packet_type", "cluster_changes", "elapsed_ms",
                 "active_tracks", "source_processing_ms", "filtered_new_clusters", "filtered_new_pixels",
+                "source_alignment_ms", "source_color_conversion_ms", "source_partition_ms", "source_fill_ms",
+                "source_contour_ms",
                 "source_cluster_count", "source_color_region_count", "source_depth_seed_count",
                 "source_ignored_small_depth_seed_count", "source_cross_color_merge_count",
                 "source_retained_nonlocal_small_depth_seed_count",
@@ -176,6 +191,10 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 "source_missing_compatible_depth_merge_count",
                 "source_cross_color_boundary_candidate_count", "source_rejected_short_cross_color_boundary_count",
                 "source_enclosed_missing_inherited_pixels",
+                "source_color_partition_ms", "source_depth_seed_ms", "source_seed_boundary_ms",
+                "source_depth_constraint_merge_ms", "source_initial_label_ms",
+                "source_missing_depth_component_ms", "source_enclosed_missing_inheritance_ms",
+                "source_label_canonicalization_ms",
             ])
             writer.writeheader()
             writer.writerows(metrics)
