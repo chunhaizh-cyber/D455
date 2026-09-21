@@ -28,6 +28,8 @@ python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\Pixel
 python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
 python .\PixelClusterSensor\test_cluster_resync.py --output .codex_tmp\PixelClusterSensor\cluster_resync_tests_new
 python .\PixelClusterSensor\test_cluster_control.py --output .codex_tmp\PixelClusterSensor\cluster_control_tests_new
+python .\PixelClusterSensor\run_cluster_control_gate.py --replay PATH\sequence.json --frames 120 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --confirmation-frames 5 --output .codex_tmp\PixelClusterSensor\cluster_control_gate_new
+python .\PixelClusterSensor\test_run_cluster_control_gate.py --output .codex_tmp\PixelClusterSensor\cluster_control_gate_tests_new
 python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
 python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
@@ -60,6 +62,8 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 `cluster_receiver.py` 是 P2 的严格影子接收器。它按 `会话标识 + 跟踪时期 + 输出序号 + 前置场景版本 + 依赖全量序号` 应用包；增量缺口、未见过的迟到包、基线不符、场景版本不符、同序号冲突内容和包标识复用都会停止拼接并请求全量。完全相同的重复包幂等返回，不改状态。`cluster_tracker.py` 可将下一帧强制发布为自包含 `FullSnapshot`，并把未超期遮挡候选的最后轮廓重打包为历史证据，当前深度计数归零，不把旧测量冒充当前值。T9 合成故障注入已覆盖丢增量、重复、乱序、时期切换、进程重启和直接状态对照；这不证明 USB 物理断连恢复或正式消费者接线。
 
 `cluster_control.py` 是 P3 的 Python 影子控制与调度层，已实现 `开始/停止扫描`、按相机候选号 `观察簇候选`、`开始/停止跟踪簇候选`、`请求全量快照`、`读取簇级结果`、`读取/释放详细材料`。每个源帧只生成一份不可变簇包，扫描、观察和跟踪任务共享该包引用；观察只另建有界轮廓材料句柄，跟踪只附加候选视图和原样自我绑定令牌。结果队列按条数、序列化字节和帧龄硬限，满时在跟踪状态推进前回滚并背压，不静默丢包。合成混合负载已验证扫描 6/6 帧保留、跟踪5帧有界结束、一次观察材料哈希读回、释放和全量请求。首版只支持全画面扫描和按跟踪号观察，不支持 ROI/分辨率/最低频率实际调度、按全量序号加帧内号观察、原始像素材料、C++ 实时接线或性能结论。停止的是定向跟踪任务，不把仍由全幅扫描看到的相机候选伪造为 `Retired`。
+
+`run_cluster_control_gate.py` 把 `PCS.RawSequence/1` 或实时相机接到上述影子调度层，逐帧生成唯一簇包、自动选取最大候选做有界跟踪和一次观察，并写出运行清单与逐帧耗时。真实静态录制前120帧已得到扫描120/120、跟踪119、观察材料哈希通过和零未释放材料；但同一运行 p50约1145ms、p95约1419ms、max约1764ms，明确不满足100ms生产门禁。该慢速包含 C++ 单帧观察、磁盘材料、Python转换和影子事务快照，只能作为协议/调度证据，不能用来推断 C++ 内联实现必然同样慢，也不能因“可优化”而忽略当前未达实时门槛。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 
