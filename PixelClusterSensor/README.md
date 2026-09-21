@@ -30,6 +30,11 @@ python .\PixelClusterSensor\test_cluster_resync.py --output .codex_tmp\PixelClus
 python .\PixelClusterSensor\test_cluster_control.py --output .codex_tmp\PixelClusterSensor\cluster_control_tests_new
 python .\PixelClusterSensor\run_cluster_control_gate.py --replay PATH\sequence.json --frames 120 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --confirmation-frames 5 --output .codex_tmp\PixelClusterSensor\cluster_control_gate_new
 python .\PixelClusterSensor\test_run_cluster_control_gate.py --output .codex_tmp\PixelClusterSensor\cluster_control_gate_tests_new
+python .\PixelClusterSensor\evaluate_cluster_scenario_capture.py --sequence PATH\sequence.json --scenario T3_local_motion --output .codex_tmp\PixelClusterSensor\t3_content_gate_new
+python .\PixelClusterSensor\test_evaluate_cluster_scenario_capture.py --output .codex_tmp\PixelClusterSensor\scenario_content_tests_new
+python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T3_local_motion --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t3_real_capture_new
+python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T7_dark_depth_hole --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t7_real_capture_new
+python .\PixelClusterSensor\test_capture_and_verify_cluster_scenario.py --output .codex_tmp\PixelClusterSensor\scenario_gate_tests_new
 python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
 python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
@@ -64,6 +69,10 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 `cluster_control.py` 是 P3 的 Python 影子控制与调度层，已实现 `开始/停止扫描`、按相机候选号 `观察簇候选`、`开始/停止跟踪簇候选`、`请求全量快照`、`读取簇级结果`、`读取/释放详细材料`。每个源帧只生成一份不可变簇包，扫描、观察和跟踪任务共享该包引用；观察只另建有界轮廓材料句柄，跟踪只附加候选视图和原样自我绑定令牌。结果队列按条数、序列化字节和帧龄硬限，满时在跟踪状态推进前回滚并背压，不静默丢包。合成混合负载已验证扫描 6/6 帧保留、跟踪5帧有界结束、一次观察材料哈希读回、释放和全量请求。首版只支持全画面扫描和按跟踪号观察，不支持 ROI/分辨率/最低频率实际调度、按全量序号加帧内号观察、原始像素材料、C++ 实时接线或性能结论。停止的是定向跟踪任务，不把仍由全幅扫描看到的相机候选伪造为 `Retired`。
 
 `run_cluster_control_gate.py` 把 `PCS.RawSequence/1` 或实时相机接到上述影子调度层，逐帧生成唯一簇包、自动选取最大候选做有界跟踪和一次观察，并写出运行清单与逐帧耗时。真实静态录制前120帧已得到扫描120/120、跟踪119、观察材料哈希通过和零未释放材料；但同一运行 p50约1145ms、p95约1419ms、max约1764ms，明确不满足100ms生产门禁。该慢速包含 C++ 单帧观察、磁盘材料、Python转换和影子事务快照，只能作为协议/调度证据，不能用来推断 C++ 内联实现必然同样慢，也不能因“可优化”而忽略当前未达实时门槛。
+
+`evaluate_cluster_scenario_capture.py` 在算法评分前先验证实录是否真的包含目标场景。`T3_local_motion` 要求至少60帧、至少20%的相邻帧存在变化，且变化像素和包围框的 p95 分别不超过全画面35%和50%，避免把整帧平移误写成局部运动。`T7_dark_depth_hole` 要求暗区 p50 至少占画面0.3%，暗区内原始深度0像素达到分辨率归一化下限，并在至少80%的帧中存在。固定像素门槛已被移除，避免分辨率改变结论。它只验证“材料含有局部变化/暗区深度孔洞”，不确认现实对象身份、场景真值或分割正确性，输出仍标记人工视觉复核待完成。
+
+`capture_and_verify_cluster_scenario.py` 串联新采 `PCS.RawSequence/1`、上述内容门禁和簇级控制门禁，保存原始清单、内容指标、控制结果和顶层决策。60帧合成局部运动端到端测试已通过。真实 T3/T7 必须省略 `--replay-source` 从相机新采；旧 `d455_directory_replay_v1` 数据缺少完整标定与逐帧时间合同，不能转换后冒充本门禁通过。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 
