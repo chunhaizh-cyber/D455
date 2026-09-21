@@ -146,15 +146,18 @@ def component_matches(edges: dict[tuple[int, int], int], track_count: int, clust
 class Track:
     identifier: str
     record: dict
+    association_record: dict
     visible_frames: int
     confirmed: bool
     missing_frames: int = 0
+    occlusion_published: bool = False
 
 
 class ClusterTracker:
     def __init__(self, max_missing_frames: int = 2, confirmation_frames: int = 5,
                  minimum_new_cluster_pixels: int = 1, minimum_retained_cluster_pixels: int = 1,
-                 maximum_tentative_match_cost: int = 200_000):
+                 maximum_tentative_match_cost: int = 200_000,
+                 occlusion_confirmation_frames: int = 1):
         if not 1 <= max_missing_frames <= 120:
             raise ValueError("max_missing_frames must be 1..120")
         if not 1 <= confirmation_frames <= 30:
@@ -163,11 +166,14 @@ class ClusterTracker:
             raise ValueError("cluster pixel thresholds must satisfy 1 <= retained <= new")
         if not 0 <= maximum_tentative_match_cost < UNMATCHED_COST:
             raise ValueError("maximum_tentative_match_cost must be 0..999999")
+        if not 1 <= occlusion_confirmation_frames < max_missing_frames:
+            raise ValueError("occlusion_confirmation_frames must be at least 1 and below max_missing_frames")
         self.max_missing_frames = max_missing_frames
         self.confirmation_frames = confirmation_frames
         self.minimum_new_cluster_pixels = minimum_new_cluster_pixels
         self.minimum_retained_cluster_pixels = minimum_retained_cluster_pixels
         self.maximum_tentative_match_cost = maximum_tentative_match_cost
+        self.occlusion_confirmation_frames = occlusion_confirmation_frames
         self.tracks: dict[str, Track] = {}
         self.next_identifier = 1
         self.base_sequence: str | None = None
@@ -187,7 +193,7 @@ class ClusterTracker:
                                       else self.minimum_new_cluster_pixels)
                 if entry["像素数"] < association_pixels:
                     continue
-                cost = match_cost(track.record, entry, diagonal)
+                cost = match_cost(track.association_record, entry, diagonal)
                 if cost is not None and (track.confirmed or cost <= self.maximum_tentative_match_cost):
                     edges[(track_index, cluster_index)] = cost
         matched = component_matches(edges, len(prior), len(current))
@@ -208,11 +214,16 @@ class ClusterTracker:
                 became_confirmed = not track.confirmed and visible_frames >= self.confirmation_frames
                 track.confirmed = track.confirmed or became_confirmed
                 entry["相机跟踪候选编号"] = track.identifier
-                entry["变化类型"] = "Moved" if shift >= 1.0 else "Updated"
-                entry["跟踪状态"] = "Reappeared" if was_missing and track.confirmed else ("Active" if track.confirmed else "Tentative")
+                reappeared = track.occlusion_published and track.confirmed
+                entry["变化类型"] = "Reappeared" if reappeared else ("Moved" if shift >= 1.0 else "Updated")
+                entry["跟踪状态"] = "Reappeared" if reappeared else ("Active" if track.confirmed else "Tentative")
                 entry["时效"] = {"连续可见帧数": visible_frames, "连续缺失帧数": 0, "证据年龄毫秒": None}
-                entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": edges[(matched_by_cluster[cluster_index], cluster_index)]}
+                association_cost = edges[(matched_by_cluster[cluster_index], cluster_index)]
+                entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": association_cost}
+                if association_cost <= self.maximum_tentative_match_cost:
+                    track.association_record = copy.deepcopy(entry)
                 track.record, track.visible_frames, track.missing_frames = copy.deepcopy(entry), visible_frames, 0
+                track.occlusion_published = False
                 if not unchanged or was_missing or became_confirmed:
                     meaningful_change = True
             else:
@@ -228,7 +239,7 @@ class ClusterTracker:
                 entry["跟踪状态"] = "Active" if confirmed else "Tentative"
                 entry["时效"] = {"连续可见帧数": 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = None
-                self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), 1, confirmed)
+                self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), copy.deepcopy(entry), 1, confirmed)
                 meaningful_change = True
             changes.append(entry)
         for track_index, track in enumerate(prior):
@@ -250,6 +261,10 @@ class ClusterTracker:
             track.missing_frames += 1
             track.visible_frames = 0
             terminal = track.missing_frames >= self.max_missing_frames
+            if not terminal and track.missing_frames < self.occlusion_confirmation_frames:
+                continue
+            if not terminal and track.occlusion_published:
+                continue
             changes.append({
                 "帧内簇编号": None, "相机跟踪候选编号": track.identifier, "自我绑定令牌": None,
                 "变化类型": "Lost" if terminal else "Occluded", "跟踪状态": "Retired" if terminal else "Occluded",
@@ -261,6 +276,8 @@ class ClusterTracker:
             })
             if terminal:
                 del self.tracks[track.identifier]
+            else:
+                track.occlusion_published = True
             meaningful_change = True
         output = copy.deepcopy(packet)
         coverage = output["全局覆盖摘要"]
@@ -269,6 +286,8 @@ class ClusterTracker:
         output.setdefault("指标", {})["跟踪新候选最小像素数"] = self.minimum_new_cluster_pixels
         output["指标"]["跟踪保留候选最小像素数"] = self.minimum_retained_cluster_pixels
         output["指标"]["未确认候选最大关联代价"] = self.maximum_tentative_match_cost
+        output["指标"]["遮挡确认缺失帧数"] = self.occlusion_confirmation_frames
+        output["指标"]["丢失判定缺失帧数"] = self.max_missing_frames
         output["指标"]["本帧过滤新候选数"] = filtered_new_clusters
         output["指标"]["本帧过滤新候选像素数"] = filtered_new_pixels
         output["包标识"] = "tracked-" + packet["输出序号"]
@@ -319,11 +338,13 @@ def reconstruct(packets: list[dict]) -> dict[str, dict]:
 def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames: int = 2,
                   confirmation_frames: int = 5, minimum_new_cluster_pixels: int = 1,
                   minimum_retained_cluster_pixels: int = 1,
-                  maximum_tentative_match_cost: int = 200_000) -> list[Path]:
+                  maximum_tentative_match_cost: int = 200_000,
+                  occlusion_confirmation_frames: int = 1) -> list[Path]:
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
     tracker = ClusterTracker(max_missing_frames, confirmation_frames, minimum_new_cluster_pixels,
-                             minimum_retained_cluster_pixels, maximum_tentative_match_cost)
+                             minimum_retained_cluster_pixels, maximum_tentative_match_cost,
+                             occlusion_confirmation_frames)
     output_root.mkdir(parents=True)
     results = []
     try:
@@ -354,10 +375,11 @@ def main() -> None:
     parser.add_argument("--minimum-new-cluster-pixels", type=int, default=1)
     parser.add_argument("--minimum-retained-cluster-pixels", type=int, default=1)
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
+    parser.add_argument("--occlusion-confirmation-frames", type=int, default=1)
     args = parser.parse_args()
     packets = write_packets(args.inputs, args.output, args.max_missing_frames, args.confirmation_frames,
                             args.minimum_new_cluster_pixels, args.minimum_retained_cluster_pixels,
-                            args.maximum_tentative_match_cost)
+                            args.maximum_tentative_match_cost, args.occlusion_confirmation_frames)
     data = [json.loads(path.read_text(encoding="utf-8")) for path in packets]
     print(json.dumps({"status": "pass", "packets": [str(path) for path in packets], "active_tracks": len(reconstruct(data))}, ensure_ascii=False, indent=2))
 

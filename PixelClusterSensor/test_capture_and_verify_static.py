@@ -30,7 +30,8 @@ def main() -> None:
                                     retained_cluster_pixels=5, maximum_tentative_match_cost=123_456)
         check(report["status"] == "pass" and report["matrix"]["decision"]["pass"], "Capture-to-gate did not pass")
         check(report["minimum_cluster_pixels"] == 10 and report["retained_cluster_pixels"] == 5 and
-              report["maximum_tentative_match_cost"] == 123_456,
+              report["maximum_tentative_match_cost"] == 123_456 and report["max_missing_frames"] == 3 and
+              report["occlusion_confirmation_frames"] == 2,
               "Capture orchestrator did not preserve tracker gate configuration")
         for name in ("capture/sequence.json", "capture/export_manifest.json", "matrix/run_manifest.json", "matrix/decision/run_decision.json", "run_manifest.json"):
             check((root / "run" / name).is_file(), f"Missing orchestration evidence: {name}")

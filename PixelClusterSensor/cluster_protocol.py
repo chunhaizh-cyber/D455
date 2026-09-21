@@ -231,6 +231,10 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
         _string(entry["自我绑定令牌"], "Self binding token", 1, 256)
     check(entry["变化类型"] in CHANGE_TYPES, "Unknown change type")
     check(entry["跟踪状态"] in TRACK_STATES, "Unknown tracking state")
+    if entry["变化类型"] == "Reappeared" or entry["跟踪状态"] == "Reappeared":
+        check(entry["变化类型"] == "Reappeared" and entry["跟踪状态"] == "Reappeared" and
+              entry["帧内簇编号"] is not None,
+              "Reappearance change and state must agree on a current cluster")
     if entry["帧内簇编号"] is None:
         check(entry["变化类型"] in {"Occluded", "Lost", "Removed"} and track is not None and entry["跟踪状态"] in {"Occluded", "Lost", "Retired"},
               "Absent-cluster event needs a tracked candidate")

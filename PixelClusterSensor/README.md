@@ -34,9 +34,9 @@ python .\PixelClusterSensor\export_raw_sequence.py --camera --frames 120 --outpu
 python .\PixelClusterSensor\test_export_raw_sequence.py --output .codex_tmp\PixelClusterSensor\raw_sequence_export_tests_new
 python .\PixelClusterSensor\evaluate_cluster_stability.py --runs RUN_A RUN_B RUN_C --output .codex_tmp\PixelClusterSensor\cluster_stability_new
 python .\PixelClusterSensor\test_evaluate_cluster_stability.py --output .codex_tmp\PixelClusterSensor\cluster_stability_tests_new
-python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --clustering-mode 深度主导 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
+python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --max-missing-frames 3 --occlusion-confirmation-frames 2 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --maximum-tentative-match-cost 200000 --confirmation-frames 5 --clustering-mode 深度主导 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
 python .\PixelClusterSensor\test_run_cluster_stability_matrix.py --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_tests_new
-python .\PixelClusterSensor\capture_and_verify_static.py --camera --frames 600 --repetitions 3 --output .codex_tmp\PixelClusterSensor\static_capture_gate_new
+python .\PixelClusterSensor\capture_and_verify_static.py --camera --frames 600 --repetitions 3 --max-missing-frames 3 --occlusion-confirmation-frames 2 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --maximum-tentative-match-cost 200000 --confirmation-frames 5 --output .codex_tmp\PixelClusterSensor\static_capture_gate_new
 python .\PixelClusterSensor\test_capture_and_verify_static.py --output .codex_tmp\PixelClusterSensor\static_capture_gate_tests_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 python .\PixelClusterSensor\test_protocol.py --output .codex_tmp\PixelClusterSensor\tests_new_run
@@ -53,7 +53,7 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 真实观察中可能出现一、两个像素的分割碎片；它们不能编码为闭合 `ContourChain8`。桥接层会丢弃退化环；若某个源簇没有有效外环，则把其像素降级计入全局 `Unknown`，并在包指标写出 `退化轮廓环数` 与 `降级未知像素数`。`--minimum-cluster-pixels` 是新候选及未确认候选的逐帧准入阈值；小于阈值的簇降级为 `Unknown`。`--retained-cluster-pixels` 只允许已经确认的轨迹暂时降到较低像素数后继续参与关联，默认取新候选阈值的一半，不能帮助 `Tentative` 碎片累计确认帧。实际阈值、被过滤簇数和像素数写入包指标、逐帧 CSV 和矩阵配置快照。该策略降低供包粒度，不能当作画面覆盖或物理稳定性的改善。它不补画轮廓，也不把这类碎片伪装成可靠簇或距离证据。
 
-`cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。首帧发布全量快照；无簇级变化的后续帧发布空 `Heartbeat`，不重复发送静态轮廓；新增、移动、遮挡、重现和丢失仍发布 `Delta`。默认要求候选连续出现5帧才从 `Tentative` 晋为 `Active`；未确认阶段除满足新候选像素阈值外，每次关联代价还必须不高于 `--maximum-tentative-match-cost=200000`，防止相邻小碎片靠高代价接力被错误确认。未确认候选消失时发布 `Removed/Retired` 墓碑和 `Unknown` 遮挡状态，不把短命分割碎片伪装成物理遮挡。只有已确认候选才进入 `Occluded/Lost/Reappeared` 状态机并可使用较低保留像素阈值。`--confirmation-frames=1..30` 可显式改变确认延迟；关联代价和像素门槛也会影响动态发现，必须一起验收。合成静态、遮挡和重现测试已验证稳定跟踪号、材料读回和全量加增量重建。心跳只证明供包链在新的源时间上仍工作，当前协议不在心跳中刷新逐簇证据年龄，因此不把它解释成逐簇新测量。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
+`cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。首帧发布全量快照；无簇级变化的后续帧发布空 `Heartbeat`，不重复发送静态轮廓；新增、移动、遮挡、重现和丢失仍发布 `Delta`。默认要求候选连续出现5帧才从 `Tentative` 晋为 `Active`；未确认阶段除满足新候选像素阈值外，每次关联代价还必须不高于 `--maximum-tentative-match-cost=200000`，防止相邻小碎片靠高代价接力被错误确认。每条轨迹另保留一份可靠关联参考：只有低代价匹配才更新参考，高代价当前观测可以发布但不能逐帧拖走后续关联基准。未确认候选消失时发布 `Removed/Retired`；已确认候选默认连续缺失2包才发布 `Occluded`，第1包缺失只通过增量语义保留旧状态，不发布新测量、不刷新证据年龄；连续缺失3包发布 `Lost`。只有已对外发布遮挡后的返回才标记 `Reappeared`。这些阈值会影响动态发现和陈旧证据年龄，必须在动态集另行验收。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 
@@ -63,7 +63,7 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 `run_cluster_stability_matrix.py` 是静态稳定性验收入口。它要求真实或合成的完整 `PCS.RawSequence/1`，默认顺序运行 600 帧、3 次重复并调用稳定性决策器；根目录写入输入清单 SHA256、Git 修订、配置快照、实际 `聚簇模式`、确认帧数和每次子运行状态。`--clustering-mode 深度主导|轮廓主导` 可在同一原始序列上严格比较两条路径；`--start-frame` 可从同一原始序列选择独立窗口，跳过的观察材料会立即释放，簇级输出序号仍从1连续开始。决策器逐包重建活跃状态，并要求每次运行至少出现一个候选，空输出不能通过。它另外记录 `tentative_removed_count` 和 `added_candidate_count`，防止把短命候选从遮挡状态机移除后误称为分割稳定。它拒绝帧数不足的输入，不能以旧 `datasets/*` 或名义帧率填补时间、标定证据。已用 600 帧合成静态输入完成 3 次重复：包验证、归一化确定性、重建、跟踪号切换和生命周期事件均通过。
 
-真实静态序列曾在前30帧通过、31至60帧出现每次5个已确认生命周期事件。逐帧证据显示，原因不是单纯硬过滤：小碎片会以约 `0.28-0.45` 的高关联代价接力，或低于准入像素数后又被当作同一未确认候选，最终形成伪稳定轨迹。改为“新候选及 Tentative 每帧至少1024像素、Tentative 最大关联代价200000、只有已确认轨迹可降到512像素保留”后，同一输入连续60帧、3次重复通过，`static_lifecycle_event_count=0`、`run_max_active_tracks=[7,7,7]`。但仍有75次未确认候选移除和96次新增，底层分割噪声没有消失；当前只证明固定真实回放的60帧发布门禁改善，真实 T2 的600帧退出条件和动态发现/跟踪仍未通过。
+真实静态序列的首轮600帧暴露了两类长期问题：已确认轨迹会被高代价小碎片逐帧拖离可靠主体；单包分割缺失会立即误报遮挡/重现。加入可靠关联参考和2包遮挡确认、3包丢失期限后，同一 `PCS.RawSequence/1` 顺序运行3次，每次600帧，包验证、规范化确定性、增量重建、候选存在和静态生命周期门禁全部通过；`static_lifecycle_event_count=0`、`run_max_active_tracks=[8,8,8]`。三轮仍有363次未确认候选移除、381次新增和2907次帧内局部号重用诊断，底层分割噪声没有消失，帧内号重用也不等于跨帧 ID 切换。该结果只证明固定真实静态回放的发布稳定性；轮廓相似度/中心抖动指标、T9 重同步、真实动态发现和跟踪仍未通过。
 
 `capture_and_verify_static.py` 将真实静态采集和验收串成一项有界操作：通过 C++ 服务采集一份受限 RGBD 原始序列，再以同一序列运行指定次数的稳定性矩阵；顶层 `run_manifest.json` 链接导出清单和矩阵决策。`--replay-source` 只用于合成集成测试，真实验收必须使用 `--camera`。它不会在相机缺失、采集失败、帧数不足或矩阵失败时输出通过结论。
 

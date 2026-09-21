@@ -32,7 +32,9 @@ def main() -> None:
         check(len(result["runs"]) == 3 and all(item["status"] == "pass" for item in result["runs"]), "Matrix did not complete three runs")
         config = json.loads((root / "matrix" / "config_snapshot.json").read_text(encoding="utf-8"))
         check(config["minimum_cluster_pixels"] == 10 and config["retained_cluster_pixels"] == 5 and
-              config["maximum_tentative_match_cost"] == 123_456, "Matrix did not preserve tracker gate configuration")
+              config["maximum_tentative_match_cost"] == 123_456 and config["max_missing_frames"] == 3 and
+              config["occlusion_confirmation_frames"] == 2,
+              "Matrix did not preserve tracker gate configuration")
         for name in ("run_manifest.json", "config_snapshot.json", "decision/run_decision.json", "decision/packet_metrics.csv", "decision/events.csv"):
             check((root / "matrix" / name).is_file(), f"Missing matrix evidence: {name}")
         (root / "report.json").write_text(json.dumps({"status": "pass", "matrix": result}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

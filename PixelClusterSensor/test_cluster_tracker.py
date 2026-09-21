@@ -129,7 +129,7 @@ def main() -> None:
         one_missing = tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
         reappeared = tracker.update(json.loads(reappearance_path.read_text(encoding="utf-8")))
         run("reappearance_is_delta_not_heartbeat", lambda: check(reappeared["包类型"] == "Delta" and
-                                                                    reappeared["簇变化"][0]["变化类型"] == "Updated" and
+                                                                    reappeared["簇变化"][0]["变化类型"] == "Reappeared" and
                                                                     reappeared["簇变化"][0]["跟踪状态"] == "Reappeared",
                                                               "Reappeared track was hidden by a heartbeat"))
         run("reappearance_keeps_prior_track_id", lambda: check(first_visible["簇变化"][0]["相机跟踪候选编号"] ==
@@ -138,6 +138,37 @@ def main() -> None:
                                                             "Reappearance changed or skipped the candidate ID"))
         run("reappearance_resets_consecutive_visible_count", lambda: check(reappeared["簇变化"][0]["时效"]["连续可见帧数"] == 1,
                                                                             "Reappearance retained a stale visible streak"))
+
+        hold_tracker = ClusterTracker(max_missing_frames=3, confirmation_frames=1,
+                                      occlusion_confirmation_frames=2)
+        hold_tracker.update(source)
+        held_once = hold_tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
+        returned_before_occlusion = hold_tracker.update(json.loads(reappearance_path.read_text(encoding="utf-8")))
+        run("single_missing_frame_keeps_prior_incremental_state", lambda: check(
+            held_once["包类型"] == "Heartbeat" and not held_once["簇变化"] and "1" in hold_tracker.tracks,
+            "Single missing frame published an unconfirmed occlusion"))
+        run("return_before_occlusion_is_not_reappearance", lambda: check(
+            returned_before_occlusion["簇变化"][0]["变化类型"] == "Updated" and
+            returned_before_occlusion["簇变化"][0]["跟踪状态"] == "Active" and
+            returned_before_occlusion["簇变化"][0]["时效"]["连续可见帧数"] == 1,
+            "Held evidence return was mislabeled as a published reappearance"))
+        single_occlusion_tracker = ClusterTracker(max_missing_frames=4, confirmation_frames=1,
+                                                  occlusion_confirmation_frames=2)
+        single_occlusion_tracker.update(source)
+        first_hold = single_occlusion_tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
+        published_occlusion = single_occlusion_tracker.update(json.loads(blank_two_path.read_text(encoding="utf-8")))
+        blank_three = copy.deepcopy(blank_two)
+        blank_three["输出序号"], blank_three["场景版本"], blank_three["包标识"] = "4", "4", "cluster-4"
+        repeated_missing = single_occlusion_tracker.update(blank_three)
+        blank_four = copy.deepcopy(blank_three)
+        blank_four["输出序号"], blank_four["场景版本"], blank_four["包标识"] = "5", "5", "cluster-5"
+        terminal_missing = single_occlusion_tracker.update(blank_four)
+        run("occlusion_is_published_once_before_terminal_loss", lambda: check(
+            first_hold["包类型"] == "Heartbeat" and
+            published_occlusion["簇变化"][0]["变化类型"] == "Occluded" and
+            repeated_missing["包类型"] == "Heartbeat" and
+            terminal_missing["簇变化"][0]["变化类型"] == "Lost",
+            "Extended missing interval repeated occlusion or skipped terminal loss"))
 
         tentative_tracker = ClusterTracker(max_missing_frames=2, confirmation_frames=3)
         tentative_added = tentative_tracker.update(source)
@@ -211,6 +242,14 @@ def main() -> None:
         run("small_position_shift_keeps_track_id", lambda: check(moved[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and
                                                                   moved[1]["簇变化"][0]["相机跟踪候选编号"] == "1", "Small movement switched ID"))
         run("small_position_shift_is_moved_event", lambda: check(moved[1]["簇变化"][0]["变化类型"] == "Moved", "Movement was not explicit"))
+        reference_tracker = ClusterTracker(confirmation_frames=1)
+        reference_tracker.update(json.loads(move_base.read_text(encoding="utf-8")))
+        original_reference = copy.deepcopy(reference_tracker.tracks["1"].association_record)
+        reference_tracker.update(json.loads(move_shifted.read_text(encoding="utf-8")))
+        run("high_cost_active_match_does_not_drag_reliable_reference", lambda: check(
+            reference_tracker.tracks["1"].record["图像中心XY"] != original_reference["图像中心XY"] and
+            reference_tracker.tracks["1"].association_record["图像中心XY"] == original_reference["图像中心XY"],
+            "High-cost active observation overwrote the reliable association reference"))
         report["status"] = "pass"
     except Exception as error:
         report["status"] = "fail"

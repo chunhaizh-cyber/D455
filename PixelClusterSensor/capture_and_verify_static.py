@@ -16,7 +16,9 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                        serial: str = "", minimum_cluster_pixels: int = 1,
                        clustering_mode: str = "深度主导", confirmation_frames: int = 5,
                        retained_cluster_pixels: int | None = None,
-                       maximum_tentative_match_cost: int = 200_000) -> dict:
+                       maximum_tentative_match_cost: int = 200_000,
+                       max_missing_frames: int = 3,
+                       occlusion_confirmation_frames: int = 2) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if minimum_cluster_pixels < 1:
@@ -31,6 +33,8 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
         raise ValueError("confirmation_frames must be 1..30")
     if not 0 <= maximum_tentative_match_cost < 1_000_000:
         raise ValueError("maximum_tentative_match_cost must be 0..999999")
+    if not 1 <= occlusion_confirmation_frames < max_missing_frames:
+        raise ValueError("occlusion_confirmation_frames must be at least 1 and below max_missing_frames")
     output.mkdir(parents=True)
     report = {
         "format": "PCS.StaticCaptureAndVerify/1", "status": "running", "frames": frames,
@@ -40,6 +44,8 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
         "clustering_mode": clustering_mode,
         "confirmation_frames": confirmation_frames,
         "maximum_tentative_match_cost": maximum_tentative_match_cost,
+        "max_missing_frames": max_missing_frames,
+        "occlusion_confirmation_frames": occlusion_confirmation_frames,
     }
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
@@ -48,7 +54,9 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                             frames=frames, repetitions=repetitions, minimum_cluster_pixels=minimum_cluster_pixels,
                             clustering_mode=clustering_mode, confirmation_frames=confirmation_frames,
                             retained_cluster_pixels=retained_cluster_pixels,
-                            maximum_tentative_match_cost=maximum_tentative_match_cost)
+                            maximum_tentative_match_cost=maximum_tentative_match_cost,
+                            max_missing_frames=max_missing_frames,
+                            occlusion_confirmation_frames=occlusion_confirmation_frames)
         report["capture"] = capture
         report["matrix"] = {"status": matrix["status"], "decision": matrix.get("decision")}
         report["status"] = "pass" if matrix["status"] == "pass" else "fail"
@@ -77,6 +85,8 @@ def main() -> None:
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
     parser.add_argument("--confirmation-frames", type=int, default=5)
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
+    parser.add_argument("--max-missing-frames", type=int, default=3)
+    parser.add_argument("--occlusion-confirmation-frames", type=int, default=2)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(capture_and_verify(executable=args.exe, output=args.output.resolve(), frames=args.frames,
@@ -85,7 +95,9 @@ def main() -> None:
                                         clustering_mode=args.clustering_mode,
                                         confirmation_frames=args.confirmation_frames,
                                         retained_cluster_pixels=args.retained_cluster_pixels,
-                                        maximum_tentative_match_cost=args.maximum_tentative_match_cost), ensure_ascii=False, indent=2))
+                                        maximum_tentative_match_cost=args.maximum_tentative_match_cost,
+                                        max_missing_frames=args.max_missing_frames,
+                                        occlusion_confirmation_frames=args.occlusion_confirmation_frames), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
