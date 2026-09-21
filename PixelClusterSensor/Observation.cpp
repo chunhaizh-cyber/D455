@@ -10,18 +10,22 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <set>
 
 namespace pcs {
 Json ProcessingConfig::json() const {
     return {{"聚簇模式", clusteringMode}, {"可用深度近界米", nearM}, {"可用深度远界米", farM}, {"邻接深度差米", depthGapM},
-        {"邻接深度相对差", depthRelativeGap}, {"归属色差", colorDelta}, {"启用补全", fillEnabled},
+        {"邻接深度相对差", depthRelativeGap}, {"归属色差", colorDelta},
+        {"深度拆分最小支持像素", depthSplitMinSupportPixels},
+        {"跨颜色合并最小连续边界像素", crossColorMergeMinBoundaryPixels}, {"启用补全", fillEnabled},
         {"补全最大缺测连通像素", fillMaxPixels}, {"补全最少样本", fillMinSamples},
         {"补全深度跨度米", fillDepthSpreadM}, {"补全色差", fillColorDelta}};
 }
 ProcessingConfig ProcessingConfig::parse(const Json& j) {
     onlyKeys(j, {"聚簇模式", "可用深度近界米", "可用深度远界米", "邻接深度差米", "邻接深度相对差", "归属色差",
+        "深度拆分最小支持像素", "跨颜色合并最小连续边界像素",
         "启用补全", "补全最大缺测连通像素", "补全最少样本", "补全深度跨度米", "补全色差"});
     ProcessingConfig c;
     if (j.contains("聚簇模式")) require(j.at("聚簇模式").is_string(), "invalid_config", "聚簇模式必须是字符串");
@@ -29,8 +33,11 @@ ProcessingConfig ProcessingConfig::parse(const Json& j) {
     c.nearM = j.value("可用深度近界米", c.nearM); c.farM = j.value("可用深度远界米", c.farM);
     c.depthGapM = j.value("邻接深度差米", c.depthGapM); c.depthRelativeGap = j.value("邻接深度相对差", c.depthRelativeGap);
     c.colorDelta = j.value("归属色差", c.colorDelta); c.fillEnabled = j.value("启用补全", c.fillEnabled);
-    for (const auto* key : {"补全最大缺测连通像素", "补全最少样本"})
+    for (const auto* key : {"深度拆分最小支持像素", "跨颜色合并最小连续边界像素",
+                            "补全最大缺测连通像素", "补全最少样本"})
         if (j.contains(key)) require(j.at(key).is_number_integer(), "invalid_config", "计数配置必须是整数");
+    c.depthSplitMinSupportPixels = boundedInt(j.value("深度拆分最小支持像素", Json(c.depthSplitMinSupportPixels)), 1, 100000, "invalid_config");
+    c.crossColorMergeMinBoundaryPixels = boundedInt(j.value("跨颜色合并最小连续边界像素", Json(c.crossColorMergeMinBoundaryPixels)), 1, 10000, "invalid_config");
     c.fillMaxPixels = boundedInt(j.value("补全最大缺测连通像素", Json(c.fillMaxPixels)), 1, 16, "invalid_config");
     c.fillMinSamples = boundedInt(j.value("补全最少样本", Json(c.fillMinSamples)), 3, 8, "invalid_config");
     c.fillDepthSpreadM = j.value("补全深度跨度米", c.fillDepthSpreadM);
@@ -39,6 +46,8 @@ ProcessingConfig ProcessingConfig::parse(const Json& j) {
         require(std::isfinite(value), "invalid_config", "配置必须为有限数值");
     require(c.nearM > 0 && c.farM > c.nearM && c.farM <= 100 && c.depthGapM > 0 && c.depthGapM <= 0.5 &&
         c.depthRelativeGap >= 0 && c.depthRelativeGap <= 0.2 && c.colorDelta > 0 && c.colorDelta <= 100 &&
+        c.depthSplitMinSupportPixels >= 1 && c.depthSplitMinSupportPixels <= 100000 &&
+        c.crossColorMergeMinBoundaryPixels >= 1 && c.crossColorMergeMinBoundaryPixels <= 10000 &&
         c.fillMaxPixels >= 1 && c.fillMaxPixels <= 16 && c.fillMinSamples >= 3 && c.fillMinSamples <= 8 &&
         c.fillDepthSpreadM > 0 && c.fillDepthSpreadM <= 0.2 && c.fillColorDelta > 0 && c.fillColorDelta <= 100,
         "invalid_config", "处理配置越界");
@@ -251,39 +260,70 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
     }
 
     DisjointSet sets(seedCount);
-    int depthMergesAcrossColor = 0, depthMergesAcrossMissing = 0;
+    int depthMergesAcrossColor = 0, depthMergesAcrossMissing = 0, ignoredSmallDepthSeeds = 0;
     for (int color = 1; color <= colorCount; ++color) {
         std::set<int> unique;
         for (const auto point : colorPixels[static_cast<size_t>(color)]) {
             const int seed = depthSeeds.at<int>(point);
             if (seed) unique.insert(seed);
         }
-        std::vector<int> ordered(unique.begin(), unique.end());
-        std::sort(ordered.begin(), ordered.end(), [&](int first, int second) {
+        std::vector<int> supported;
+        for (const int seed : unique) {
+            if (seedDepthCount[static_cast<size_t>(seed)] >= c.depthSplitMinSupportPixels) supported.push_back(seed);
+        }
+        if (supported.empty() && !unique.empty()) {
+            supported.push_back(*std::max_element(unique.begin(), unique.end(), [&](int first, int second) {
+                return seedDepthCount[static_cast<size_t>(first)] < seedDepthCount[static_cast<size_t>(second)];
+            }));
+        }
+        const auto meanDepth = [&](int seed) {
+            return seedDepthSum[static_cast<size_t>(seed)] / seedDepthCount[static_cast<size_t>(seed)];
+        };
+        for (const int seed : unique) {
+            if (std::find(supported.begin(), supported.end(), seed) != supported.end()) continue;
+            ++ignoredSmallDepthSeeds;
+            const int nearest = *std::min_element(supported.begin(), supported.end(), [&](int first, int second) {
+                return std::abs(meanDepth(first) - meanDepth(seed)) < std::abs(meanDepth(second) - meanDepth(seed));
+            });
+            sets.merge(seed, nearest);
+        }
+        std::sort(supported.begin(), supported.end(), [&](int first, int second) {
             return seedDepthSum[static_cast<size_t>(first)] / seedDepthCount[static_cast<size_t>(first)] <
                 seedDepthSum[static_cast<size_t>(second)] / seedDepthCount[static_cast<size_t>(second)];
         });
         size_t begin = 0;
-        while (begin < ordered.size()) {
-            const double reference = seedDepthSum[static_cast<size_t>(ordered[begin])] / seedDepthCount[static_cast<size_t>(ordered[begin])];
+        while (begin < supported.size()) {
+            const double reference = seedDepthSum[static_cast<size_t>(supported[begin])] / seedDepthCount[static_cast<size_t>(supported[begin])];
             size_t end = begin + 1;
-            while (end < ordered.size()) {
-                const double value = seedDepthSum[static_cast<size_t>(ordered[end])] / seedDepthCount[static_cast<size_t>(ordered[end])];
+            while (end < supported.size()) {
+                const double value = seedDepthSum[static_cast<size_t>(supported[end])] / seedDepthCount[static_cast<size_t>(supported[end])];
                 if (value - reference > c.depthGapM + c.depthRelativeGap * static_cast<float>(std::min(reference, value))) break;
-                if (sets.merge(ordered[begin], ordered[end])) ++depthMergesAcrossMissing;
+                if (sets.merge(supported[begin], supported[end])) ++depthMergesAcrossMissing;
                 ++end;
             }
             begin = end;
         }
     }
+    std::map<std::pair<int, int>, int> continuousCrossColorBoundary;
     for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
         const cv::Point point(x, y);
         for (const cv::Point delta : {cv::Point(1, 0), cv::Point(0, 1)}) {
             const auto neighbor = point + delta;
             if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(point) == colorLabels.at<int>(neighbor) ||
                 !depthContinuous(out, c, point, neighbor)) continue;
-            if (sets.merge(depthSeeds.at<int>(point), depthSeeds.at<int>(neighbor))) ++depthMergesAcrossColor;
+            int first = sets.find(depthSeeds.at<int>(point)), second = sets.find(depthSeeds.at<int>(neighbor));
+            if (first == second) continue;
+            if (first > second) std::swap(first, second);
+            ++continuousCrossColorBoundary[{first, second}];
         }
+    }
+    int rejectedShortCrossColorBoundaries = 0;
+    for (const auto& [roots, support] : continuousCrossColorBoundary) {
+        if (support < c.crossColorMergeMinBoundaryPixels) {
+            ++rejectedShortCrossColorBoundaries;
+            continue;
+        }
+        if (sets.merge(roots.first, roots.second)) ++depthMergesAcrossColor;
     }
 
     out.labels = cv::Mat::zeros(size, CV_32S);
@@ -374,6 +414,9 @@ void partitionContourFirst(const cv::Mat& lab, Observation& out, const Processin
     out.metrics["当前深度种子区域数"] = seedCount;
     out.metrics["跨颜色连续深度合并数"] = depthMergesAcrossColor;
     out.metrics["跨缺测相容深度合并数"] = depthMergesAcrossMissing;
+    out.metrics["深度拆分忽略小种子数"] = ignoredSmallDepthSeeds;
+    out.metrics["跨颜色连续边界候选数"] = continuousCrossColorBoundary.size();
+    out.metrics["跨颜色短边界拒绝合并数"] = rejectedShortCrossColorBoundaries;
     out.metrics["封闭缺深度继承像素数"] = enclosedInheritedPixels;
 }
 
