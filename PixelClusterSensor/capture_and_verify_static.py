@@ -13,20 +13,22 @@ from run_cluster_stability_matrix import run_matrix
 
 def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                        repetitions: int = 3, replay_source: Path | None = None,
-                       serial: str = "") -> dict:
+                       serial: str = "", minimum_cluster_pixels: int = 1) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
+    if minimum_cluster_pixels < 1:
+        raise ValueError("minimum_cluster_pixels must be positive")
     output.mkdir(parents=True)
     report = {
         "format": "PCS.StaticCaptureAndVerify/1", "status": "running", "frames": frames,
         "repetitions": repetitions, "capture_source": "directory_replay" if replay_source else "live_camera",
-        "capture": None, "matrix": None, "error": None,
+        "capture": None, "matrix": None, "minimum_cluster_pixels": minimum_cluster_pixels, "error": None,
     }
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
                                   replay=replay_source, serial=serial)
         matrix = run_matrix(executable=executable, replay=Path(capture["sequence"]), output=output / "matrix",
-                            frames=frames, repetitions=repetitions)
+                            frames=frames, repetitions=repetitions, minimum_cluster_pixels=minimum_cluster_pixels)
         report["capture"] = capture
         report["matrix"] = {"status": matrix["status"], "decision": matrix.get("decision")}
         report["status"] = "pass" if matrix["status"] == "pass" else "fail"
@@ -50,11 +52,12 @@ def main() -> None:
     parser.add_argument("--serial", default="")
     parser.add_argument("--frames", type=int, default=600)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(capture_and_verify(executable=args.exe, output=args.output.resolve(), frames=args.frames,
                                         repetitions=args.repetitions, replay_source=args.replay_source,
-                                        serial=args.serial), ensure_ascii=False, indent=2))
+                                        serial=args.serial, minimum_cluster_pixels=args.minimum_cluster_pixels), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

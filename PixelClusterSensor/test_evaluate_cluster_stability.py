@@ -34,7 +34,7 @@ def main() -> None:
         decision = evaluate_runs(runs, root / "decision")
         check(decision["pass"], f"Static stability decision failed: {decision}")
         check(decision["normalized_determinism_pass"], "Repeated static stream was not deterministic")
-        check(decision["track_id_switch_count"] == 0, "Static stream changed track ID")
+        check(decision["frame_local_id_reassignment_count"] == 0, "Synthetic stream changed its frame-local mapping")
         check((root / "decision" / "packet_metrics.csv").is_file() and (root / "decision" / "events.csv").is_file(),
               "Decision evidence files are missing")
         (root / "report.json").write_text(json.dumps({"status": "pass", "decision": decision}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

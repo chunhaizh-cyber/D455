@@ -56,7 +56,61 @@ def source_time(source: dict) -> dict:
     return {"值": source["彩图时间戳毫秒"], "单位": "ms", "时间域": source["彩图时间域"]}
 
 
-def convert(source_path: Path, output: Path) -> dict:
+def encode_valid_rings(source_rings: list[dict], points: np.ndarray) -> tuple[list[dict], bytes, int]:
+    """Encode only closed, non-degenerate source rings.
+
+    The producer can expose one- and two-pixel segmentation fragments.  They
+    are useful source diagnostics but cannot be represented by the closed-ring
+    protocol.  Do not invent geometry for them: discard a malformed ring, and
+    let the caller downgrade a cluster with no remaining outer ring to Unknown.
+    """
+    accepted: list[tuple[int, dict, list[tuple[int, int]], bytes, int, int]] = []
+    rejected = 0
+    for index, source_ring in enumerate(source_rings):
+        start, count = source_ring["起始点"], source_ring["点数"]
+        xy = [(int(px), int(py)) for px, py in points[start:start + count, :2]]
+        try:
+            normalized, raw, bit_count = pack_ring(xy, bool(source_ring["内环"]))
+        except ValueError:
+            rejected += 1
+            continue
+        boundary_reasons = points[start:start + count, 2]
+        accepted.append((index, source_ring, normalized, raw, bit_count,
+                         int(np.bitwise_or.reduce(boundary_reasons, initial=0))))
+
+    # A retained inner ring must retain its complete parent chain.  Otherwise
+    # its topology would claim a hole in a contour that is no longer present.
+    by_source_index = {item[0]: item for item in accepted}
+    retained: list[tuple[int, dict, list[tuple[int, int]], bytes, int, int]] = []
+    for item in accepted:
+        parent = item[1]["父轮廓索引"]
+        ancestors: set[int] = set()
+        while parent != -1:
+            if parent in ancestors or parent not in by_source_index:
+                break
+            ancestors.add(parent)
+            parent = by_source_index[parent][1]["父轮廓索引"]
+        else:
+            retained.append(item)
+
+    remapped = {item[0]: index for index, item in enumerate(retained)}
+    encoded = bytearray()
+    rings = []
+    for source_index, source_ring, normalized, raw, bit_count, boundary_reason in retained:
+        parent = source_ring["父轮廓索引"]
+        offset = len(encoded)
+        encoded.extend(raw)
+        rings.append({
+            "材料键": "精确轮廓链", "字节偏移": offset, "有效位数": bit_count,
+            "起点XY": list(normalized[0]), "点数": len(normalized),
+            "父环索引": -1 if parent == -1 else remapped[parent], "内环": source_ring["内环"],
+            "闭合区域边界": source_ring["闭合区域边界"], "物理孔洞确认": False,
+            "边界原因位": boundary_reason,
+        })
+    return rings, bytes(encoded), rejected + len(accepted) - len(retained)
+
+
+def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) -> dict:
     """Write a published cluster snapshot to a new directory and return its validation report."""
     source_path = source_path.resolve()
     output = output.resolve()
@@ -76,26 +130,33 @@ def convert(source_path: Path, output: Path) -> dict:
     height, width = labels.shape
     if width * height > MAX_IMAGE_PIXELS or len(manifest["簇目录"]) > MAX_CLUSTERS:
         raise ValueError("Source observation exceeds cluster package bounds")
+    if minimum_cluster_pixels < 1:
+        raise ValueError("minimum_cluster_pixels must be positive")
     contour_bytes = bytearray()
     entries = []
+    downgraded_pixels = 0
+    rejected_ring_count = 0
+    below_minimum_cluster_count = 0
     for source_cluster in manifest["簇目录"]:
         cluster_id = source_cluster["本帧簇编号"]
         mask = labels == cluster_id
         y, x = np.where(mask)
         box = source_cluster["范围XYWH"]
-        rings = []
-        for source_ring in source_cluster["轮廓"]:
-            start, count = source_ring["起始点"], source_ring["点数"]
-            xy = [(int(px), int(py)) for px, py in points[start:start + count, :2]]
-            normalized, raw, bit_count = pack_ring(xy, bool(source_ring["内环"]))
-            offset = len(contour_bytes)
-            contour_bytes.extend(raw)
-            boundary_reasons = points[start:start + count, 2]
-            rings.append({
-                "材料键": "精确轮廓链", "字节偏移": offset, "有效位数": bit_count, "起点XY": list(normalized[0]), "点数": len(normalized),
-                "父环索引": source_ring["父轮廓索引"], "内环": source_ring["内环"], "闭合区域边界": source_ring["闭合区域边界"],
-                "物理孔洞确认": False, "边界原因位": int(np.bitwise_or.reduce(boundary_reasons, initial=0)),
-            })
+        if int(mask.sum()) < minimum_cluster_pixels:
+            downgraded_pixels += int(mask.sum())
+            below_minimum_cluster_count += 1
+            continue
+        rings, encoded_rings, rejected = encode_valid_rings(source_cluster["轮廓"], points)
+        rejected_ring_count += rejected
+        if not any(not ring["内环"] for ring in rings):
+            # A protocol cluster is a closed visible region.  A source fragment
+            # without an outer ring is not silently promoted to a cluster.
+            downgraded_pixels += int(mask.sum())
+            continue
+        base_offset = len(contour_bytes)
+        contour_bytes.extend(encoded_rings)
+        for ring in rings:
+            ring["字节偏移"] += base_offset
         measured = int(np.count_nonzero(mask & (depth_state == 1)))
         out_of_range = int(np.count_nonzero(mask & (depth_state == 2)))
         estimated = int(np.count_nonzero(mask & (fill_state == 1)))
@@ -126,7 +187,7 @@ def convert(source_path: Path, output: Path) -> dict:
             "详细材料句柄": None,
         })
     source = manifest["源信息"]
-    unknown = int(np.count_nonzero(ownership == 0))
+    unknown = int(np.count_nonzero(ownership == 0)) + downgraded_pixels
     staging = output.parent / (output.name + ".pending")
     staging.mkdir(parents=True)
     try:
@@ -147,7 +208,9 @@ def convert(source_path: Path, output: Path) -> dict:
             "全局覆盖摘要": {"已处理像素数": int(labels.size - unknown), "未知像素数": unknown, "无效像素数": 0, "遮挡像素数": 0, "未处理像素数": 0},
             "材料": {"精确轮廓链": {"文件": "contours.bin", "编码": "PCS.ContourChain8/1", "字节数": len(raw_contours), "SHA256": sha256(raw_contours)}},
             "簇变化": entries,
-            "指标": {"转换来源格式": manifest["格式"], "转换来源清单SHA256": sha256(source_path.read_bytes()), "跟踪": "not_implemented", "精确深度晋级": "not_implemented"},
+            "指标": {"转换来源格式": manifest["格式"], "转换来源清单SHA256": sha256(source_path.read_bytes()), "跟踪": "not_implemented", "精确深度晋级": "not_implemented",
+                     "退化轮廓环数": rejected_ring_count, "低于最小簇像素数簇数": below_minimum_cluster_count,
+                     "最小簇像素数": minimum_cluster_pixels, "降级未知像素数": downgraded_pixels},
         }
         packet_path = staging / "packet.json"
         packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -163,8 +226,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_packet", type=Path, help="PCS.Observation/1 frame.json")
     parser.add_argument("--output", required=True, type=Path, help="New PCS.ClusterObservation/1 directory")
+    parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     args = parser.parse_args()
-    print(json.dumps(convert(args.source_packet, args.output), ensure_ascii=False, indent=2))
+    print(json.dumps(convert(args.source_packet, args.output, args.minimum_cluster_pixels), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

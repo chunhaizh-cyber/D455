@@ -30,16 +30,20 @@ def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
     return path
 
 
-def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2) -> dict:
+def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2,
+               minimum_cluster_pixels: int = 1) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
         raise ValueError("frames must be 1..2048")
+    if minimum_cluster_pixels < 1:
+        raise ValueError("minimum_cluster_pixels must be positive")
     output.mkdir(parents=True)
     report = {
         "status": "running", "format": "PCS.ClusterStreamRun/1", "requested_frames": frames,
         "source": "directory_replay" if replay else "live_camera", "packets": [], "error": None,
         "quality_promotion": "not_evaluated", "tracking_validation": "not_established_for_real_dynamic_motion",
+        "minimum_cluster_pixels": minimum_cluster_pixels,
     }
     tracker = ClusterTracker(max_missing_frames=max_missing_frames)
     packet_documents = []
@@ -56,7 +60,7 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 observation = client.call("获取单帧观察")
                 source_path = Path(observation["材料路径"])
                 snapshot_root = output / "snapshots" / f"packet_{index:06d}"
-                convert_result = convert(source_path, snapshot_root)
+                convert_result = convert(source_path, snapshot_root, minimum_cluster_pixels)
                 snapshot_path = snapshot_root / "packet.json"
                 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
                 tracked = tracker.update(snapshot)
@@ -106,10 +110,12 @@ def main() -> None:
     parser.add_argument("--serial", default="")
     parser.add_argument("--frames", type=int, default=1)
     parser.add_argument("--max-missing-frames", type=int, default=2)
+    parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     print(json.dumps(run_stream(executable=args.exe, output=args.output.resolve(), frames=args.frames, replay=args.replay,
-                                serial=args.serial, max_missing_frames=args.max_missing_frames), ensure_ascii=False, indent=2))
+                                serial=args.serial, max_missing_frames=args.max_missing_frames,
+                                minimum_cluster_pixels=args.minimum_cluster_pixels), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

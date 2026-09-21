@@ -12,7 +12,7 @@ from PIL import Image
 
 from client import Client
 from cluster_protocol import validate_cluster_packet
-from convert_cluster_observation import convert
+from convert_cluster_observation import convert, encode_valid_rings
 
 
 def check(condition: bool, message: str) -> None:
@@ -80,6 +80,21 @@ def main() -> None:
                                                                            data["簇变化"][0]["自我绑定令牌"] is None, "Unexpected identity claim"))
         run("converter_emits_exact_chain_material", lambda: check(converted_a["contour_bytes"] > 0 and
                                                                       data["材料"]["精确轮廓链"]["编码"] == "PCS.ContourChain8/1", "Missing contour chain"))
+        def rejects_degenerate_source_rings_without_inventing_geometry():
+            points = np.array([[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1], [5, 5, 2]], dtype=np.int32)
+            rings, raw, rejected = encode_valid_rings([
+                {"起始点": 0, "点数": 4, "内环": False, "父轮廓索引": -1, "闭合区域边界": True},
+                {"起始点": 4, "点数": 1, "内环": True, "父轮廓索引": 0, "闭合区域边界": True},
+            ], points)
+            check(len(rings) == 1 and raw and rejected == 1, "Degenerate ring was not excluded")
+        run("converter_excludes_degenerate_source_rings", rejects_degenerate_source_rings_without_inventing_geometry)
+        filtered = convert(source, root / "cluster_filtered", minimum_cluster_pixels=769)
+        filtered_packet = json.loads((root / "cluster_filtered" / "packet.json").read_text(encoding="utf-8"))
+        run("converter_downgrades_below_threshold_clusters_to_unknown", lambda: check(
+            filtered["clusters"] == 0 and not filtered_packet["簇变化"] and
+            filtered_packet["全局覆盖摘要"]["未知像素数"] == 32 * 24 and
+            filtered_packet["指标"]["低于最小簇像素数簇数"] == 1,
+            "Below-threshold cluster was not explicitly downgraded"))
         report["status"] = "pass"
     except Exception as error:
         report["status"] = "fail"

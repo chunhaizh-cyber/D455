@@ -59,8 +59,8 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
     metrics: list[dict] = []
     all_valid = True
     reconstruction_ok = True
-    total_switches = 0
-    false_lifecycle_events = 0
+    frame_local_id_reassignments = 0
+    static_lifecycle_events = 0
     for run_index, packets in enumerate(packet_lists, start=1):
         previous_sequence = 0
         track_by_frame_cluster: dict[int, str] = {}
@@ -84,11 +84,16 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
                 if frame_cluster is not None and track is not None:
                     old = track_by_frame_cluster.get(frame_cluster)
                     if old is not None and old != track:
-                        total_switches += 1
-                        events.append({"run_index": run_index, "event": "track_id_switch", "detail": f"frame_cluster={frame_cluster} {old}->{track}"})
+                        # 本帧簇编号 only identifies one source frame.  Its
+                        # reuse across frames cannot prove a physical track-ID
+                        # switch, but it is useful to expose as a source-label
+                        # churn diagnostic.
+                        frame_local_id_reassignments += 1
+                        events.append({"run_index": run_index, "event": "frame_local_id_reassignment",
+                                       "detail": f"frame_cluster={frame_cluster} {old}->{track}"})
                     track_by_frame_cluster[frame_cluster] = track
                 if change_type in {"Lost", "Reappeared", "Occluded"}:
-                    false_lifecycle_events += 1
+                    static_lifecycle_events += 1
                     events.append({"run_index": run_index, "event": "lifecycle_event", "detail": change_type})
             metrics.append({"run_index": run_index, "packet_index": packet_index, "output_sequence": sequence,
                             "packet_type": packet["包类型"], "active_tracks_after_packet": len(active)})
@@ -96,8 +101,9 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
         "format": "PCS.ClusterStabilityDecision/1", "scope": "static replay evidence only",
         "run_count": len(run_roots), "frames_per_run": lengths, "packet_validation_pass": all_valid,
         "normalized_determinism_pass": deterministic, "reconstruction_pass": reconstruction_ok,
-        "track_id_switch_count": total_switches, "unexpected_lifecycle_event_count": false_lifecycle_events,
-        "pass": all_valid and deterministic and reconstruction_ok and total_switches == 0 and false_lifecycle_events == 0,
+        "frame_local_id_reassignment_count": frame_local_id_reassignments,
+        "static_lifecycle_event_count": static_lifecycle_events,
+        "pass": all_valid and deterministic and reconstruction_ok and static_lifecycle_events == 0,
         "not_proven": ["physical_scene_static", "dynamic_tracking", "world_identity", "absolute_depth_accuracy"],
     }
     (output / "run_decision.json").write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
