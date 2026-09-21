@@ -61,9 +61,15 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
     reconstruction_ok = True
     frame_local_id_reassignments = 0
     static_lifecycle_events = 0
+    tentative_removed_count = 0
+    added_candidate_count = 0
+    run_max_active_tracks: list[int] = []
     for run_index, packets in enumerate(packet_lists, start=1):
         previous_sequence = 0
         track_by_frame_cluster: dict[int, str] = {}
+        incremental_state: dict[str, dict] = {}
+        base_sequence: str | None = None
+        max_active_tracks = 0
         try:
             active = reconstruct(packets)
         except Exception as error:
@@ -77,8 +83,19 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
                 all_valid = False
                 events.append({"run_index": run_index, "event": "sequence_gap", "detail": f"{previous_sequence}->{sequence}"})
             previous_sequence = sequence
+            if packet["包类型"] == "FullSnapshot":
+                incremental_state = {}
+                base_sequence = packet["输出序号"]
+            elif packet["包类型"] == "Delta" and packet["依赖全量序号"] != base_sequence:
+                all_valid = False
+                events.append({"run_index": run_index, "event": "base_snapshot_mismatch",
+                               "detail": f"packet={packet['输出序号']} base={packet['依赖全量序号']} expected={base_sequence}"})
             for change in packet["簇变化"]:
                 change_type = change["变化类型"]
+                if change_type == "Added":
+                    added_candidate_count += 1
+                if change_type == "Removed" and change["遮挡"]["依据"] == "tentative_candidate_not_reobserved":
+                    tentative_removed_count += 1
                 frame_cluster = change["帧内簇编号"]
                 track = change["相机跟踪候选编号"]
                 if frame_cluster is not None and track is not None:
@@ -94,16 +111,35 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
                     track_by_frame_cluster[frame_cluster] = track
                 if change_type in {"Lost", "Reappeared", "Occluded"}:
                     static_lifecycle_events += 1
-                    events.append({"run_index": run_index, "event": "lifecycle_event", "detail": change_type})
+                    events.append({"run_index": run_index, "event": "lifecycle_event", "detail": f"{change_type}:track={track}"})
+                if frame_cluster is None:
+                    if change_type in {"Lost", "Removed"}:
+                        incremental_state.pop(track, None)
+                    elif change_type == "Occluded" and track in incremental_state:
+                        incremental_state[track]["跟踪状态"] = "Occluded"
+                        incremental_state[track]["时效"] = copy.deepcopy(change["时效"])
+                else:
+                    incremental_state[track] = copy.deepcopy(change)
+            max_active_tracks = max(max_active_tracks, len(incremental_state))
             metrics.append({"run_index": run_index, "packet_index": packet_index, "output_sequence": sequence,
-                            "packet_type": packet["包类型"], "active_tracks_after_packet": len(active)})
+                            "packet_type": packet["包类型"], "active_tracks_after_packet": len(incremental_state)})
+        if incremental_state != active:
+            all_valid = False
+            reconstruction_ok = False
+            events.append({"run_index": run_index, "event": "incremental_reconstruction_mismatch", "detail": "final state differs"})
+        run_max_active_tracks.append(max_active_tracks)
+    candidate_presence_pass = all(value > 0 for value in run_max_active_tracks)
     decision = {
         "format": "PCS.ClusterStabilityDecision/1", "scope": "static replay evidence only",
         "run_count": len(run_roots), "frames_per_run": lengths, "packet_validation_pass": all_valid,
         "normalized_determinism_pass": deterministic, "reconstruction_pass": reconstruction_ok,
         "frame_local_id_reassignment_count": frame_local_id_reassignments,
         "static_lifecycle_event_count": static_lifecycle_events,
-        "pass": all_valid and deterministic and reconstruction_ok and static_lifecycle_events == 0,
+        "tentative_removed_count": tentative_removed_count,
+        "added_candidate_count": added_candidate_count,
+        "run_max_active_tracks": run_max_active_tracks,
+        "candidate_presence_pass": candidate_presence_pass,
+        "pass": all_valid and deterministic and reconstruction_ok and candidate_presence_pass and static_lifecycle_events == 0,
         "not_proven": ["physical_scene_static", "dynamic_tracking", "world_identity", "absolute_depth_accuracy"],
     }
     (output / "run_decision.json").write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

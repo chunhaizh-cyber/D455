@@ -31,15 +31,20 @@ def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
 
 
 def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2,
-               minimum_cluster_pixels: int = 1, clustering_mode: str = "深度主导") -> dict:
+               minimum_cluster_pixels: int = 1, clustering_mode: str = "深度主导", confirmation_frames: int = 5,
+               start_frame: int = 1) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
         raise ValueError("frames must be 1..2048")
+    if not 1 <= start_frame <= 2048 or start_frame - 1 + frames > 2048:
+        raise ValueError("start_frame and frames must fit the 2048-frame source bound")
     if minimum_cluster_pixels < 1:
         raise ValueError("minimum_cluster_pixels must be positive")
     if clustering_mode not in {"轮廓主导", "深度主导"}:
         raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
+    if not 1 <= confirmation_frames <= 30:
+        raise ValueError("confirmation_frames must be 1..30")
     output.mkdir(parents=True)
     report = {
         "status": "running", "format": "PCS.ClusterStreamRun/1", "requested_frames": frames,
@@ -47,8 +52,10 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
         "quality_promotion": "not_evaluated", "tracking_validation": "not_established_for_real_dynamic_motion",
         "minimum_cluster_pixels": minimum_cluster_pixels,
         "clustering_mode": clustering_mode,
+        "confirmation_frames": confirmation_frames,
+        "start_frame": start_frame,
     }
-    tracker = ClusterTracker(max_missing_frames=max_missing_frames)
+    tracker = ClusterTracker(max_missing_frames=max_missing_frames, confirmation_frames=confirmation_frames)
     packet_documents = []
     metrics = []
     events = []
@@ -60,6 +67,9 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
             configured = client.call("设置处理配置", {"聚簇模式": clustering_mode}, 预期配置版本=client.revision)
             report["configuration_version"] = configured["配置版本"]
             report["processing_configuration"] = configured["处理配置"]
+            for _ in range(1, start_frame):
+                skipped = client.call("获取单帧观察")
+                client.call("释放观察材料", {"输出序号": skipped["输出序号"]})
             for index in range(1, frames + 1):
                 started = time.perf_counter()
                 observation = client.call("获取单帧观察")
@@ -68,6 +78,13 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 convert_result = convert(source_path, snapshot_root, minimum_cluster_pixels)
                 snapshot_path = snapshot_root / "packet.json"
                 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                # The cluster stream has its own contiguous sequence.  Upstream
+                # observation numbers remain in packet_metrics for traceability.
+                snapshot["包标识"] = f"cluster-{index}"
+                snapshot["输出序号"] = str(index)
+                snapshot["场景版本"] = str(index)
+                snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                validate_cluster_packet(snapshot_path)
                 tracked = tracker.update(snapshot)
                 tracked_root = output / "cluster_packets" / f"packet_{index:06d}"
                 tracked_path = write_tracked_packet(tracked, snapshot_root, tracked_root)
@@ -117,12 +134,16 @@ def main() -> None:
     parser.add_argument("--max-missing-frames", type=int, default=2)
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
+    parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--start-frame", type=int, default=1)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     print(json.dumps(run_stream(executable=args.exe, output=args.output.resolve(), frames=args.frames, replay=args.replay,
                                 serial=args.serial, max_missing_frames=args.max_missing_frames,
                                 minimum_cluster_pixels=args.minimum_cluster_pixels,
-                                clustering_mode=args.clustering_mode), ensure_ascii=False, indent=2))
+                                clustering_mode=args.clustering_mode,
+                                confirmation_frames=args.confirmation_frames,
+                                start_frame=args.start_frame), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

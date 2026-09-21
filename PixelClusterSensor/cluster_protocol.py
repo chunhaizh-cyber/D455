@@ -242,7 +242,9 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
             check(entry[key] is None, f"Tombstone field must be null: {key}")
         occlusion = entry["遮挡"]
         _only_keys(occlusion, {"状态", "比例", "依据"}, "Tombstone occlusion")
-        check(occlusion.get("状态") == "Occluded" and occlusion.get("比例") is None, "Tombstone must be fully occluded")
+        expected_occlusion = "Unknown" if entry["变化类型"] == "Removed" else "Occluded"
+        check(occlusion.get("状态") == expected_occlusion and occlusion.get("比例") is None,
+              "Tombstone occlusion state disagrees with removal reason")
         _string(occlusion.get("依据"), "Tombstone reason", 1, 256)
         freshness = entry["时效"]
         _only_keys(freshness, {"连续可见帧数", "连续缺失帧数", "证据年龄毫秒"}, "Tombstone freshness")

@@ -25,24 +25,28 @@ def git_revision(project: Path) -> str | None:
 
 def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 600,
                repetitions: int = 3, max_missing_frames: int = 2, minimum_cluster_pixels: int = 1,
-               clustering_mode: str = "深度主导") -> dict:
+               clustering_mode: str = "深度主导", confirmation_frames: int = 5, start_frame: int = 1) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
         raise ValueError("frames must be 1..2048")
+    if not 1 <= start_frame <= 2048 or start_frame - 1 + frames > 2048:
+        raise ValueError("start_frame and frames must fit the 2048-frame source bound")
     if not 1 <= repetitions <= 5:
         raise ValueError("repetitions must be 1..5")
     if minimum_cluster_pixels < 1:
         raise ValueError("minimum_cluster_pixels must be positive")
     if clustering_mode not in {"轮廓主导", "深度主导"}:
         raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
+    if not 1 <= confirmation_frames <= 30:
+        raise ValueError("confirmation_frames must be 1..30")
     replay = replay.resolve()
     if not replay.is_file():
         raise ValueError(f"Replay manifest does not exist: {replay}")
     sequence = json.loads(replay.read_text(encoding="utf-8"))
     if sequence.get("格式") != "PCS.RawSequence/1":
         raise ValueError("Replay must be PCS.RawSequence/1")
-    if len(sequence.get("帧列表", [])) < frames:
+    if len(sequence.get("帧列表", [])) < start_frame - 1 + frames:
         raise ValueError("Replay has fewer frames than requested")
     output.mkdir(parents=True)
     project = Path(__file__).resolve().parent.parent
@@ -51,6 +55,8 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
         "input_manifest_sha256": sha256(replay), "requested_frames": frames, "repetitions": repetitions,
         "max_missing_frames": max_missing_frames, "minimum_cluster_pixels": minimum_cluster_pixels,
         "clustering_mode": clustering_mode,
+        "confirmation_frames": confirmation_frames,
+        "start_frame": start_frame,
         "git_revision": git_revision(project), "runs": [], "error": None,
     }
     try:
@@ -59,7 +65,8 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
             target = output / f"repeat_{index:03d}"
             report = run_stream(executable=executable, output=target, frames=frames, replay=replay,
                                 max_missing_frames=max_missing_frames, minimum_cluster_pixels=minimum_cluster_pixels,
-                                clustering_mode=clustering_mode)
+                                clustering_mode=clustering_mode, confirmation_frames=confirmation_frames,
+                                start_frame=start_frame)
             manifest["runs"].append({"index": index, "path": str(target), "status": report["status"]})
             run_roots.append(target)
         decision = evaluate_runs(run_roots, output / "decision")
@@ -75,6 +82,8 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
             "frames": frames, "repetitions": repetitions, "max_missing_frames": max_missing_frames,
             "minimum_cluster_pixels": minimum_cluster_pixels,
             "clustering_mode": clustering_mode,
+            "confirmation_frames": confirmation_frames,
+            "start_frame": start_frame,
             "source": "PCS.RawSequence/1", "evaluation": "static_stability_only",
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -90,12 +99,16 @@ def main() -> None:
     parser.add_argument("--max-missing-frames", type=int, default=2)
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
+    parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--start-frame", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(run_matrix(executable=args.exe, replay=args.replay, output=args.output.resolve(), frames=args.frames,
                                 repetitions=args.repetitions, max_missing_frames=args.max_missing_frames,
                                 minimum_cluster_pixels=args.minimum_cluster_pixels,
-                                clustering_mode=args.clustering_mode), ensure_ascii=False, indent=2))
+                                clustering_mode=args.clustering_mode,
+                                confirmation_frames=args.confirmation_frames,
+                                start_frame=args.start_frame), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

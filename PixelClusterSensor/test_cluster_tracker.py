@@ -95,7 +95,7 @@ def main() -> None:
             value["输出序号"], value["场景版本"], value["包标识"], value["簇变化"] = str(index), str(index), f"cluster-{index}", []
         blank_one_path = write_packet(root / "blank_one", blank_one, first.parent / "contours.bin")
         blank_two_path = write_packet(root / "blank_two", blank_two, first.parent / "contours.bin")
-        tracker = ClusterTracker(max_missing_frames=2)
+        tracker = ClusterTracker(max_missing_frames=2, confirmation_frames=1)
         full = tracker.update(source)
         occluded = tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
         lost = tracker.update(json.loads(blank_two_path.read_text(encoding="utf-8")))
@@ -110,7 +110,7 @@ def main() -> None:
         reappearance_source = copy.deepcopy(source)
         reappearance_source["输出序号"], reappearance_source["场景版本"], reappearance_source["包标识"] = "3", "3", "cluster-reappeared"
         reappearance_path = write_packet(root / "reappearance_source", reappearance_source, first.parent / "contours.bin")
-        tracker = ClusterTracker(max_missing_frames=2)
+        tracker = ClusterTracker(max_missing_frames=2, confirmation_frames=1)
         first_visible = tracker.update(source)
         one_missing = tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
         reappeared = tracker.update(json.loads(reappearance_path.read_text(encoding="utf-8")))
@@ -122,6 +122,23 @@ def main() -> None:
                                                                   reappeared["簇变化"][0]["相机跟踪候选编号"] and
                                                                   one_missing["簇变化"][0]["变化类型"] == "Occluded",
                                                             "Reappearance changed or skipped the candidate ID"))
+        run("reappearance_resets_consecutive_visible_count", lambda: check(reappeared["簇变化"][0]["时效"]["连续可见帧数"] == 1,
+                                                                            "Reappearance retained a stale visible streak"))
+
+        tentative_tracker = ClusterTracker(max_missing_frames=2, confirmation_frames=3)
+        tentative_added = tentative_tracker.update(source)
+        tentative_removed = tentative_tracker.update(json.loads(blank_one_path.read_text(encoding="utf-8")))
+        write_packet(root / "tentative_added", tentative_added, first.parent / "contours.bin")
+        write_packet(root / "tentative_removed", tentative_removed, first.parent / "contours.bin")
+        run("unconfirmed_candidate_is_removed_not_occluded", lambda: check(
+            tentative_added["簇变化"][0]["跟踪状态"] == "Tentative" and
+            tentative_removed["簇变化"][0]["变化类型"] == "Removed" and
+            tentative_removed["簇变化"][0]["跟踪状态"] == "Retired" and
+            tentative_removed["簇变化"][0]["遮挡"]["状态"] == "Unknown" and
+            tentative_removed["簇变化"][0]["遮挡"]["依据"] == "tentative_candidate_not_reobserved",
+            "Unconfirmed candidate entered the occlusion state machine"))
+        run("tentative_removal_reconstructs_empty_state", lambda: check(
+            not reconstruct([tentative_added, tentative_removed]), "Removed tentative candidate remained reconstructed"))
 
         move_base, move_shifted = moved_snapshot(root / "movement")
         moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked")

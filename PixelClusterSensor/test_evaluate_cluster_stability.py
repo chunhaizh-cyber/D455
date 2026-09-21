@@ -37,6 +37,11 @@ def main() -> None:
         check(decision["frame_local_id_reassignment_count"] == 0, "Synthetic stream changed its frame-local mapping")
         check((root / "decision" / "packet_metrics.csv").is_file() and (root / "decision" / "events.csv").is_file(),
               "Decision evidence files are missing")
+        blank_run = root / "blank_run"
+        run_stream(executable=args.exe, output=blank_run, frames=3, replay=sequence, minimum_cluster_pixels=1_000_000)
+        blank_decision = evaluate_runs([blank_run], root / "blank_decision")
+        check(not blank_decision["pass"] and not blank_decision["candidate_presence_pass"] and
+              blank_decision["run_max_active_tracks"] == [0], "Empty candidate stream passed stability gate")
         (root / "report.json").write_text(json.dumps({"status": "pass", "decision": decision}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print("PASS repeated_static_stability_decision", flush=True)
     except Exception as error:

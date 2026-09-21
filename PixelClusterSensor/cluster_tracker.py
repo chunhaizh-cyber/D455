@@ -147,14 +147,18 @@ class Track:
     identifier: str
     record: dict
     visible_frames: int
+    confirmed: bool
     missing_frames: int = 0
 
 
 class ClusterTracker:
-    def __init__(self, max_missing_frames: int = 2):
+    def __init__(self, max_missing_frames: int = 2, confirmation_frames: int = 5):
         if not 1 <= max_missing_frames <= 120:
             raise ValueError("max_missing_frames must be 1..120")
+        if not 1 <= confirmation_frames <= 30:
+            raise ValueError("confirmation_frames must be 1..30")
         self.max_missing_frames = max_missing_frames
+        self.confirmation_frames = confirmation_frames
         self.tracks: dict[str, Track] = {}
         self.next_identifier = 1
         self.base_sequence: str | None = None
@@ -185,29 +189,47 @@ class ClusterTracker:
                 shift = math.dist(track.record["图像中心XY"], entry["图像中心XY"])
                 unchanged = same_observation(track.record, entry)
                 was_missing = track.missing_frames > 0
+                visible_frames = 1 if was_missing else track.visible_frames + 1
+                became_confirmed = not track.confirmed and visible_frames >= self.confirmation_frames
+                track.confirmed = track.confirmed or became_confirmed
                 entry["相机跟踪候选编号"] = track.identifier
                 entry["变化类型"] = "Moved" if shift >= 1.0 else "Updated"
-                entry["跟踪状态"] = "Reappeared" if track.missing_frames else "Active"
-                entry["时效"] = {"连续可见帧数": track.visible_frames + 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
+                entry["跟踪状态"] = "Reappeared" if was_missing and track.confirmed else ("Active" if track.confirmed else "Tentative")
+                entry["时效"] = {"连续可见帧数": visible_frames, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": edges[(matched_by_cluster[cluster_index], cluster_index)]}
-                track.record, track.visible_frames, track.missing_frames = copy.deepcopy(entry), track.visible_frames + 1, 0
-                if not unchanged or was_missing:
+                track.record, track.visible_frames, track.missing_frames = copy.deepcopy(entry), visible_frames, 0
+                if not unchanged or was_missing or became_confirmed:
                     meaningful_change = True
             else:
                 identifier = str(self.next_identifier)
                 self.next_identifier += 1
                 entry["相机跟踪候选编号"] = identifier
                 entry["变化类型"] = "Added"
-                entry["跟踪状态"] = "Tentative"
+                confirmed = self.confirmation_frames == 1
+                entry["跟踪状态"] = "Active" if confirmed else "Tentative"
                 entry["时效"] = {"连续可见帧数": 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = None
-                self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), 1)
+                self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), 1, confirmed)
                 meaningful_change = True
             changes.append(entry)
         for track_index, track in enumerate(prior):
             if track_index in matched_by_track:
                 continue
+            if not track.confirmed:
+                changes.append({
+                    "帧内簇编号": None, "相机跟踪候选编号": track.identifier, "自我绑定令牌": None,
+                    "变化类型": "Removed", "跟踪状态": "Retired",
+                    "范围XYWH": None, "图像中心XY": None, "像素数": None, "触及视野边界": None, "轮廓": None,
+                    "形状指纹": None, "颜色摘要": None, "距离": None, "三维中心米": None, "尺寸米": None, "深度证据": None,
+                    "运动": None, "遮挡": {"状态": "Unknown", "比例": None, "依据": "tentative_candidate_not_reobserved"},
+                    "关联证据": None, "时效": {"连续可见帧数": 0, "连续缺失帧数": 1, "证据年龄毫秒": None},
+                    "详细材料句柄": None,
+                })
+                del self.tracks[track.identifier]
+                meaningful_change = True
+                continue
             track.missing_frames += 1
+            track.visible_frames = 0
             terminal = track.missing_frames >= self.max_missing_frames
             changes.append({
                 "帧内簇编号": None, "相机跟踪候选编号": track.identifier, "自我绑定令牌": None,
@@ -215,7 +237,7 @@ class ClusterTracker:
                 "范围XYWH": None, "图像中心XY": None, "像素数": None, "触及视野边界": None, "轮廓": None,
                 "形状指纹": None, "颜色摘要": None, "距离": None, "三维中心米": None, "尺寸米": None, "深度证据": None,
                 "运动": None, "遮挡": {"状态": "Occluded", "比例": None, "依据": "current_snapshot_has_no_matching_cluster"},
-                "关联证据": None, "时效": {"连续可见帧数": track.visible_frames, "连续缺失帧数": track.missing_frames, "证据年龄毫秒": None},
+                "关联证据": None, "时效": {"连续可见帧数": 0, "连续缺失帧数": track.missing_frames, "证据年龄毫秒": None},
                 "详细材料句柄": None,
             })
             if terminal:
@@ -267,10 +289,11 @@ def reconstruct(packets: list[dict]) -> dict[str, dict]:
     return state
 
 
-def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames: int = 2) -> list[Path]:
+def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames: int = 2,
+                  confirmation_frames: int = 5) -> list[Path]:
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
-    tracker = ClusterTracker(max_missing_frames)
+    tracker = ClusterTracker(max_missing_frames, confirmation_frames)
     output_root.mkdir(parents=True)
     results = []
     try:
@@ -297,8 +320,9 @@ def main() -> None:
     parser.add_argument("inputs", type=Path, nargs="+", help="Ordered FullSnapshot packet.json paths")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--max-missing-frames", type=int, default=2)
+    parser.add_argument("--confirmation-frames", type=int, default=5)
     args = parser.parse_args()
-    packets = write_packets(args.inputs, args.output, args.max_missing_frames)
+    packets = write_packets(args.inputs, args.output, args.max_missing_frames, args.confirmation_frames)
     data = [json.loads(path.read_text(encoding="utf-8")) for path in packets]
     print(json.dumps({"status": "pass", "packets": [str(path) for path in packets], "active_tracks": len(reconstruct(data))}, ensure_ascii=False, indent=2))
 

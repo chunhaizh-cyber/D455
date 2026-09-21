@@ -73,6 +73,14 @@ def main() -> None:
             rows = list(csv.DictReader(file))
         run("metrics_cover_every_source_frame", lambda: check([row["source_frame"] for row in rows] == ["1", "2", "3"],
                                                                 "Metrics do not preserve source frame order"))
+        offset_stream = run_stream(executable=args.exe, output=root / "offset_stream", frames=2, replay=replay, start_frame=2)
+        offset_packets = [json.loads(Path(path).read_text(encoding="utf-8")) for path in offset_stream["packets"]]
+        with (root / "offset_stream" / "packet_metrics.csv").open(encoding="utf-8", newline="") as file:
+            offset_rows = list(csv.DictReader(file))
+        run("start_frame_skips_released_prefix", lambda: check(
+            offset_stream["start_frame"] == 2 and [row["source_frame"] for row in offset_rows] == ["2", "3"] and
+            [packet["输出序号"] for packet in offset_packets] == ["1", "2"],
+            "Stream start offset did not select the requested source window"))
         long_replay = make_static_sequence(root / "long_replay", 129)
         long_stream = run_stream(executable=args.exe, output=root / "long_stream", frames=129, replay=long_replay)
         run("released_source_material_allows_more_than_default_packet_limit", lambda: check(
