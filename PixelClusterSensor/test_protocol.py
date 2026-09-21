@@ -149,6 +149,15 @@ def main():
         run("contour_first_ignores_unsupported_depth_fragment", lambda: geometry_case("contour_tiny_depth", color, tiny_outlier,
             lambda m, a: check(len(m["簇目录"]) == 1 and m["指标"]["深度拆分忽略小种子数"] >= 1,
                               "Unsupported depth fragment split the visible contour"), configuration={"聚簇模式": "轮廓主导"}))
+        isolated_outlier = depth.copy()
+        isolated_outlier[10:15, 14:19] = 0
+        isolated_outlier[12, 16] = 2000
+        run("contour_first_does_not_attach_nonlocal_small_depth_fragment", lambda: geometry_case(
+            "contour_isolated_tiny_depth", color, isolated_outlier,
+            lambda m, a: check(a["簇归属图"][12, 16] != a["簇归属图"][9, 16] and
+                              m["指标"]["深度拆分无局部邻接保留小种子数"] >= 1,
+                              "Nonlocal small depth fragment attached to a remote supported layer"),
+            configuration={"聚簇模式": "轮廓主导"}))
         run("contour_first_keeps_supported_depth_step", lambda: geometry_case("contour_step", color, step,
             lambda m, a: check(len(m["簇目录"]) == 2 and a["簇归属图"][12, 14] != a["簇归属图"][12, 17],
                               "Supported depth step did not split the visible contour"), configuration={"聚簇模式": "轮廓主导"}))
@@ -160,6 +169,18 @@ def main():
         run("contour_first_rejects_single_pixel_cross_color_bridge", lambda: geometry_case("contour_false_bridge", patterned, false_bridge,
             lambda m, a: check(len(m["簇目录"]) == 2 and m["指标"]["跨颜色短边界拒绝合并数"] >= 1,
                               "Single-pixel depth bridge merged two color-depth regions"), configuration={"聚簇模式": "轮廓主导"}))
+        missing_divider = depth.copy()
+        missing_divider[:, 15:17] = 0
+        run("contour_first_global_missing_merge_remains_explicit", lambda: geometry_case("contour_missing_merge", color, missing_divider,
+            lambda m, a: check(a["簇归属图"][12, 14] == a["簇归属图"][12, 17] and
+                              m["指标"]["跨缺测相容深度合并数"] >= 1,
+                              "Enabled global missing-depth merge did not preserve compatibility behavior"),
+            configuration={"聚簇模式": "轮廓主导"}))
+        run("contour_first_can_disable_global_missing_merge", lambda: geometry_case("contour_missing_no_global_merge", color, missing_divider,
+            lambda m, a: check(a["簇归属图"][12, 14] != a["簇归属图"][12, 17] and
+                              m["指标"]["跨缺测相容深度合并数"] == 0,
+                              "Disabled global missing-depth merge still joined disconnected seeds"),
+            configuration={"聚簇模式": "轮廓主导", "允许同彩图区域跨缺测全局合并": False}))
         run("depth_first_mode_remains_available_for_regression", lambda: geometry_case("depth_first", patterned, depth,
             lambda m, a: check(m["处理配置"]["聚簇模式"] == "深度主导" and len(m["簇目录"]) == 1,
                               "Depth-first regression mode changed"), configuration={"聚簇模式": "深度主导"}))
@@ -210,7 +231,9 @@ def main():
                 error(client, client.request("设置处理配置", {"补全最少样本": 2.5}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"补全最少样本": 4294967299}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"深度拆分最小支持像素": 0}, 预期配置版本=client.revision), "invalid_config")
+                error(client, client.request("设置处理配置", {"强制吸收深度噪点最大像素": 0}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"跨颜色合并最小连续边界像素": 2.5}, 预期配置版本=client.revision), "invalid_config")
+                error(client, client.request("设置处理配置", {"允许同彩图区域跨缺测全局合并": 1}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"聚簇模式": "未知模式"}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"未知参数": 1}, 预期配置版本=client.revision), "unknown_field")
                 check(client.call("读取配置与标定")["配置版本"] == "1", "Rejected configuration changed state")

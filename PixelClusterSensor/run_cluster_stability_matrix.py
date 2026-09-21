@@ -27,6 +27,9 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
                repetitions: int = 3, max_missing_frames: int = 3, minimum_cluster_pixels: int = 1,
                clustering_mode: str = "深度主导", confirmation_frames: int = 5, start_frame: int = 1,
                retained_cluster_pixels: int | None = None,
+               depth_split_min_support_pixels: int = 32,
+               cross_color_merge_min_boundary_pixels: int = 8,
+               allow_global_missing_depth_merge: bool = True,
                maximum_tentative_match_cost: int = 200_000,
                occlusion_confirmation_frames: int = 2) -> dict:
     if output.exists():
@@ -45,6 +48,10 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
         raise ValueError("retained_cluster_pixels must be between 1 and minimum_cluster_pixels")
     if clustering_mode not in {"轮廓主导", "深度主导"}:
         raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
+    if not 1 <= depth_split_min_support_pixels <= 100_000:
+        raise ValueError("depth_split_min_support_pixels must be 1..100000")
+    if not 1 <= cross_color_merge_min_boundary_pixels <= 10_000:
+        raise ValueError("cross_color_merge_min_boundary_pixels must be 1..10000")
     if not 1 <= confirmation_frames <= 30:
         raise ValueError("confirmation_frames must be 1..30")
     if not 0 <= maximum_tentative_match_cost < 1_000_000:
@@ -67,6 +74,9 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
         "max_missing_frames": max_missing_frames, "minimum_cluster_pixels": minimum_cluster_pixels,
         "retained_cluster_pixels": retained_cluster_pixels,
         "clustering_mode": clustering_mode,
+        "depth_split_min_support_pixels": depth_split_min_support_pixels,
+        "cross_color_merge_min_boundary_pixels": cross_color_merge_min_boundary_pixels,
+        "allow_global_missing_depth_merge": allow_global_missing_depth_merge,
         "confirmation_frames": confirmation_frames,
         "maximum_tentative_match_cost": maximum_tentative_match_cost,
         "occlusion_confirmation_frames": occlusion_confirmation_frames,
@@ -80,6 +90,9 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
             report = run_stream(executable=executable, output=target, frames=frames, replay=replay,
                                 max_missing_frames=max_missing_frames, minimum_cluster_pixels=minimum_cluster_pixels,
                                 clustering_mode=clustering_mode, confirmation_frames=confirmation_frames,
+                                depth_split_min_support_pixels=depth_split_min_support_pixels,
+                                cross_color_merge_min_boundary_pixels=cross_color_merge_min_boundary_pixels,
+                                allow_global_missing_depth_merge=allow_global_missing_depth_merge,
                                 start_frame=start_frame, retained_cluster_pixels=retained_cluster_pixels,
                                 maximum_tentative_match_cost=maximum_tentative_match_cost,
                                 occlusion_confirmation_frames=occlusion_confirmation_frames)
@@ -99,6 +112,9 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
             "minimum_cluster_pixels": minimum_cluster_pixels,
             "retained_cluster_pixels": retained_cluster_pixels,
             "clustering_mode": clustering_mode,
+            "depth_split_min_support_pixels": depth_split_min_support_pixels,
+            "cross_color_merge_min_boundary_pixels": cross_color_merge_min_boundary_pixels,
+            "allow_global_missing_depth_merge": allow_global_missing_depth_merge,
             "confirmation_frames": confirmation_frames,
             "maximum_tentative_match_cost": maximum_tentative_match_cost,
             "occlusion_confirmation_frames": occlusion_confirmation_frames,
@@ -120,6 +136,9 @@ def main() -> None:
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--retained-cluster-pixels", type=int)
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
+    parser.add_argument("--depth-split-min-support-pixels", type=int, default=32)
+    parser.add_argument("--cross-color-merge-min-boundary-pixels", type=int, default=8)
+    parser.add_argument("--disable-global-missing-depth-merge", action="store_true")
     parser.add_argument("--confirmation-frames", type=int, default=5)
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     parser.add_argument("--start-frame", type=int, default=1)
@@ -129,6 +148,9 @@ def main() -> None:
                                 repetitions=args.repetitions, max_missing_frames=args.max_missing_frames,
                                 minimum_cluster_pixels=args.minimum_cluster_pixels,
                                 clustering_mode=args.clustering_mode,
+                                depth_split_min_support_pixels=args.depth_split_min_support_pixels,
+                                cross_color_merge_min_boundary_pixels=args.cross_color_merge_min_boundary_pixels,
+                                allow_global_missing_depth_merge=not args.disable_global_missing_depth_merge,
                                 confirmation_frames=args.confirmation_frames,
                                 start_frame=args.start_frame,
                                 retained_cluster_pixels=args.retained_cluster_pixels,

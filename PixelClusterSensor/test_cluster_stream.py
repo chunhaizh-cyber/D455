@@ -73,6 +73,13 @@ def main() -> None:
             rows = list(csv.DictReader(file))
         run("metrics_cover_every_source_frame", lambda: check([row["source_frame"] for row in rows] == ["1", "2", "3"],
                                                                 "Metrics do not preserve source frame order"))
+        run("metrics_include_source_partition_diagnostics", lambda: check(
+            all(name in rows[0] for name in ("source_cluster_count", "source_color_region_count",
+                                             "source_depth_seed_count", "source_cross_color_merge_count",
+                                             "source_retained_nonlocal_small_depth_seed_count",
+                                             "source_forced_incompatible_depth_noise_merge_count",
+                                             "source_missing_compatible_depth_merge_count")),
+            "Source partition diagnostics are missing from packet metrics"))
         offset_stream = run_stream(executable=args.exe, output=root / "offset_stream", frames=2, replay=replay, start_frame=2)
         offset_packets = [json.loads(Path(path).read_text(encoding="utf-8")) for path in offset_stream["packets"]]
         with (root / "offset_stream" / "packet_metrics.csv").open(encoding="utf-8", newline="") as file:

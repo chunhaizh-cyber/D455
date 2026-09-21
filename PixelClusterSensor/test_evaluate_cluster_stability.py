@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from cluster_stream import run_stream
-from evaluate_cluster_stability import evaluate_runs
+from evaluate_cluster_stability import candidate_layer, evaluate_runs
 from test_cluster_stream import make_static_sequence
 
 
@@ -37,9 +37,23 @@ def main() -> None:
         check(decision["frame_local_id_reassignment_count"] == 0, "Synthetic stream changed its frame-local mapping")
         check(decision["main_contour_target_pass"] and decision["main_contour_iou_p50"] == 100.0,
               "Identical synthetic geometry did not pass the 99 percent contour target")
+        check(decision["geometry_target_kind"] == "coverage_main_fallback" and
+              decision["geometry_target_pass"] and not decision["foreground_contour_target_applicable"],
+              "Synthetic full-frame-only input did not use the explicit coverage fallback gate")
         check(len(decision["main_geometry_by_run"]) == 3 and
               all(row["distinct_32x32_value_count"] == 1 for row in decision["main_geometry_by_run"]),
               "Synthetic main geometry was not reported deterministically")
+        check(all(row["dominant_candidate_layer"] == "全画面账本区域"
+                  for row in decision["main_geometry_by_run"]),
+              "Full-frame synthetic ledger region was not classified separately")
+        check(decision["candidate_layer_summaries"]["全画面账本区域"]["run_count"] == 3 and
+              decision["candidate_layer_summaries"]["全画面账本区域"]["status"] == "diagnostic_no_gate",
+              "Layered geometry diagnostics are missing or incorrectly gated")
+        base = {"范围XYWH": [10, 10, 20, 20], "触及视野边界": False}
+        check(candidate_layer(base, 100, 100) == "非触边闭合候选" and
+              candidate_layer({"范围XYWH": [0, 10, 20, 20], "触及视野边界": True}, 100, 100) == "触边开放候选" and
+              candidate_layer({"范围XYWH": [0, 0, 100, 100], "触及视野边界": True}, 100, 100) == "全画面账本区域",
+              "Candidate geometry layers are not structurally separated")
         check((root / "decision" / "packet_metrics.csv").is_file() and (root / "decision" / "events.csv").is_file(),
               "Decision evidence files are missing")
         check((root / "decision" / "track_geometry_metrics.csv").is_file() and

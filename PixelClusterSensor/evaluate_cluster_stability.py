@@ -96,9 +96,23 @@ def normalized_filled_mask(entry: dict, contours: bytes, side: int = 32) -> np.n
     return reduced
 
 
-def geometry_sample(entry: dict, contours: bytes, sequence: int) -> dict:
+def candidate_layer(entry: dict, image_width: int, image_height: int) -> str:
+    """Classify packet geometry without inferring background or object identity."""
+    x, y, width, height = entry["范围XYWH"]
+    bbox_coverage = width * height / (image_width * image_height)
+    if entry["触及视野边界"] and bbox_coverage >= 0.90:
+        return "全画面账本区域"
+    if entry["触及视野边界"]:
+        return "触边开放候选"
+    return "非触边闭合候选"
+
+
+def geometry_sample(entry: dict, contours: bytes, sequence: int,
+                    image_width: int, image_height: int) -> dict:
     mask = normalized_filled_mask(entry, contours)
     packed = np.packbits(mask.reshape(-1), bitorder="little").tobytes()
+    _, _, width, height = entry["范围XYWH"]
+    current_depth = int(entry["深度证据"]["当前实测像素数"])
     return {
         "sequence": sequence,
         "track_id": entry["相机跟踪候选编号"],
@@ -107,6 +121,10 @@ def geometry_sample(entry: dict, contours: bytes, sequence: int) -> dict:
         "center_y": float(entry["图像中心XY"][1]),
         "pixels": int(entry["像素数"]),
         "state": entry["跟踪状态"],
+        "candidate_layer": candidate_layer(entry, image_width, image_height),
+        "touches_border": bool(entry["触及视野边界"]),
+        "bbox_coverage_percent": 100.0 * width * height / (image_width * image_height),
+        "current_depth_support_percent": 100.0 * current_depth / entry["像素数"],
         "mask": mask,
         "mask_sha256": hashlib.sha256(packed).hexdigest(),
     }
@@ -133,7 +151,7 @@ def compare_geometry(previous: dict, current: dict, carried: bool) -> dict:
     }
 
 
-def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) -> tuple[list[dict], list[dict], dict | None]:
+def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) -> tuple[list[dict], list[dict], dict | None, dict[str, dict | None]]:
     current: dict[str, dict] = {}
     updates: dict[str, list[dict]] = {}
     states: dict[str, list[dict]] = {}
@@ -153,7 +171,8 @@ def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) ->
                 if change["变化类型"] in {"Lost", "Removed"}:
                     current.pop(track, None)
                 continue
-            sample = geometry_sample(change, contours, sequence)
+            image_width, image_height = packet["图像尺寸WH"]
+            sample = geometry_sample(change, contours, sequence, image_width, image_height)
             current[track] = sample
             updated_tracks.add(track)
             track_updates = updates.setdefault(track, [])
@@ -178,6 +197,10 @@ def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) ->
         target_pairs = material_pairs if material_pairs else published_pairs
         displacements = [row["center_displacement_pixels"] for row in target_pairs]
         ious = [row["foreground_iou_percent"] for row in target_pairs]
+        layer_counts: dict[str, int] = {}
+        for sample in track_updates:
+            layer_counts[sample["candidate_layer"]] = layer_counts.get(sample["candidate_layer"], 0) + 1
+        dominant_layer = max(layer_counts, key=lambda value: (layer_counts[value], value), default=None)
         track_rows.append({
             "run_index": run_index,
             "track_id": track,
@@ -188,6 +211,12 @@ def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) ->
             "material_pair_count": len(material_pairs),
             "published_state_pair_count": len(published_pairs),
             "target_comparison_kind": "material_update" if material_pairs else "published_state",
+            "dominant_candidate_layer": dominant_layer,
+            "border_touch_percent": (100.0 * sum(sample["touches_border"] for sample in track_updates) /
+                                     len(track_updates)) if track_updates else None,
+            "bbox_coverage_p50_percent": percentile([sample["bbox_coverage_percent"] for sample in track_updates], 50),
+            "current_depth_support_p50_percent": percentile(
+                [sample["current_depth_support_percent"] for sample in track_updates], 50),
             "median_pixels": percentile([sample["pixels"] for sample in track_updates], 50),
             "distinct_32x32_value_count": len({sample["mask_sha256"] for sample in track_updates}),
             "exact_repeat_pair_percent": (100.0 * sum(row["exact_value_equal"] for row in target_pairs) / len(target_pairs)) if target_pairs else None,
@@ -200,7 +229,13 @@ def evaluate_geometry(packets: list[dict], paths: list[Path], run_index: int) ->
     eligible = [row for row in track_rows if row["material_pair_count"] > 0 or row["published_state_pair_count"] > 0]
     main = max(eligible, key=lambda row: (row["material_update_count"], row["published_state_frame_count"],
                                           row["median_pixels"] or 0.0, -int(row["track_id"])), default=None)
-    return track_rows, state_pairs + update_pairs, main
+    layer_mains = {}
+    for layer in ("全画面账本区域", "触边开放候选", "非触边闭合候选"):
+        candidates = [row for row in eligible if row["dominant_candidate_layer"] == layer]
+        layer_mains[layer] = max(candidates, key=lambda row: (
+            row["material_update_count"], row["published_state_frame_count"],
+            row["median_pixels"] or 0.0, -int(row["track_id"])), default=None)
+    return track_rows, state_pairs + update_pairs, main, layer_mains
 
 
 def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
@@ -227,6 +262,7 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
     geometry_tracks: list[dict] = []
     geometry_pairs: list[dict] = []
     main_geometry: list[dict] = []
+    layer_main_geometry: list[dict] = []
     for run_index, (packets, paths) in enumerate(loaded, start=1):
         previous_sequence = 0
         track_by_frame_cluster: dict[int, str] = {}
@@ -291,11 +327,14 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
             reconstruction_ok = False
             events.append({"run_index": run_index, "event": "incremental_reconstruction_mismatch", "detail": "final state differs"})
         run_max_active_tracks.append(max_active_tracks)
-        track_rows, pair_rows, main = evaluate_geometry(packets, paths, run_index)
+        track_rows, pair_rows, main, layer_mains = evaluate_geometry(packets, paths, run_index)
         geometry_tracks.extend(track_rows)
         geometry_pairs.extend(pair_rows)
         if main is not None:
             main_geometry.append(main)
+        for layer, row in layer_mains.items():
+            if row is not None:
+                layer_main_geometry.append({**row, "candidate_layer": layer})
     candidate_presence_pass = all(value > 0 for value in run_max_active_tracks)
     main_contour_iou_p50 = percentile([row["contour_iou_p50"] for row in main_geometry
                                       if row["contour_iou_p50"] is not None], 50)
@@ -303,6 +342,32 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
                                                if row["center_displacement_p95_px"] is not None], 95)
     main_geometry_present = len(main_geometry) == len(run_roots)
     main_contour_target_pass = main_geometry_present and main_contour_iou_p50 is not None and main_contour_iou_p50 >= 99.0
+    layer_summaries = {}
+    for layer in ("全画面账本区域", "触边开放候选", "非触边闭合候选"):
+        rows = [row for row in layer_main_geometry if row["candidate_layer"] == layer]
+        layer_summaries[layer] = {
+            "run_count": len(rows),
+            "contour_iou_p50": percentile([row["contour_iou_p50"] for row in rows
+                                           if row["contour_iou_p50"] is not None], 50),
+            "center_displacement_p95_px": percentile([row["center_displacement_p95_px"] for row in rows
+                                                       if row["center_displacement_p95_px"] is not None], 95),
+            "current_depth_support_p50_percent": percentile([
+                row["current_depth_support_p50_percent"] for row in rows
+                if row["current_depth_support_p50_percent"] is not None], 50),
+            "status": "diagnostic_no_gate",
+        }
+    foreground_summary = layer_summaries["非触边闭合候选"]
+    foreground_target_applicable = foreground_summary["run_count"] > 0
+    foreground_contour_target_pass = (
+        foreground_summary["run_count"] == len(run_roots) and
+        foreground_summary["contour_iou_p50"] is not None and
+        foreground_summary["contour_iou_p50"] >= 99.0
+    )
+    geometry_target_kind = "nonborder_closed_candidate" if foreground_target_applicable else "coverage_main_fallback"
+    geometry_target_pass = foreground_contour_target_pass if foreground_target_applicable else main_contour_target_pass
+    layer_summaries["非触边闭合候选"]["status"] = (
+        "hard_gate" if foreground_target_applicable else "not_present_fallback_to_coverage_main"
+    )
     decision = {
         "format": "PCS.ClusterStabilityDecision/1", "scope": "static replay evidence only",
         "run_count": len(run_roots), "frames_per_run": lengths, "packet_validation_pass": all_valid,
@@ -314,18 +379,36 @@ def evaluate_runs(run_roots: list[Path], output: Path) -> dict:
         "run_max_active_tracks": run_max_active_tracks,
         "candidate_presence_pass": candidate_presence_pass,
         "main_geometry_by_run": [{"run_index": row["run_index"], "track_id": row["track_id"],
+                                  "dominant_candidate_layer": row["dominant_candidate_layer"],
+                                  "border_touch_percent": row["border_touch_percent"],
+                                  "bbox_coverage_p50_percent": row["bbox_coverage_p50_percent"],
+                                  "current_depth_support_p50_percent": row["current_depth_support_p50_percent"],
                                   "material_update_count": row["material_update_count"],
                                   "distinct_32x32_value_count": row["distinct_32x32_value_count"],
                                   "contour_iou_p50": row["contour_iou_p50"],
                                   "center_displacement_p95_px": row["center_displacement_p95_px"]}
                                  for row in main_geometry],
+        "candidate_layer_main_geometry_by_run": [
+            {"run_index": row["run_index"], "candidate_layer": row["candidate_layer"],
+             "track_id": row["track_id"], "material_update_count": row["material_update_count"],
+             "distinct_32x32_value_count": row["distinct_32x32_value_count"],
+             "contour_iou_p50": row["contour_iou_p50"],
+             "center_displacement_p95_px": row["center_displacement_p95_px"],
+             "current_depth_support_p50_percent": row["current_depth_support_p50_percent"]}
+            for row in layer_main_geometry],
+        "candidate_layer_summaries": layer_summaries,
+        "foreground_contour_target_applicable": foreground_target_applicable,
+        "foreground_contour_target_percent": 99.0,
+        "foreground_contour_target_pass": foreground_contour_target_pass,
+        "geometry_target_kind": geometry_target_kind,
+        "geometry_target_pass": geometry_target_pass,
         "main_contour_iou_p50": main_contour_iou_p50,
         "main_contour_iou_target_percent": 99.0,
         "main_contour_target_pass": main_contour_target_pass,
         "main_center_displacement_p95_px": main_center_displacement_p95,
         "center_displacement_status": "baseline_only_no_gate",
         "pass": (all_valid and deterministic and reconstruction_ok and candidate_presence_pass and
-                 static_lifecycle_events == 0 and main_contour_target_pass),
+                 static_lifecycle_events == 0 and geometry_target_pass),
         "not_proven": ["physical_scene_static", "dynamic_tracking", "world_identity", "absolute_depth_accuracy"],
     }
     (output / "run_decision.json").write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

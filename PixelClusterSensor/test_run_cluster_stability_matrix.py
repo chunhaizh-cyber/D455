@@ -27,12 +27,18 @@ def main() -> None:
         replay = make_static_sequence(root / "source", 4)
         result = run_matrix(executable=args.exe, replay=replay, output=root / "matrix", frames=4, repetitions=3,
                             minimum_cluster_pixels=10, retained_cluster_pixels=5,
+                            depth_split_min_support_pixels=17,
+                            cross_color_merge_min_boundary_pixels=23,
+                            allow_global_missing_depth_merge=False,
                             maximum_tentative_match_cost=123_456)
         check(result["status"] == "pass" and result["decision"]["pass"], "Static matrix did not pass")
         check(len(result["runs"]) == 3 and all(item["status"] == "pass" for item in result["runs"]), "Matrix did not complete three runs")
         config = json.loads((root / "matrix" / "config_snapshot.json").read_text(encoding="utf-8"))
         check(config["minimum_cluster_pixels"] == 10 and config["retained_cluster_pixels"] == 5 and
               config["maximum_tentative_match_cost"] == 123_456 and config["max_missing_frames"] == 3 and
+              config["depth_split_min_support_pixels"] == 17 and
+              config["cross_color_merge_min_boundary_pixels"] == 23 and
+              config["allow_global_missing_depth_merge"] is False and
               config["occlusion_confirmation_frames"] == 2,
               "Matrix did not preserve tracker gate configuration")
         for name in ("run_manifest.json", "config_snapshot.json", "decision/run_decision.json", "decision/packet_metrics.csv", "decision/events.csv"):

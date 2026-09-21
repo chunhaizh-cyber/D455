@@ -48,7 +48,9 @@ struct ProcessingConfig {
     float depthRelativeGap = 0.02f;
     float colorDelta = 20.0f;
     int depthSplitMinSupportPixels = 32;
+    int depthNoiseMaxPixels = 4;
     int crossColorMergeMinBoundaryPixels = 8;
+    bool mergeCompatibleDepthSeedsAcrossMissing = true;
     bool fillEnabled = true;
     int fillMaxPixels = 4;
     int fillMinSamples = 3;

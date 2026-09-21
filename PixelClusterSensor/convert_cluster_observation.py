@@ -139,19 +139,22 @@ def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) ->
     below_minimum_cluster_count = 0
     for source_cluster in manifest["簇目录"]:
         cluster_id = source_cluster["本帧簇编号"]
-        mask = labels == cluster_id
-        y, x = np.where(mask)
         box = source_cluster["范围XYWH"]
-        if int(mask.sum()) < minimum_cluster_pixels:
-            downgraded_pixels += int(mask.sum())
+        source_pixels = int(source_cluster["像素数"])
+        if source_pixels < minimum_cluster_pixels:
+            downgraded_pixels += source_pixels
             below_minimum_cluster_count += 1
             continue
+        mask = labels == cluster_id
+        mask_pixels = int(mask.sum())
+        if mask_pixels != source_pixels:
+            raise ValueError("Source cluster pixel count does not match its label material")
         rings, encoded_rings, rejected = encode_valid_rings(source_cluster["轮廓"], points)
         rejected_ring_count += rejected
         if not any(not ring["内环"] for ring in rings):
             # A protocol cluster is a closed visible region.  A source fragment
             # without an outer ring is not silently promoted to a cluster.
-            downgraded_pixels += int(mask.sum())
+            downgraded_pixels += mask_pixels
             continue
         base_offset = len(contour_bytes)
         contour_bytes.extend(encoded_rings)
@@ -170,11 +173,11 @@ def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) ->
             "跟踪状态": "Tentative",
             "范围XYWH": box,
             "图像中心XY": [box[0] + (box[2] - 1) / 2.0, box[1] + (box[3] - 1) / 2.0],
-            "像素数": int(mask.sum()),
+            "像素数": mask_pixels,
             "触及视野边界": bool(box[0] == 0 or box[1] == 0 or box[0] + box[2] == width or box[1] + box[3] == height),
             "轮廓": rings,
             "形状指纹": shape_fingerprint(mask[box[1]:box[1] + box[3], box[0]:box[0] + box[2]]),
-            "颜色摘要": {"颜色空间": "sRGB", "RGB均值": mean_rgb, "有效像素数": int(mask.sum()), "可比性": "当前帧"},
+            "颜色摘要": {"颜色空间": "sRGB", "RGB均值": mean_rgb, "有效像素数": mask_pixels, "可比性": "当前帧"},
             # PCS.Observation/1 has in-range samples, not a calibrated precision guarantee.  Do not upgrade it here.
             "距离": {"模式": "UnknownDistance", "值米": None, "区间米": None, "不确定度米": None, "依据": "证据不足"},
             "三维中心米": None,
