@@ -75,6 +75,11 @@ def main() -> None:
                                                                 "Metrics do not preserve source frame order"))
         run("metrics_include_source_partition_diagnostics", lambda: check(
             all(name in rows[0] for name in ("source_cluster_count", "source_color_region_count",
+                                             "source_request_elapsed_ms", "conversion_elapsed_ms",
+                                             "conversion_source_validation_ms", "conversion_entry_build_ms",
+                                             "conversion_packet_write_ms", "conversion_packet_validation_ms",
+                                             "tracking_elapsed_ms", "tracked_write_elapsed_ms",
+                                             "source_release_elapsed_ms",
                                              "source_alignment_ms", "source_partition_ms", "source_contour_ms",
                                              "source_color_partition_ms", "source_depth_seed_ms",
                                              "source_missing_depth_component_ms", "source_enclosed_missing_inheritance_ms",

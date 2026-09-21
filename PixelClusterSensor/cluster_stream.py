@@ -108,11 +108,13 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
             for index in range(1, frames + 1):
                 started = time.perf_counter()
                 observation = client.call("获取单帧观察")
+                source_received = time.perf_counter()
                 source_path = Path(observation["材料路径"])
                 snapshot_root = output / "snapshots" / f"packet_{index:06d}"
                 # Keep the tracker hysteresis band, but do not construct full
                 # contour packages for fragments that no active track may retain.
-                convert(source_path, snapshot_root, retained_cluster_pixels)
+                conversion_report = convert(source_path, snapshot_root, retained_cluster_pixels)
+                converted = time.perf_counter()
                 snapshot_path = snapshot_root / "packet.json"
                 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
                 # The cluster stream has its own contiguous sequence.  Upstream
@@ -125,16 +127,28 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 snapshot_descriptor = snapshot["材料"]["精确轮廓链"]
                 snapshot_contours = (snapshot_root / snapshot_descriptor["文件"]).read_bytes()
                 tracked = tracker.update(snapshot, snapshot_contours)
+                tracked_at = time.perf_counter()
                 tracked_root = output / "cluster_packets" / f"packet_{index:06d}"
                 if tracker.last_output_contours is None:
                     raise ValueError("Tracker did not provide output contour material")
                 tracked_path = write_tracked_packet(tracked, tracker.last_output_contours, tracked_root)
+                written = time.perf_counter()
                 client.call("释放观察材料", {"输出序号": observation["输出序号"]})
-                elapsed = (time.perf_counter() - started) * 1000.0
+                released = time.perf_counter()
+                elapsed = (released - started) * 1000.0
                 packet_documents.append(json.loads(tracked_path.read_text(encoding="utf-8")))
                 metrics.append({
                     "frame_index": index, "source_frame": observation["源帧号"], "output_sequence": tracked["输出序号"],
                     "packet_type": tracked["包类型"], "cluster_changes": len(tracked["簇变化"]), "elapsed_ms": round(elapsed, 4),
+                    "source_request_elapsed_ms": round((source_received - started) * 1000.0, 4),
+                    "conversion_elapsed_ms": round((converted - source_received) * 1000.0, 4),
+                    "conversion_source_validation_ms": conversion_report["timing_ms"]["source_validation"],
+                    "conversion_entry_build_ms": conversion_report["timing_ms"]["entry_build"],
+                    "conversion_packet_write_ms": conversion_report["timing_ms"]["packet_write"],
+                    "conversion_packet_validation_ms": conversion_report["timing_ms"]["packet_validation"],
+                    "tracking_elapsed_ms": round((tracked_at - converted) * 1000.0, 4),
+                    "tracked_write_elapsed_ms": round((written - tracked_at) * 1000.0, 4),
+                    "source_release_elapsed_ms": round((released - written) * 1000.0, 4),
                     "active_tracks": len(tracker.tracks), "source_processing_ms": observation["指标"].get("处理毫秒"),
                     "source_alignment_ms": observation["指标"].get("配准毫秒"),
                     "source_color_conversion_ms": observation["指标"].get("颜色转换毫秒"),
@@ -181,6 +195,10 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
         with (output / "packet_metrics.csv").open("w", newline="", encoding="utf-8") as file:
             writer = csv.DictWriter(file, fieldnames=[
                 "frame_index", "source_frame", "output_sequence", "packet_type", "cluster_changes", "elapsed_ms",
+                "source_request_elapsed_ms", "conversion_elapsed_ms", "tracking_elapsed_ms",
+                "tracked_write_elapsed_ms", "source_release_elapsed_ms",
+                "conversion_source_validation_ms", "conversion_entry_build_ms",
+                "conversion_packet_write_ms", "conversion_packet_validation_ms",
                 "active_tracks", "source_processing_ms", "filtered_new_clusters", "filtered_new_pixels",
                 "source_alignment_ms", "source_color_conversion_ms", "source_partition_ms", "source_fill_ms",
                 "source_contour_ms",

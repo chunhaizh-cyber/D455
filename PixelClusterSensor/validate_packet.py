@@ -42,7 +42,8 @@ def read_material(root: Path, descriptor: dict):
     return np.frombuffer(raw, dtype=dtype).reshape(shape)
 
 
-def validate_packet(path: Path, *, reference=None, expected_color=None, expected_depth=None, output=None):
+def validate_packet(path: Path, *, reference=None, expected_color=None, expected_depth=None, output=None,
+                    include_context=False):
     manifest_bytes = path.read_bytes()
     if reference:
         check(hashlib.sha256(manifest_bytes).hexdigest() == reference["清单SHA256"], "Manifest checksum mismatch")
@@ -190,6 +191,8 @@ def validate_packet(path: Path, *, reference=None, expected_color=None, expected
         palette = np.stack(((labels * 67) % 251, (labels * 131) % 251, (labels * 197) % 251), axis=-1).astype(np.uint8)
         Image.fromarray(palette).save(output / "cluster_labels.png")
         (output / "validation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if include_context:
+        return report, manifest, arrays, manifest_bytes
     return report
 
 

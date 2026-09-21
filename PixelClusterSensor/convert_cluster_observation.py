@@ -11,11 +11,12 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import time
 
 import numpy as np
 
 from cluster_protocol import MAX_CLUSTERS, MAX_IMAGE_PIXELS, pack_ring, validate_cluster_packet
-from validate_packet import read_material, validate_packet
+from validate_packet import validate_packet
 
 
 def sha256(raw: bytes) -> str:
@@ -31,15 +32,17 @@ def packed_mask_hash(mask: np.ndarray, side: int) -> tuple[str, int]:
     """Deterministically normalize a label mask without claiming physical-hole semantics."""
     height, width = mask.shape
     square = max(height, width)
-    canvas = np.zeros((square, square), dtype=np.uint8)
+    if square <= 0:
+        raise ValueError("Shape fingerprint mask must be non-empty")
     top, left = (square - height) // 2, (square - width) // 2
-    canvas[top:top + height, left:left + width] = mask.astype(np.uint8)
     reduced = np.zeros((side, side), dtype=np.uint8)
-    for y in range(side):
-        y0, y1 = y * square // side, (y + 1) * square // side
-        for x in range(side):
-            x0, x1 = x * square // side, (x + 1) * square // side
-            reduced[y, x] = 1 if np.any(canvas[y0:y1, x0:x1]) else 0
+    foreground_y, foreground_x = np.nonzero(mask)
+    if foreground_y.size:
+        # Match the original floor-bounded pooling exactly.  The ceiling form
+        # assigns a source pixel to the unique bin whose half-open range owns it.
+        reduced_y = ((foreground_y + top + 1) * side - 1) // square
+        reduced_x = ((foreground_x + left + 1) * side - 1) // square
+        reduced[reduced_y, reduced_x] = 1
     bits = np.packbits(reduced.reshape(-1), bitorder="little").tobytes()
     return sha256(bits), int(reduced.sum())
 
@@ -112,15 +115,15 @@ def encode_valid_rings(source_rings: list[dict], points: np.ndarray) -> tuple[li
 
 def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) -> dict:
     """Write a published cluster snapshot to a new directory and return its validation report."""
+    started = time.perf_counter()
     source_path = source_path.resolve()
     output = output.resolve()
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if output.parent.joinpath(output.name + ".pending").exists():
         raise ValueError(f"Pending output already exists: {output.name}.pending")
-    validate_packet(source_path)
-    manifest = json.loads(source_path.read_text(encoding="utf-8"))
-    arrays = {key: read_material(source_path.parent, descriptor) for key, descriptor in manifest["材料"].items()}
+    _, manifest, arrays, manifest_bytes = validate_packet(source_path, include_context=True)
+    source_validated = time.perf_counter()
     labels = arrays["簇归属图"]
     ownership = arrays["归属状态"]
     depth_state = arrays["当前深度状态"]
@@ -189,6 +192,7 @@ def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) ->
             "时效": {"连续可见帧数": 1, "连续缺失帧数": 0, "证据年龄毫秒": None},
             "详细材料句柄": None,
         })
+    entries_built = time.perf_counter()
     source = manifest["源信息"]
     unknown = int(np.count_nonzero(ownership == 0)) + downgraded_pixels
     staging = output.parent / (output.name + ".pending")
@@ -211,15 +215,22 @@ def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) ->
             "全局覆盖摘要": {"已处理像素数": int(labels.size - unknown), "未知像素数": unknown, "无效像素数": 0, "遮挡像素数": 0, "未处理像素数": 0},
             "材料": {"精确轮廓链": {"文件": "contours.bin", "编码": "PCS.ContourChain8/1", "字节数": len(raw_contours), "SHA256": sha256(raw_contours)}},
             "簇变化": entries,
-            "指标": {"转换来源格式": manifest["格式"], "转换来源清单SHA256": sha256(source_path.read_bytes()), "跟踪": "not_implemented", "精确深度晋级": "not_implemented",
+            "指标": {"转换来源格式": manifest["格式"], "转换来源清单SHA256": sha256(manifest_bytes), "跟踪": "not_implemented", "精确深度晋级": "not_implemented",
                      "退化轮廓环数": rejected_ring_count, "低于最小簇像素数簇数": below_minimum_cluster_count,
                      "最小簇像素数": minimum_cluster_pixels, "降级未知像素数": downgraded_pixels},
         }
         packet_path = staging / "packet.json"
         packet_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        packet_written = time.perf_counter()
         report = validate_cluster_packet(packet_path)
+        packet_validated = time.perf_counter()
         staging.rename(output)
-        return {**report, "packet": str(output / "packet.json")}
+        return {**report, "packet": str(output / "packet.json"), "timing_ms": {
+            "source_validation": round((source_validated - started) * 1000.0, 4),
+            "entry_build": round((entries_built - source_validated) * 1000.0, 4),
+            "packet_write": round((packet_written - entries_built) * 1000.0, 4),
+            "packet_validation": round((packet_validated - packet_written) * 1000.0, 4),
+        }}
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise

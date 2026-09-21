@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -12,7 +13,7 @@ from PIL import Image
 
 from client import Client
 from cluster_protocol import validate_cluster_packet
-from convert_cluster_observation import convert, encode_valid_rings
+from convert_cluster_observation import convert, encode_valid_rings, packed_mask_hash
 
 
 def check(condition: bool, message: str) -> None:
@@ -72,6 +73,9 @@ def main() -> None:
         packet_b = (root / "cluster_b" / "packet.json").read_bytes()
         data = json.loads(packet_a)
         run("cluster_packet_validates", lambda: validate_cluster_packet(root / "cluster_a" / "packet.json"))
+        run("converter_reports_stage_timing", lambda: check(
+            set(converted_a["timing_ms"]) == {"source_validation", "entry_build", "packet_write", "packet_validation"} and
+            all(value >= 0 for value in converted_a["timing_ms"].values()), "Missing conversion stage timing"))
         run("same_source_conversion_is_byte_deterministic", lambda: check(packet_a == packet_b, "Repeated conversion differs"))
         run("one_source_cluster_becomes_one_cluster_record", lambda: check(len(data["簇变化"]) == 1 and converted_a["clusters"] == 1, "Cluster count changed"))
         run("converter_does_not_fake_precise_depth", lambda: check(data["簇变化"][0]["距离"]["模式"] == "UnknownDistance" and
@@ -88,6 +92,26 @@ def main() -> None:
             ], points)
             check(len(rings) == 1 and raw and rejected == 1, "Degenerate ring was not excluded")
         run("converter_excludes_degenerate_source_rings", rejects_degenerate_source_rings_without_inventing_geometry)
+        def vectorized_shape_fingerprint_matches_reference():
+            rng = np.random.default_rng(20260921)
+            for height, width in ((1, 1), (3, 7), (7, 3), (13, 13), (23, 31)):
+                for mask in (np.zeros((height, width), dtype=bool), rng.random((height, width)) > 0.68):
+                    square = max(height, width)
+                    canvas = np.zeros((square, square), dtype=np.uint8)
+                    top, left = (square - height) // 2, (square - width) // 2
+                    canvas[top:top + height, left:left + width] = mask
+                    for side in (8, 16, 32):
+                        reduced = np.zeros((side, side), dtype=np.uint8)
+                        for y in range(side):
+                            y0, y1 = y * square // side, (y + 1) * square // side
+                            for x in range(side):
+                                x0, x1 = x * square // side, (x + 1) * square // side
+                                reduced[y, x] = bool(np.any(canvas[y0:y1, x0:x1]))
+                        bits = np.packbits(reduced.reshape(-1), bitorder="little").tobytes()
+                        expected = (hashlib.sha256(bits).hexdigest(), int(reduced.sum()))
+                        check(packed_mask_hash(mask, side) == expected,
+                              f"Vectorized fingerprint differs for {height}x{width} at {side}")
+        run("vectorized_shape_fingerprint_matches_reference", vectorized_shape_fingerprint_matches_reference)
         filtered = convert(source, root / "cluster_filtered", minimum_cluster_pixels=769)
         filtered_packet = json.loads((root / "cluster_filtered" / "packet.json").read_text(encoding="utf-8"))
         run("converter_downgrades_below_threshold_clusters_to_unknown", lambda: check(
