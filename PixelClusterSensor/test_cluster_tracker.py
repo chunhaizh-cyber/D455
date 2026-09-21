@@ -32,6 +32,20 @@ def write_packet(directory: Path, data: dict, source_contours: Path) -> Path:
     return path
 
 
+def with_cluster_pixels(packet: dict, pixels: int, sequence: int) -> dict:
+    result = copy.deepcopy(packet)
+    result["输出序号"] = result["场景版本"] = str(sequence)
+    result["包标识"] = f"cluster-{sequence}"
+    entry = result["簇变化"][0]
+    entry["像素数"] = pixels
+    entry["深度证据"] = {
+        "当前实测像素数": 0, "历史候选像素数": 0, "估算像素数": 0,
+        "缺失像素数": pixels, "范围外像素数": 0,
+    }
+    entry["颜色摘要"]["有效像素数"] = pixels
+    return result
+
+
 def moved_snapshot(root: Path) -> tuple[Path, Path]:
     base = package(root / "base")
     shifted = json.loads(base.read_text(encoding="utf-8"))
@@ -140,8 +154,59 @@ def main() -> None:
         run("tentative_removal_reconstructs_empty_state", lambda: check(
             not reconstruct([tentative_added, tentative_removed]), "Removed tentative candidate remained reconstructed"))
 
+        hysteresis_tracker = ClusterTracker(max_missing_frames=2, confirmation_frames=1,
+                                            minimum_new_cluster_pixels=10,
+                                            minimum_retained_cluster_pixels=5)
+        accepted = hysteresis_tracker.update(with_cluster_pixels(source, 12, 1))
+        retained = hysteresis_tracker.update(with_cluster_pixels(source, 8, 2))
+        below_retained = hysteresis_tracker.update(with_cluster_pixels(source, 4, 3))
+        filtered_new = ClusterTracker(minimum_new_cluster_pixels=10, minimum_retained_cluster_pixels=5).update(
+            with_cluster_pixels(source, 9, 1))
+        run("new_candidate_below_admission_threshold_is_unknown", lambda: check(
+            filtered_new["簇变化"] == [] and
+            filtered_new["指标"]["本帧过滤新候选数"] == 1 and
+            filtered_new["指标"]["本帧过滤新候选像素数"] == 9 and
+            filtered_new["全局覆盖摘要"]["已处理像素数"] == source["全局覆盖摘要"]["已处理像素数"] - 9 and
+            filtered_new["全局覆盖摘要"]["未知像素数"] == source["全局覆盖摘要"]["未知像素数"] + 9,
+            "Sub-threshold new candidate was not reassigned to Unknown"))
+        run("existing_candidate_is_retained_inside_hysteresis_band", lambda: check(
+            accepted["簇变化"][0]["相机跟踪候选编号"] == retained["簇变化"][0]["相机跟踪候选编号"] == "1" and
+            retained["簇变化"][0]["像素数"] == 8 and retained["指标"]["本帧过滤新候选数"] == 0,
+            "Existing candidate was not retained below the new-candidate threshold"))
+        tentative_hysteresis = ClusterTracker(max_missing_frames=2, confirmation_frames=3,
+                                              minimum_new_cluster_pixels=10,
+                                              minimum_retained_cluster_pixels=5)
+        tentative_first = tentative_hysteresis.update(with_cluster_pixels(source, 12, 1))
+        tentative_small = tentative_hysteresis.update(with_cluster_pixels(source, 8, 2))
+        run("tentative_candidate_cannot_use_retention_threshold", lambda: check(
+            tentative_first["簇变化"][0]["跟踪状态"] == "Tentative" and
+            tentative_small["指标"]["本帧过滤新候选数"] == 1 and
+            any(entry["变化类型"] == "Removed" and entry["相机跟踪候选编号"] == "1"
+                for entry in tentative_small["簇变化"]),
+            "Tentative candidate incorrectly used the confirmed-track retention threshold"))
+        run("candidate_below_retention_threshold_enters_missing_path", lambda: check(
+            below_retained["指标"]["本帧过滤新候选数"] == 1 and
+            below_retained["指标"]["本帧过滤新候选像素数"] == 4 and
+            below_retained["簇变化"][0]["变化类型"] == "Occluded" and
+            below_retained["全局覆盖摘要"]["已处理像素数"] +
+            below_retained["全局覆盖摘要"]["未知像素数"] +
+            below_retained["全局覆盖摘要"]["无效像素数"] +
+            below_retained["全局覆盖摘要"]["遮挡像素数"] +
+            below_retained["全局覆盖摘要"]["未处理像素数"] ==
+            below_retained["图像尺寸WH"][0] * below_retained["图像尺寸WH"][1],
+            "Below-retention candidate did not follow missing-state semantics or preserve coverage"))
+
         move_base, move_shifted = moved_snapshot(root / "movement")
-        moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked")
+        tentative_move_paths = write_packets([move_base, move_shifted], root / "tentative_movement_tracked")
+        tentative_moved = [json.loads(path.read_text(encoding="utf-8")) for path in tentative_move_paths]
+        run("high_cost_tentative_match_cannot_accumulate_confirmation", lambda: check(
+            tentative_moved[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and
+            any(entry["变化类型"] == "Removed" and entry["相机跟踪候选编号"] == "1"
+                for entry in tentative_moved[1]["簇变化"]) and
+            any(entry["变化类型"] == "Added" and entry["相机跟踪候选编号"] == "2"
+                for entry in tentative_moved[1]["簇变化"]),
+            "High-cost tentative association retained a drifting candidate"))
+        moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked", confirmation_frames=1)
         moved = [json.loads(path.read_text(encoding="utf-8")) for path in moved_paths]
         run("small_position_shift_keeps_track_id", lambda: check(moved[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and
                                                                   moved[1]["簇变化"][0]["相机跟踪候选编号"] == "1", "Small movement switched ID"))

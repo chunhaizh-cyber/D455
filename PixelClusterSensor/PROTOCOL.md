@@ -110,8 +110,8 @@
 
 已提供独立严格读回器 `cluster_protocol.py`、无状态转换器 `convert_cluster_observation.py` 与离线短期跟踪器 `cluster_tracker.py`。转换器只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包；跟踪器再将连续的全量快照转成首帧全量、后续增量：
 
-- P2 按包围矩 IoU、中心位移、颜色差、面积比和 32x32 形状指纹作硬门禁与代价。对每个有限联通竞争组使用全局最小代价一对一分配；节点数超过 64 的组不关联，宁可显式新建候选也不拿不可审核的贪心结果冒充确认。当前仅有合成静态、遮挡、丢失/墓碑和重建验证，未经真实动态回放验收。
-- 首帧返回 `FullSnapshot`，后续帧返回带基线序号的 `Delta`。候选连续达到配置的确认帧数后才从 `Tentative` 进入 `Active`；未确认候选消失时发布 `Removed/Retired` 墓碑，遮挡状态为 `Unknown`，不得写成物理遮挡。只有已确认候选临时无匹配时才发布 `Occluded`，连续缺失达期限后发布 `Lost/Retired`；重现时连续可见帧数从1重新计算。无帧内簇的状态记录不携带当前轮廓、深度或材料。
+- P2 按包围矩 IoU、中心位移、颜色差、面积比和 32x32 形状指纹作硬门禁与代价。对每个有限联通竞争组使用全局最小代价一对一分配；节点数超过 64 的组不关联，宁可显式新建候选也不拿不可审核的贪心结果冒充确认。未确认候选的关联还受最大代价门禁，默认 `200000/1000000`；已确认动态轨迹不受该确认门槛限制。当前仅有合成动态反例和真实静态短窗口验证，未经真实动态回放验收。
+- 首帧返回 `FullSnapshot`，后续帧返回带基线序号的 `Delta`。新候选和 `Tentative` 关联必须达到新候选像素阈值；候选连续达到配置的确认帧数后才进入 `Active`。只有 `Active` 轨迹可以在后续帧使用较低的保留像素阈值，避免预跟踪硬过滤造成一次缺测，同时不让低于准入门槛的碎片自行晋级。未确认候选消失时发布 `Removed/Retired` 墓碑，遮挡状态为 `Unknown`，不得写成物理遮挡。只有已确认候选临时无匹配时才发布 `Occluded`，连续缺失达期限后发布 `Lost/Retired`；重现时连续可见帧数从1重新计算。无帧内簇的状态记录不携带当前轮廓、深度或材料。
 - 未实现实时 C++ 供包接线、心跳生产、扫描/观察/跟踪调度指令、姿态补偿或详细材料租约。
 - 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
@@ -144,9 +144,9 @@ python .\PixelClusterSensor\export_raw_sequence.py --camera --frames 120 --outpu
 python .\PixelClusterSensor\test_export_raw_sequence.py --output .codex_tmp\PixelClusterSensor\raw_sequence_export_tests_new
 python .\PixelClusterSensor\evaluate_cluster_stability.py --runs RUN_A RUN_B RUN_C --output .codex_tmp\PixelClusterSensor\cluster_stability_new
 python .\PixelClusterSensor\test_evaluate_cluster_stability.py --output .codex_tmp\PixelClusterSensor\cluster_stability_tests_new
-python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
+python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --maximum-tentative-match-cost 200000 --confirmation-frames 5 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
 python .\PixelClusterSensor\test_run_cluster_stability_matrix.py --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_tests_new
-python .\PixelClusterSensor\capture_and_verify_static.py --camera --frames 600 --repetitions 3 --output .codex_tmp\PixelClusterSensor\static_capture_gate_new
+python .\PixelClusterSensor\capture_and_verify_static.py --camera --frames 600 --repetitions 3 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --maximum-tentative-match-cost 200000 --confirmation-frames 5 --output .codex_tmp\PixelClusterSensor\static_capture_gate_new
 python .\PixelClusterSensor\test_capture_and_verify_static.py --output .codex_tmp\PixelClusterSensor\static_capture_gate_tests_new
 python .\PixelClusterSensor\cluster_protocol.py PATH\packet.json
 ```

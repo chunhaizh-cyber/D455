@@ -14,29 +14,41 @@ from run_cluster_stability_matrix import run_matrix
 def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                        repetitions: int = 3, replay_source: Path | None = None,
                        serial: str = "", minimum_cluster_pixels: int = 1,
-                       clustering_mode: str = "深度主导", confirmation_frames: int = 5) -> dict:
+                       clustering_mode: str = "深度主导", confirmation_frames: int = 5,
+                       retained_cluster_pixels: int | None = None,
+                       maximum_tentative_match_cost: int = 200_000) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if minimum_cluster_pixels < 1:
         raise ValueError("minimum_cluster_pixels must be positive")
+    if retained_cluster_pixels is None:
+        retained_cluster_pixels = max(1, minimum_cluster_pixels // 2)
+    if not 1 <= retained_cluster_pixels <= minimum_cluster_pixels:
+        raise ValueError("retained_cluster_pixels must be between 1 and minimum_cluster_pixels")
     if clustering_mode not in {"轮廓主导", "深度主导"}:
         raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
     if not 1 <= confirmation_frames <= 30:
         raise ValueError("confirmation_frames must be 1..30")
+    if not 0 <= maximum_tentative_match_cost < 1_000_000:
+        raise ValueError("maximum_tentative_match_cost must be 0..999999")
     output.mkdir(parents=True)
     report = {
         "format": "PCS.StaticCaptureAndVerify/1", "status": "running", "frames": frames,
         "repetitions": repetitions, "capture_source": "directory_replay" if replay_source else "live_camera",
         "capture": None, "matrix": None, "minimum_cluster_pixels": minimum_cluster_pixels, "error": None,
+        "retained_cluster_pixels": retained_cluster_pixels,
         "clustering_mode": clustering_mode,
         "confirmation_frames": confirmation_frames,
+        "maximum_tentative_match_cost": maximum_tentative_match_cost,
     }
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
                                   replay=replay_source, serial=serial)
         matrix = run_matrix(executable=executable, replay=Path(capture["sequence"]), output=output / "matrix",
                             frames=frames, repetitions=repetitions, minimum_cluster_pixels=minimum_cluster_pixels,
-                            clustering_mode=clustering_mode, confirmation_frames=confirmation_frames)
+                            clustering_mode=clustering_mode, confirmation_frames=confirmation_frames,
+                            retained_cluster_pixels=retained_cluster_pixels,
+                            maximum_tentative_match_cost=maximum_tentative_match_cost)
         report["capture"] = capture
         report["matrix"] = {"status": matrix["status"], "decision": matrix.get("decision")}
         report["status"] = "pass" if matrix["status"] == "pass" else "fail"
@@ -61,15 +73,19 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=600)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
+    parser.add_argument("--retained-cluster-pixels", type=int)
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
     parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(capture_and_verify(executable=args.exe, output=args.output.resolve(), frames=args.frames,
                                         repetitions=args.repetitions, replay_source=args.replay_source,
                                         serial=args.serial, minimum_cluster_pixels=args.minimum_cluster_pixels,
                                         clustering_mode=args.clustering_mode,
-                                        confirmation_frames=args.confirmation_frames), ensure_ascii=False, indent=2))
+                                        confirmation_frames=args.confirmation_frames,
+                                        retained_cluster_pixels=args.retained_cluster_pixels,
+                                        maximum_tentative_match_cost=args.maximum_tentative_match_cost), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -25,8 +25,13 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=False)
     try:
         source = make_static_sequence(root / "source", 4)
-        report = capture_and_verify(executable=args.exe, output=root / "run", frames=4, repetitions=3, replay_source=source)
+        report = capture_and_verify(executable=args.exe, output=root / "run", frames=4, repetitions=3,
+                                    replay_source=source, minimum_cluster_pixels=10,
+                                    retained_cluster_pixels=5, maximum_tentative_match_cost=123_456)
         check(report["status"] == "pass" and report["matrix"]["decision"]["pass"], "Capture-to-gate did not pass")
+        check(report["minimum_cluster_pixels"] == 10 and report["retained_cluster_pixels"] == 5 and
+              report["maximum_tentative_match_cost"] == 123_456,
+              "Capture orchestrator did not preserve tracker gate configuration")
         for name in ("capture/sequence.json", "capture/export_manifest.json", "matrix/run_manifest.json", "matrix/decision/run_decision.json", "run_manifest.json"):
             check((root / "run" / name).is_file(), f"Missing orchestration evidence: {name}")
         (root / "report.json").write_text(json.dumps({"status": "pass", "run": report}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

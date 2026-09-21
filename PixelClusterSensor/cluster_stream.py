@@ -32,7 +32,8 @@ def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
 
 def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2,
                minimum_cluster_pixels: int = 1, clustering_mode: str = "深度主导", confirmation_frames: int = 5,
-               start_frame: int = 1) -> dict:
+               start_frame: int = 1, retained_cluster_pixels: int | None = None,
+               maximum_tentative_match_cost: int = 200_000) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
@@ -41,21 +42,32 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
         raise ValueError("start_frame and frames must fit the 2048-frame source bound")
     if minimum_cluster_pixels < 1:
         raise ValueError("minimum_cluster_pixels must be positive")
+    if retained_cluster_pixels is None:
+        retained_cluster_pixels = max(1, minimum_cluster_pixels // 2)
+    if not 1 <= retained_cluster_pixels <= minimum_cluster_pixels:
+        raise ValueError("retained_cluster_pixels must be between 1 and minimum_cluster_pixels")
     if clustering_mode not in {"轮廓主导", "深度主导"}:
         raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
     if not 1 <= confirmation_frames <= 30:
         raise ValueError("confirmation_frames must be 1..30")
+    if not 0 <= maximum_tentative_match_cost < 1_000_000:
+        raise ValueError("maximum_tentative_match_cost must be 0..999999")
     output.mkdir(parents=True)
     report = {
         "status": "running", "format": "PCS.ClusterStreamRun/1", "requested_frames": frames,
         "source": "directory_replay" if replay else "live_camera", "packets": [], "error": None,
         "quality_promotion": "not_evaluated", "tracking_validation": "not_established_for_real_dynamic_motion",
         "minimum_cluster_pixels": minimum_cluster_pixels,
+        "retained_cluster_pixels": retained_cluster_pixels,
         "clustering_mode": clustering_mode,
         "confirmation_frames": confirmation_frames,
+        "maximum_tentative_match_cost": maximum_tentative_match_cost,
         "start_frame": start_frame,
     }
-    tracker = ClusterTracker(max_missing_frames=max_missing_frames, confirmation_frames=confirmation_frames)
+    tracker = ClusterTracker(max_missing_frames=max_missing_frames, confirmation_frames=confirmation_frames,
+                             minimum_new_cluster_pixels=minimum_cluster_pixels,
+                             minimum_retained_cluster_pixels=retained_cluster_pixels,
+                             maximum_tentative_match_cost=maximum_tentative_match_cost)
     packet_documents = []
     metrics = []
     events = []
@@ -75,7 +87,7 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 observation = client.call("获取单帧观察")
                 source_path = Path(observation["材料路径"])
                 snapshot_root = output / "snapshots" / f"packet_{index:06d}"
-                convert_result = convert(source_path, snapshot_root, minimum_cluster_pixels)
+                convert(source_path, snapshot_root, 1)
                 snapshot_path = snapshot_root / "packet.json"
                 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
                 # The cluster stream has its own contiguous sequence.  Upstream
@@ -95,6 +107,8 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                     "frame_index": index, "source_frame": observation["源帧号"], "output_sequence": tracked["输出序号"],
                     "packet_type": tracked["包类型"], "cluster_changes": len(tracked["簇变化"]), "elapsed_ms": round(elapsed, 4),
                     "active_tracks": len(tracker.tracks), "source_processing_ms": observation["指标"].get("处理毫秒"),
+                    "filtered_new_clusters": tracked["指标"]["本帧过滤新候选数"],
+                    "filtered_new_pixels": tracked["指标"]["本帧过滤新候选像素数"],
                 })
                 for entry in tracked["簇变化"]:
                     events.append({"frame_index": index, "track_id": entry["相机跟踪候选编号"], "frame_cluster_id": entry["帧内簇编号"],
@@ -112,7 +126,7 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
     finally:
         (output / "run_manifest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         with (output / "packet_metrics.csv").open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=["frame_index", "source_frame", "output_sequence", "packet_type", "cluster_changes", "elapsed_ms", "active_tracks", "source_processing_ms"])
+            writer = csv.DictWriter(file, fieldnames=["frame_index", "source_frame", "output_sequence", "packet_type", "cluster_changes", "elapsed_ms", "active_tracks", "source_processing_ms", "filtered_new_clusters", "filtered_new_pixels"])
             writer.writeheader()
             writer.writerows(metrics)
         with (output / "events.csv").open("w", newline="", encoding="utf-8") as file:
@@ -133,8 +147,10 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=1)
     parser.add_argument("--max-missing-frames", type=int, default=2)
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
+    parser.add_argument("--retained-cluster-pixels", type=int)
     parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
     parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     parser.add_argument("--start-frame", type=int, default=1)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -143,7 +159,9 @@ def main() -> None:
                                 minimum_cluster_pixels=args.minimum_cluster_pixels,
                                 clustering_mode=args.clustering_mode,
                                 confirmation_frames=args.confirmation_frames,
-                                start_frame=args.start_frame), ensure_ascii=False, indent=2))
+                                start_frame=args.start_frame,
+                                retained_cluster_pixels=args.retained_cluster_pixels,
+                                maximum_tentative_match_cost=args.maximum_tentative_match_cost), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

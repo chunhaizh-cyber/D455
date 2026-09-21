@@ -152,13 +152,22 @@ class Track:
 
 
 class ClusterTracker:
-    def __init__(self, max_missing_frames: int = 2, confirmation_frames: int = 5):
+    def __init__(self, max_missing_frames: int = 2, confirmation_frames: int = 5,
+                 minimum_new_cluster_pixels: int = 1, minimum_retained_cluster_pixels: int = 1,
+                 maximum_tentative_match_cost: int = 200_000):
         if not 1 <= max_missing_frames <= 120:
             raise ValueError("max_missing_frames must be 1..120")
         if not 1 <= confirmation_frames <= 30:
             raise ValueError("confirmation_frames must be 1..30")
+        if minimum_new_cluster_pixels < 1 or not 1 <= minimum_retained_cluster_pixels <= minimum_new_cluster_pixels:
+            raise ValueError("cluster pixel thresholds must satisfy 1 <= retained <= new")
+        if not 0 <= maximum_tentative_match_cost < UNMATCHED_COST:
+            raise ValueError("maximum_tentative_match_cost must be 0..999999")
         self.max_missing_frames = max_missing_frames
         self.confirmation_frames = confirmation_frames
+        self.minimum_new_cluster_pixels = minimum_new_cluster_pixels
+        self.minimum_retained_cluster_pixels = minimum_retained_cluster_pixels
+        self.maximum_tentative_match_cost = maximum_tentative_match_cost
         self.tracks: dict[str, Track] = {}
         self.next_identifier = 1
         self.base_sequence: str | None = None
@@ -174,13 +183,19 @@ class ClusterTracker:
         edges = {}
         for track_index, track in enumerate(prior):
             for cluster_index, entry in enumerate(current):
+                association_pixels = (self.minimum_retained_cluster_pixels if track.confirmed
+                                      else self.minimum_new_cluster_pixels)
+                if entry["像素数"] < association_pixels:
+                    continue
                 cost = match_cost(track.record, entry, diagonal)
-                if cost is not None:
+                if cost is not None and (track.confirmed or cost <= self.maximum_tentative_match_cost):
                     edges[(track_index, cluster_index)] = cost
         matched = component_matches(edges, len(prior), len(current))
         matched_by_track = {track: cluster for track, cluster in matched}
         matched_by_cluster = {cluster: track for track, cluster in matched}
         changes = []
+        filtered_new_clusters = 0
+        filtered_new_pixels = 0
         meaningful_change = False
         for cluster_index, source in enumerate(current):
             entry = copy.deepcopy(source)
@@ -201,6 +216,10 @@ class ClusterTracker:
                 if not unchanged or was_missing or became_confirmed:
                     meaningful_change = True
             else:
+                if entry["像素数"] < self.minimum_new_cluster_pixels:
+                    filtered_new_clusters += 1
+                    filtered_new_pixels += entry["像素数"]
+                    continue
                 identifier = str(self.next_identifier)
                 self.next_identifier += 1
                 entry["相机跟踪候选编号"] = identifier
@@ -244,6 +263,14 @@ class ClusterTracker:
                 del self.tracks[track.identifier]
             meaningful_change = True
         output = copy.deepcopy(packet)
+        coverage = output["全局覆盖摘要"]
+        coverage["已处理像素数"] -= filtered_new_pixels
+        coverage["未知像素数"] += filtered_new_pixels
+        output.setdefault("指标", {})["跟踪新候选最小像素数"] = self.minimum_new_cluster_pixels
+        output["指标"]["跟踪保留候选最小像素数"] = self.minimum_retained_cluster_pixels
+        output["指标"]["未确认候选最大关联代价"] = self.maximum_tentative_match_cost
+        output["指标"]["本帧过滤新候选数"] = filtered_new_clusters
+        output["指标"]["本帧过滤新候选像素数"] = filtered_new_pixels
         output["包标识"] = "tracked-" + packet["输出序号"]
         output["任务意图"] = "Mixed"
         if self.base_sequence is None:
@@ -290,10 +317,13 @@ def reconstruct(packets: list[dict]) -> dict[str, dict]:
 
 
 def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames: int = 2,
-                  confirmation_frames: int = 5) -> list[Path]:
+                  confirmation_frames: int = 5, minimum_new_cluster_pixels: int = 1,
+                  minimum_retained_cluster_pixels: int = 1,
+                  maximum_tentative_match_cost: int = 200_000) -> list[Path]:
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
-    tracker = ClusterTracker(max_missing_frames, confirmation_frames)
+    tracker = ClusterTracker(max_missing_frames, confirmation_frames, minimum_new_cluster_pixels,
+                             minimum_retained_cluster_pixels, maximum_tentative_match_cost)
     output_root.mkdir(parents=True)
     results = []
     try:
@@ -321,8 +351,13 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--max-missing-frames", type=int, default=2)
     parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--minimum-new-cluster-pixels", type=int, default=1)
+    parser.add_argument("--minimum-retained-cluster-pixels", type=int, default=1)
+    parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     args = parser.parse_args()
-    packets = write_packets(args.inputs, args.output, args.max_missing_frames, args.confirmation_frames)
+    packets = write_packets(args.inputs, args.output, args.max_missing_frames, args.confirmation_frames,
+                            args.minimum_new_cluster_pixels, args.minimum_retained_cluster_pixels,
+                            args.maximum_tentative_match_cost)
     data = [json.loads(path.read_text(encoding="utf-8")) for path in packets]
     print(json.dumps({"status": "pass", "packets": [str(path) for path in packets], "active_tracks": len(reconstruct(data))}, ensure_ascii=False, indent=2))
 
