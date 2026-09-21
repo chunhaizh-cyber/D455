@@ -167,6 +167,10 @@ def validate_packet(path: Path, *, reference=None, expected_color=None, expected
             check(np.all(np.abs(uv - np.stack((xx, yy), axis=1)) <= 0.5001), "Invalid source-to-color projection")
 
     config = manifest["处理配置"]
+    mode = config.get("聚簇模式")
+    check(mode in {"深度主导", "轮廓主导"}, "Unknown clustering mode")
+    expected_algorithm = "contour-owner-depth-constraint/1" if mode == "轮廓主导" else "depth-anchor-color-owner/1"
+    check(manifest["处理算法"] == expected_algorithm, "Clustering mode and processing algorithm disagree")
     for y, x in zip(*np.where(fill_state == 1)):
         y0, y1, x0, x1 = max(0, y - 1), min(height, y + 2), max(0, x - 1), min(width, x + 2)
         local = (state[y0:y1, x0:x1] == 1) & (labels[y0:y1, x0:x1] == labels[y, x])

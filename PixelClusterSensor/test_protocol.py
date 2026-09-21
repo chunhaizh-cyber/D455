@@ -78,10 +78,12 @@ def main():
     depth = np.full((24, 32), 1000, dtype=np.uint16)
     saved = {}
 
-    def geometry_case(name, rgb, z, assertion, modify=None):
+    def geometry_case(name, rgb, z, assertion, modify=None, configuration=None):
         path = fixture(root, name, rgb, z, modify=modify)
         with Client(args.exe, root / name) as client:
             open_replay(client, path)
+            if configuration:
+                client.call("设置处理配置", configuration, 预期配置版本=client.revision)
             first = client.call("获取单帧观察")
             first_path = Path(first["材料路径"])
             validation = validate_packet(first_path, reference=first, expected_color=rgb, expected_depth=z,
@@ -134,16 +136,30 @@ def main():
         large[10:13, 14:17] = 0
         run("large_gap_no_recursive_fill", lambda: geometry_case("large", color, large,
             lambda m, a: check(np.count_nonzero(a["补全状态"]) == 0 and len(m["簇目录"]) == 1, "Large gap dropped or extrapolated")))
+        interior = depth.copy()
+        interior[10:13, 14:17] = 0
+        interior_color = color.copy()
+        interior_color[10:13, 14:17] = [5, 5, 5]
+        run("contour_first_retains_enclosed_missing_interior", lambda: geometry_case("contour_interior", interior_color, interior,
+            lambda m, a: check(len(m["簇目录"]) == 1 and np.all(a["簇归属图"][10:13, 14:17] == a["簇归属图"][9, 14]) and
+                              np.all(a["归属状态"][10:13, 14:17] == 3) and np.count_nonzero(a["补全状态"]) == 0,
+                              "Enclosed no-depth interior became a false contour hole"), configuration={"聚簇模式": "轮廓主导"}))
+        run("depth_first_mode_remains_available_for_regression", lambda: geometry_case("depth_first", patterned, depth,
+            lambda m, a: check(m["处理配置"]["聚簇模式"] == "深度主导" and len(m["簇目录"]) == 1,
+                              "Depth-first regression mode changed"), configuration={"聚簇模式": "深度主导"}))
         ring_depth = np.full_like(depth, 2000)
         ring_depth[5:20, 5:26] = 1000
         ring_depth[10:15, 12:18] = 2000
         run("background_opening_retains_own_membership", lambda: geometry_case("ring", color, ring_depth,
             lambda m, a: check(a["簇归属图"][12, 14] != a["簇归属图"][7, 7] and
-                              any(r["内环"] for c in m["簇目录"] for r in c["轮廓"]), "Background opening erased")))
+                              any(r["内环"] for c in m["簇目录"] for r in c["轮廓"]), "Background opening erased"),
+            configuration={"聚簇模式": "轮廓主导"}))
         run("no_depth_still_has_color_ownership", lambda: geometry_case("all_missing", color, np.zeros_like(depth),
-            lambda m, a: check(np.all(a["归属状态"] == 2) and np.count_nonzero(a["补全状态"]) == 0, "All-missing scene fabricated depth")))
+            lambda m, a: check(np.all(a["归属状态"] == 2) and np.count_nonzero(a["补全状态"]) == 0, "All-missing scene fabricated depth"),
+            configuration={"聚簇模式": "轮廓主导"}))
         run("far_depth_not_promoted_to_precise", lambda: geometry_case("far", color, np.full_like(depth, 5000),
-            lambda m, a: check(np.all(a["当前深度状态"] == 2) and np.all(a["归属状态"] == 2), "Far depth claimed usable")))
+            lambda m, a: check(np.all(a["当前深度状态"] == 2) and np.all(a["归属状态"] == 2), "Far depth claimed usable"),
+            configuration={"聚簇模式": "轮廓主导"}))
         saturation = depth.copy()
         saturation[12, 16] = 65535
         run("saturated_raw_code_is_not_measurement", lambda: geometry_case("saturation", color, saturation,
@@ -177,6 +193,7 @@ def main():
                 error(client, client.request("设置处理配置", {"启用补全": False}, 预期配置版本="0"), "stale_config")
                 error(client, client.request("设置处理配置", {"补全最少样本": 2.5}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"补全最少样本": 4294967299}, 预期配置版本=client.revision), "invalid_config")
+                error(client, client.request("设置处理配置", {"聚簇模式": "未知模式"}, 预期配置版本=client.revision), "invalid_config")
                 error(client, client.request("设置处理配置", {"未知参数": 1}, 预期配置版本=client.revision), "unknown_field")
                 check(client.call("读取配置与标定")["配置版本"] == "1", "Rejected configuration changed state")
                 client.call("设置处理配置", {"启用补全": False}, 预期配置版本=client.revision)

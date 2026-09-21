@@ -34,7 +34,7 @@ python .\PixelClusterSensor\export_raw_sequence.py --camera --frames 120 --outpu
 python .\PixelClusterSensor\test_export_raw_sequence.py --output .codex_tmp\PixelClusterSensor\raw_sequence_export_tests_new
 python .\PixelClusterSensor\evaluate_cluster_stability.py --runs RUN_A RUN_B RUN_C --output .codex_tmp\PixelClusterSensor\cluster_stability_new
 python .\PixelClusterSensor\test_evaluate_cluster_stability.py --output .codex_tmp\PixelClusterSensor\cluster_stability_tests_new
-python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
+python .\PixelClusterSensor\run_cluster_stability_matrix.py --replay PATH\sequence.json --frames 600 --repetitions 3 --clustering-mode 深度主导 --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_new
 python .\PixelClusterSensor\test_run_cluster_stability_matrix.py --output .codex_tmp\PixelClusterSensor\cluster_stability_matrix_tests_new
 python .\PixelClusterSensor\capture_and_verify_static.py --camera --frames 600 --repetitions 3 --output .codex_tmp\PixelClusterSensor\static_capture_gate_new
 python .\PixelClusterSensor\test_capture_and_verify_static.py --output .codex_tmp\PixelClusterSensor\static_capture_gate_tests_new
@@ -61,7 +61,7 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 `释放观察材料` 是已实现的 C++ 控制指令，参数为已经被调用方完整读取的 `输出序号`。服务拒绝释放仍在连续观察结果队列中的材料，释放后删除该观察包目录并归还它占用的包数/字节预算；重复释放明确返回 `unknown_material`。`cluster_stream.py` 和 `export_raw_sequence.py` 都只在成功复制所需内容后调用此指令，因此可在默认有界预算内处理最多2048帧，不把已消费的完整逐像素材料无限累积在服务端。
 
-`run_cluster_stability_matrix.py` 是静态稳定性验收入口。它要求真实或合成的完整 `PCS.RawSequence/1`，默认顺序运行 600 帧、3 次重复并调用稳定性决策器；根目录写入输入清单 SHA256、Git 修订、配置快照和每次子运行状态。它拒绝帧数不足的输入，不能以旧 `datasets/*` 或名义帧率填补时间、标定证据。已用 600 帧合成静态输入完成 3 次重复：包验证、归一化确定性、重建、跟踪号切换和生命周期事件均通过。该结果只证明执行器、资源释放和证据格式；真实 D455 静态 600 帧仍须单独采集并验收。
+`run_cluster_stability_matrix.py` 是静态稳定性验收入口。它要求真实或合成的完整 `PCS.RawSequence/1`，默认顺序运行 600 帧、3 次重复并调用稳定性决策器；根目录写入输入清单 SHA256、Git 修订、配置快照、实际 `聚簇模式` 和每次子运行状态。`--clustering-mode 深度主导|轮廓主导` 可在同一原始序列上严格比较两条路径。它拒绝帧数不足的输入，不能以旧 `datasets/*` 或名义帧率填补时间、标定证据。已用 600 帧合成静态输入完成 3 次重复：包验证、归一化确定性、重建、跟踪号切换和生命周期事件均通过。该结果只证明执行器、资源释放和证据格式；真实 D455 静态 600 帧仍须单独采集并验收。
 
 `capture_and_verify_static.py` 将真实静态采集和验收串成一项有界操作：通过 C++ 服务采集一份受限 RGBD 原始序列，再以同一序列运行指定次数的稳定性矩阵；顶层 `run_manifest.json` 链接导出清单和矩阵决策。`--replay-source` 只用于合成集成测试，真实验收必须使用 `--camera`。它不会在相机缺失、采集失败、帧数不足或矩阵失败时输出通过结论。
 
@@ -136,12 +136,27 @@ python .\PixelClusterSensor\test_dynamic_accumulation.py --output .codex_tmp/Pix
 
 这一基线是有明确规则的区域候选算法，不是通用实例分割，也不是旧主程序冠军方案的迁移。图像候选可以覆盖所有像素，但不能据此声称物理归属正确率为100%；包中的该指标为 `null`。
 
+### 轮廓主导实验路径
+
+`聚簇模式=轮廓主导` 实现“彩图闭合区域先给出像素归属候选，可靠深度只约束空间拆分”的实验口径：
+
+1. 全画面先以 CIELAB 四邻接色差形成彩图区域，所有像素先进入图像候选账本。
+2. 仅 `当前深度状态=1` 的范围内可靠深度建立连续表面种子；范围外深度保留在簇内作为观测属性，不参与可靠边界拆分，也不升级为精确深度。
+3. 同一彩图区域内，被缺测像素隔开的相容深度种子按深度门槛合并；不同彩图区域的可靠深度若在共享边界连续，也可合并，避免彩绘平面被颜色切碎。
+4. 一个彩图区域只有一个可靠深度根时，缺深度像素继承该候选；存在多个互不相容深度根时，缺深度部分保持独立图像候选，不桥接前后表面。
+5. 完全缺深度、未触及画面边缘且只被一个可靠深度簇包围的闭合区域继承外围标签，避免把人体或物体内部的传感器缺测直接输出成黑洞。该规则不补造深度值；真实开口仍需背景深度、时序显露或其他反证确认。
+
+该模式输出 `彩图初始区域数`、`当前深度种子区域数`、`跨颜色连续深度合并数`、`跨缺测相容深度合并数` 和 `封闭缺深度继承像素数`。处理算法标识为 `contour-owner-depth-constraint/1`；原路径为 `depth-anchor-color-owner/1`。
+
+合成协议反例已验证：彩绘连续平面不因颜色拆开、同色深度台阶仍拆分、缺测区域不桥接两个深度表面、封闭 3x3 缺测区保留外围归属、范围外深度不晋级。真实静态同源短门禁（30帧、3次、最小簇1024像素）中，轮廓主导路径产生138个静态生命周期事件，深度主导对照为78个，两者均未通过静态稳定门禁；轮廓主导的单次源处理均值约80.5ms，对照约51.1ms。因而本轮只证明帧内语义和协议路径，**不证明跨帧更稳定或性能更好**，默认仍保留 `深度主导`。后续必须处理可靠深度边界抖动和彩图区域跨帧稳定，再讨论晋级。
+
 ## 默认配置
 
 所有参数均为第一版可复算实验配置，不是本机已完成精度标定的生产阈值。距离范围内观测也不自动获得精确三维保证。
 
 | 参数 | 默认值 | 作用 |
 | --- | ---: | --- |
+| 聚簇模式 | 深度主导 | 已验证基线；可显式切换为实验性的轮廓主导路径 |
 | 可用深度近界米 | 0.3 | 范围内观测资格的近界 |
 | 可用深度远界米 | 3.5 | 范围外保留原值、颜色及图像归属，不冒充近场精度 |
 | 邻接深度差米 | 0.04 | 局部表面连通绝对差 |

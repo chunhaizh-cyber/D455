@@ -15,15 +15,17 @@
 
 namespace pcs {
 Json ProcessingConfig::json() const {
-    return {{"可用深度近界米", nearM}, {"可用深度远界米", farM}, {"邻接深度差米", depthGapM},
+    return {{"聚簇模式", clusteringMode}, {"可用深度近界米", nearM}, {"可用深度远界米", farM}, {"邻接深度差米", depthGapM},
         {"邻接深度相对差", depthRelativeGap}, {"归属色差", colorDelta}, {"启用补全", fillEnabled},
         {"补全最大缺测连通像素", fillMaxPixels}, {"补全最少样本", fillMinSamples},
         {"补全深度跨度米", fillDepthSpreadM}, {"补全色差", fillColorDelta}};
 }
 ProcessingConfig ProcessingConfig::parse(const Json& j) {
-    onlyKeys(j, {"可用深度近界米", "可用深度远界米", "邻接深度差米", "邻接深度相对差", "归属色差",
+    onlyKeys(j, {"聚簇模式", "可用深度近界米", "可用深度远界米", "邻接深度差米", "邻接深度相对差", "归属色差",
         "启用补全", "补全最大缺测连通像素", "补全最少样本", "补全深度跨度米", "补全色差"});
     ProcessingConfig c;
+    if (j.contains("聚簇模式")) require(j.at("聚簇模式").is_string(), "invalid_config", "聚簇模式必须是字符串");
+    c.clusteringMode = j.value("聚簇模式", c.clusteringMode);
     c.nearM = j.value("可用深度近界米", c.nearM); c.farM = j.value("可用深度远界米", c.farM);
     c.depthGapM = j.value("邻接深度差米", c.depthGapM); c.depthRelativeGap = j.value("邻接深度相对差", c.depthRelativeGap);
     c.colorDelta = j.value("归属色差", c.colorDelta); c.fillEnabled = j.value("启用补全", c.fillEnabled);
@@ -40,6 +42,7 @@ ProcessingConfig ProcessingConfig::parse(const Json& j) {
         c.fillMaxPixels >= 1 && c.fillMaxPixels <= 16 && c.fillMinSamples >= 3 && c.fillMinSamples <= 8 &&
         c.fillDepthSpreadM > 0 && c.fillDepthSpreadM <= 0.2 && c.fillColorDelta > 0 && c.fillColorDelta <= 100,
         "invalid_config", "处理配置越界");
+    require(c.clusteringMode == "轮廓主导" || c.clusteringMode == "深度主导", "invalid_config", "未知聚簇模式");
     return c;
 }
 
@@ -100,7 +103,7 @@ void alignDepth(const RawFrame& f, Observation& out, const ProcessingConfig& con
     out.metrics["配准竞争采样数"] = collisions;
 }
 
-void partition(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
+void partitionDepthFirst(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
     const auto size = lab.size();
     out.labels = cv::Mat::zeros(size, CV_32S);
     out.ownership = cv::Mat::zeros(size, CV_8U);
@@ -159,6 +162,219 @@ void partition(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) 
         id = remap[id];
     }
     out.metrics["簇数量"] = canonical;
+    out.metrics["聚簇模式"] = "深度主导";
+}
+
+bool depthContinuous(const Observation& out, const ProcessingConfig& c, cv::Point a, cv::Point b) {
+    if (out.depthState.at<uint8_t>(a) != 1 || out.depthState.at<uint8_t>(b) != 1) return false;
+    const float first = out.depthM.at<float>(a), second = out.depthM.at<float>(b);
+    return std::abs(first - second) <= c.depthGapM + c.depthRelativeGap * std::min(first, second);
+}
+
+class DisjointSet {
+public:
+    explicit DisjointSet(int count) : parent_(static_cast<size_t>(count + 1)) {
+        std::iota(parent_.begin(), parent_.end(), 0);
+    }
+    int find(int value) {
+        int root = value;
+        while (parent_[static_cast<size_t>(root)] != root) root = parent_[static_cast<size_t>(root)];
+        while (parent_[static_cast<size_t>(value)] != value) {
+            const int next = parent_[static_cast<size_t>(value)];
+            parent_[static_cast<size_t>(value)] = root;
+            value = next;
+        }
+        return root;
+    }
+    bool merge(int first, int second) {
+        first = find(first); second = find(second);
+        if (first == second) return false;
+        if (first > second) std::swap(first, second);
+        parent_[static_cast<size_t>(second)] = first;
+        return true;
+    }
+private:
+    std::vector<int> parent_;
+};
+
+void partitionContourFirst(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
+    const auto size = lab.size();
+    cv::Mat colorLabels = cv::Mat::zeros(size, CV_32S);
+    cv::Mat depthSeeds = cv::Mat::zeros(size, CV_32S);
+    std::vector<std::vector<cv::Point>> colorPixels(1);
+    std::vector<cv::Point> queue;
+    queue.reserve(lab.total());
+
+    int colorCount = 0;
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
+        if (colorLabels.at<int>(y, x)) continue;
+        require(colorCount < MaxClusters, "resource_limit", "彩图候选数量超限");
+        const int label = ++colorCount;
+        colorPixels.emplace_back();
+        queue.clear(); queue.emplace_back(x, y); colorLabels.at<int>(y, x) = label;
+        for (size_t index = 0; index < queue.size(); ++index) {
+            const auto point = queue[index];
+            colorPixels[static_cast<size_t>(label)].push_back(point);
+            for (const auto delta : Neighbors) {
+                const auto neighbor = point + delta;
+                if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(neighbor)) continue;
+                if (deltaSquared(lab, point, neighbor) > c.colorDelta * c.colorDelta) continue;
+                colorLabels.at<int>(neighbor) = label;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+
+    std::vector<double> seedDepthSum(1, 0.0);
+    std::vector<int> seedDepthCount(1, 0);
+    int seedCount = 0;
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
+        if (out.depthState.at<uint8_t>(y, x) != 1 || depthSeeds.at<int>(y, x)) continue;
+        require(seedCount < MaxClusters, "resource_limit", "深度区域数量超限");
+        const int seed = ++seedCount;
+        seedDepthSum.push_back(0.0); seedDepthCount.push_back(0);
+        queue.clear(); queue.emplace_back(x, y); depthSeeds.at<int>(y, x) = seed;
+        for (size_t index = 0; index < queue.size(); ++index) {
+            const auto point = queue[index];
+            seedDepthSum[static_cast<size_t>(seed)] += out.depthM.at<float>(point);
+            ++seedDepthCount[static_cast<size_t>(seed)];
+            for (const auto delta : Neighbors) {
+                const auto neighbor = point + delta;
+                if (!inside(size, neighbor.x, neighbor.y) || depthSeeds.at<int>(neighbor) ||
+                    out.depthState.at<uint8_t>(neighbor) != 1 ||
+                    colorLabels.at<int>(neighbor) != colorLabels.at<int>(point) ||
+                    !depthContinuous(out, c, point, neighbor)) continue;
+                depthSeeds.at<int>(neighbor) = seed;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+
+    DisjointSet sets(seedCount);
+    int depthMergesAcrossColor = 0, depthMergesAcrossMissing = 0;
+    for (int color = 1; color <= colorCount; ++color) {
+        std::set<int> unique;
+        for (const auto point : colorPixels[static_cast<size_t>(color)]) {
+            const int seed = depthSeeds.at<int>(point);
+            if (seed) unique.insert(seed);
+        }
+        std::vector<int> ordered(unique.begin(), unique.end());
+        std::sort(ordered.begin(), ordered.end(), [&](int first, int second) {
+            return seedDepthSum[static_cast<size_t>(first)] / seedDepthCount[static_cast<size_t>(first)] <
+                seedDepthSum[static_cast<size_t>(second)] / seedDepthCount[static_cast<size_t>(second)];
+        });
+        size_t begin = 0;
+        while (begin < ordered.size()) {
+            const double reference = seedDepthSum[static_cast<size_t>(ordered[begin])] / seedDepthCount[static_cast<size_t>(ordered[begin])];
+            size_t end = begin + 1;
+            while (end < ordered.size()) {
+                const double value = seedDepthSum[static_cast<size_t>(ordered[end])] / seedDepthCount[static_cast<size_t>(ordered[end])];
+                if (value - reference > c.depthGapM + c.depthRelativeGap * static_cast<float>(std::min(reference, value))) break;
+                if (sets.merge(ordered[begin], ordered[end])) ++depthMergesAcrossMissing;
+                ++end;
+            }
+            begin = end;
+        }
+    }
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
+        const cv::Point point(x, y);
+        for (const cv::Point delta : {cv::Point(1, 0), cv::Point(0, 1)}) {
+            const auto neighbor = point + delta;
+            if (!inside(size, neighbor.x, neighbor.y) || colorLabels.at<int>(point) == colorLabels.at<int>(neighbor) ||
+                !depthContinuous(out, c, point, neighbor)) continue;
+            if (sets.merge(depthSeeds.at<int>(point), depthSeeds.at<int>(neighbor))) ++depthMergesAcrossColor;
+        }
+    }
+
+    out.labels = cv::Mat::zeros(size, CV_32S);
+    out.ownership = cv::Mat::zeros(size, CV_8U);
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
+        const int seed = depthSeeds.at<int>(y, x);
+        if (!seed) continue;
+        out.labels.at<int>(y, x) = sets.find(seed);
+        out.ownership.at<uint8_t>(y, x) = out.depthState.at<uint8_t>(y, x) == 1 ? 1 : 2;
+    }
+
+    int nextLabel = seedCount + 1;
+    std::vector<std::vector<cv::Point>> imageComponents(static_cast<size_t>(nextLabel));
+    for (int color = 1; color <= colorCount; ++color) {
+        std::set<int> roots;
+        for (const auto point : colorPixels[static_cast<size_t>(color)]) {
+            const int label = out.labels.at<int>(point);
+            if (label) roots.insert(label);
+        }
+        if (roots.size() == 1) {
+            const int root = *roots.begin();
+            for (const auto point : colorPixels[static_cast<size_t>(color)]) {
+                if (out.labels.at<int>(point)) continue;
+                out.labels.at<int>(point) = root;
+                out.ownership.at<uint8_t>(point) = 3;
+            }
+            continue;
+        }
+        for (const auto start : colorPixels[static_cast<size_t>(color)]) {
+            if (out.labels.at<int>(start)) continue;
+            require(nextLabel <= MaxClusters, "resource_limit", "图像区域数量超限");
+            const int imageLabel = nextLabel++;
+            imageComponents.emplace_back();
+            queue.clear(); queue.push_back(start); out.labels.at<int>(start) = imageLabel;
+            for (size_t index = 0; index < queue.size(); ++index) {
+                const auto point = queue[index];
+                imageComponents[static_cast<size_t>(imageLabel)].push_back(point);
+                out.ownership.at<uint8_t>(point) = 2;
+                for (const auto delta : Neighbors) {
+                    const auto neighbor = point + delta;
+                    if (!inside(size, neighbor.x, neighbor.y) || out.labels.at<int>(neighbor) ||
+                        colorLabels.at<int>(neighbor) != color) continue;
+                    out.labels.at<int>(neighbor) = imageLabel;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
+
+    std::vector<uint8_t> hasCurrentDepth(static_cast<size_t>(nextLabel), 0);
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x)
+        if (out.depthState.at<uint8_t>(y, x) == 1) hasCurrentDepth[static_cast<size_t>(out.labels.at<int>(y, x))] = 1;
+    int enclosedInheritedPixels = 0;
+    for (int imageLabel = seedCount + 1; imageLabel < nextLabel; ++imageLabel) {
+        const auto& pixels = imageComponents[static_cast<size_t>(imageLabel)];
+        if (pixels.empty()) continue;
+        bool touchesBorder = false;
+        std::set<int> surrounding;
+        for (const auto point : pixels) {
+            touchesBorder |= point.x == 0 || point.y == 0 || point.x + 1 == size.width || point.y + 1 == size.height;
+            for (const auto delta : Neighbors) {
+                const auto neighbor = point + delta;
+                if (!inside(size, neighbor.x, neighbor.y)) continue;
+                const int label = out.labels.at<int>(neighbor);
+                if (label != imageLabel && label < static_cast<int>(hasCurrentDepth.size()) && hasCurrentDepth[static_cast<size_t>(label)])
+                    surrounding.insert(label);
+            }
+        }
+        if (touchesBorder || surrounding.size() != 1) continue;
+        const int inherited = *surrounding.begin();
+        for (const auto point : pixels) {
+            out.labels.at<int>(point) = inherited;
+            out.ownership.at<uint8_t>(point) = 3;
+            ++enclosedInheritedPixels;
+        }
+    }
+
+    std::vector<int> remap(static_cast<size_t>(nextLabel), 0);
+    int canonical = 0;
+    for (int y = 0; y < size.height; ++y) for (int x = 0; x < size.width; ++x) {
+        int& label = out.labels.at<int>(y, x);
+        if (!remap[static_cast<size_t>(label)]) remap[static_cast<size_t>(label)] = ++canonical;
+        label = remap[static_cast<size_t>(label)];
+    }
+    out.metrics["簇数量"] = canonical;
+    out.metrics["聚簇模式"] = "轮廓主导";
+    out.metrics["彩图初始区域数"] = colorCount;
+    out.metrics["当前深度种子区域数"] = seedCount;
+    out.metrics["跨颜色连续深度合并数"] = depthMergesAcrossColor;
+    out.metrics["跨缺测相容深度合并数"] = depthMergesAcrossMissing;
+    out.metrics["封闭缺深度继承像素数"] = enclosedInheritedPixels;
 }
 
 void fillDepth(const cv::Mat& lab, Observation& out, const ProcessingConfig& c) {
@@ -275,7 +491,8 @@ Observation process(const RawFrame& frame, const ProcessingConfig& config) {
     cv::Mat floatBgr, lab;
     frame.colorBgr.convertTo(floatBgr, CV_32F, 1.0 / 255.0);
     cv::cvtColor(floatBgr, lab, cv::COLOR_BGR2Lab);
-    partition(lab, result, config);
+    if (config.clusteringMode == "轮廓主导") partitionContourFirst(lab, result, config);
+    else partitionDepthFirst(lab, result, config);
     fillDepth(lab, result, config);
     contours(result);
     result.metrics["处理毫秒"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -331,7 +548,8 @@ Json publish(const fs::path& root, const std::string& session, uint64_t sequence
          "int32_le", {out.contourPoints.size() / 3, 3});
     Json manifest = {{"格式", "PCS.Observation/1"}, {"发布状态", "完整"}, {"会话标识", session},
         {"输出序号", std::to_string(sequence)}, {"源信息", frame.source}, {"输出Unix毫秒", nowMs()},
-        {"配置版本", std::to_string(revision)}, {"控制来源", control}, {"处理算法", "depth-anchor-color-owner/1"},
+        {"配置版本", std::to_string(revision)}, {"控制来源", control},
+        {"处理算法", config.clusteringMode == "轮廓主导" ? "contour-owner-depth-constraint/1" : "depth-anchor-color-owner/1"},
         {"RealSenseSDK版本", RS2_API_VERSION_STR}, {"OpenCV版本", CV_VERSION},
         {"配准算法", "source-center-project-zbuffer/1"}, {"处理配置", config.json()},
         {"图像尺寸WH", {frame.colorBgr.cols, frame.colorBgr.rows}},

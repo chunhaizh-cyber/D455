@@ -41,6 +41,7 @@ Json extrinsicsJson(const rs2_extrinsics& value);
 rs2_extrinsics parseExtrinsics(const Json& value);
 
 struct ProcessingConfig {
+    std::string clusteringMode = "深度主导";
     float nearM = 0.3f;
     float farM = 3.5f;
     float depthGapM = 0.04f;

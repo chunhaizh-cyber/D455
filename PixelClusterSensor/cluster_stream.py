@@ -31,19 +31,22 @@ def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
 
 
 def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | None, serial: str = "", max_missing_frames: int = 2,
-               minimum_cluster_pixels: int = 1) -> dict:
+               minimum_cluster_pixels: int = 1, clustering_mode: str = "深度主导") -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
         raise ValueError("frames must be 1..2048")
     if minimum_cluster_pixels < 1:
         raise ValueError("minimum_cluster_pixels must be positive")
+    if clustering_mode not in {"轮廓主导", "深度主导"}:
+        raise ValueError("clustering_mode must be 轮廓主导 or 深度主导")
     output.mkdir(parents=True)
     report = {
         "status": "running", "format": "PCS.ClusterStreamRun/1", "requested_frames": frames,
         "source": "directory_replay" if replay else "live_camera", "packets": [], "error": None,
         "quality_promotion": "not_evaluated", "tracking_validation": "not_established_for_real_dynamic_motion",
         "minimum_cluster_pixels": minimum_cluster_pixels,
+        "clustering_mode": clustering_mode,
     }
     tracker = ClusterTracker(max_missing_frames=max_missing_frames)
     packet_documents = []
@@ -54,7 +57,9 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
             parameters = {"来源": "目录回放", "清单": str(replay.resolve())} if replay else {"来源": "实时相机", "设备序列号": serial}
             opened = client.call("打开设备", parameters)
             report["session"] = opened["会话标识"]
-            report["configuration_version"] = opened["配置版本"]
+            configured = client.call("设置处理配置", {"聚簇模式": clustering_mode}, 预期配置版本=client.revision)
+            report["configuration_version"] = configured["配置版本"]
+            report["processing_configuration"] = configured["处理配置"]
             for index in range(1, frames + 1):
                 started = time.perf_counter()
                 observation = client.call("获取单帧观察")
@@ -111,11 +116,13 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=1)
     parser.add_argument("--max-missing-frames", type=int, default=2)
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
+    parser.add_argument("--clustering-mode", choices=["轮廓主导", "深度主导"], default="深度主导")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     print(json.dumps(run_stream(executable=args.exe, output=args.output.resolve(), frames=args.frames, replay=args.replay,
                                 serial=args.serial, max_missing_frames=args.max_missing_frames,
-                                minimum_cluster_pixels=args.minimum_cluster_pixels), ensure_ascii=False, indent=2))
+                                minimum_cluster_pixels=args.minimum_cluster_pixels,
+                                clustering_mode=args.clustering_mode), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
