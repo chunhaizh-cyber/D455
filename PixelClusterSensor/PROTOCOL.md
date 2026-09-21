@@ -117,6 +117,7 @@
 - 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
 - P3 `cluster_stream.py` 是 Python 影子/评测桥，唯一相机所有者仍是它通过 `Client` 启动的 C++ 服务。它逐帧执行 P1 转换和 P2 跟踪，写出 `cluster_packets/`、`run_manifest.json`、`packet_metrics.csv` 和 `events.csv`；首帧为全量，静态无变化帧为无簇变化的 `Heartbeat`，新增/移动/遮挡/重现/丢失为 `Delta`。合成静态、遮挡和重现已验证连续候选号和重建。心跳只证明源流和供包链仍工作，首版不在心跳中刷新逐簇证据年龄；它不等于 C++ 实时接线或扫描/观察/跟踪控制指令。
+- P3 `cluster_control.py` 在 Python 影子层实现拟议簇级指令和有界调度。每帧只有一份簇包，扫描/观察/跟踪队列共享引用；所有活动定向任务都要求至少一个全画面扫描任务存在。队列条数、JSON字节、帧龄和轮廓材料总字节均有硬上限，背压失败会恢复跟踪器、任务队列、材料账本和包序号。当前只完成合成 T10 最小门禁，未实现实际 ROI、频率、分辨率或线程优先级。
 - `export_raw_sequence.py` 从已发布观察包导出受限的 `PCS.RawSequence/1`：仅复制彩图和原始深度，并保留实际标定、深度单位、帧号、时间戳和共同时间域。导出清单的材料来源恒为 `历史回放`，不把处理派生层或宿主时间写成源证据。合成导出后回放已经验证；当前 C++ 输入未采集 IR/IMU，因此导出不承诺这两类流。
 - `evaluate_cluster_stability.py` 为已完成的 P3 流输出独立决策文件。它验证包、连续簇级序号和逐包全量加增量重建，并在多次同输入运行间比较归一化包序列；每次运行至少必须出现一个候选，空包流不能获得稳定性通过。决策同时记录已确认候选生命周期事件、未确认候选移除数和新增候选数，防止用状态降级掩盖分割抖动。包标识、会话标识、发布宿主时间和包含这些字段的上游观察清单 SHA256 被明确排除，其余源时间、簇证据、轮廓和跟踪关联仍须一致。它不把静态回放一致性解释为物理静止、动态跟踪或世界身份。
 - C++ 已实现 `释放观察材料`。调用者只能在已完整读取对应材料且它不在连续结果队列中时按输出序号释放；服务删除目录、归还包数和字节预算，重复/跨会话释放返回明确失败。P3 影子桥和原始序列导出器在复制所需内容后立即释放，当前可在有界预算内处理最多2048帧；不以后台淘汰替代调用者的显式确认。
@@ -136,6 +137,7 @@
 ```powershell
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
 python .\PixelClusterSensor\test_cluster_resync.py --output .codex_tmp\PixelClusterSensor\cluster_resync_tests_new
+python .\PixelClusterSensor\test_cluster_control.py --output .codex_tmp\PixelClusterSensor\cluster_control_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
 python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
 python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new

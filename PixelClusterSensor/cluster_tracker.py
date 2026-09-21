@@ -384,6 +384,14 @@ class ClusterTracker:
         entries, _ = self._snapshot_entries()
         return {entry["相机跟踪候选编号"]: entry for entry in entries}
 
+    def detailed_contour_material(self, identifier: str) -> tuple[dict, bytes]:
+        if identifier not in self.tracks:
+            raise KeyError(identifier)
+        track = self.tracks[identifier]
+        if track.contour_material is None:
+            raise ValueError("Tracked contour material is unavailable")
+        return copy.deepcopy(track.record), bytes(track.contour_material)
+
 
 def reconstruct(packets: list[dict]) -> dict[str, dict]:
     state: dict[str, dict] = {}
