@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
-import shutil
 import time
 
 from client import Client
@@ -20,10 +20,12 @@ from cluster_tracker import ClusterTracker, reconstruct
 from convert_cluster_observation import convert
 
 
-def write_tracked_packet(packet: dict, snapshot: Path, target: Path) -> Path:
+def write_tracked_packet(packet: dict, contours: bytes, target: Path) -> Path:
     target.mkdir(parents=True)
     descriptor = packet["材料"]["精确轮廓链"]
-    shutil.copy2(snapshot / descriptor["文件"], target / descriptor["文件"])
+    descriptor["字节数"] = len(contours)
+    descriptor["SHA256"] = hashlib.sha256(contours).hexdigest()
+    (target / descriptor["文件"]).write_bytes(contours)
     path = target / "packet.json"
     path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     validate_cluster_packet(path)
@@ -103,9 +105,13 @@ def run_stream(*, executable: Path, output: Path, frames: int, replay: Path | No
                 snapshot["场景版本"] = str(index)
                 snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 validate_cluster_packet(snapshot_path)
-                tracked = tracker.update(snapshot)
+                snapshot_descriptor = snapshot["材料"]["精确轮廓链"]
+                snapshot_contours = (snapshot_root / snapshot_descriptor["文件"]).read_bytes()
+                tracked = tracker.update(snapshot, snapshot_contours)
                 tracked_root = output / "cluster_packets" / f"packet_{index:06d}"
-                tracked_path = write_tracked_packet(tracked, snapshot_root, tracked_root)
+                if tracker.last_output_contours is None:
+                    raise ValueError("Tracker did not provide output contour material")
+                tracked_path = write_tracked_packet(tracked, tracker.last_output_contours, tracked_root)
                 client.call("释放观察材料", {"输出序号": observation["输出序号"]})
                 elapsed = (time.perf_counter() - started) * 1000.0
                 packet_documents.append(json.loads(tracked_path.read_text(encoding="utf-8")))

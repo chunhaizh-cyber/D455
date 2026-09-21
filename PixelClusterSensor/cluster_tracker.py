@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -147,6 +148,7 @@ class Track:
     identifier: str
     record: dict
     association_record: dict
+    contour_material: bytes | None
     visible_frames: int
     confirmed: bool
     missing_frames: int = 0
@@ -178,8 +180,64 @@ class ClusterTracker:
         self.next_identifier = 1
         self.base_sequence: str | None = None
         self.scene_version = 0
+        self.full_snapshot_requested = False
+        self.last_output_contours: bytes | None = None
 
-    def update(self, packet: dict) -> dict:
+    @staticmethod
+    def _store_entry(entry: dict, contours: bytes | None) -> tuple[dict, bytes | None]:
+        stored = copy.deepcopy(entry)
+        if contours is None:
+            return stored, None
+        packed = bytearray()
+        for ring in stored["轮廓"]:
+            length = (ring["有效位数"] + 7) // 8
+            start = ring["字节偏移"]
+            ring["字节偏移"] = len(packed)
+            packed.extend(contours[start:start + length])
+        return stored, bytes(packed)
+
+    @staticmethod
+    def _append_stored_entry(entry: dict, material: bytes | None,
+                             output: bytearray) -> dict:
+        result = copy.deepcopy(entry)
+        if result["轮廓"] and material is None:
+            raise ValueError("Tracked contour material is unavailable for a full snapshot")
+        base = len(output)
+        output.extend(material or b"")
+        for ring in result["轮廓"]:
+            ring["字节偏移"] += base
+        return result
+
+    def request_full_snapshot(self) -> None:
+        """Force the next source update to publish a self-contained snapshot."""
+        self.full_snapshot_requested = True
+
+    def _snapshot_entries(self) -> tuple[list[dict], bytes]:
+        entries = []
+        contours = bytearray()
+        for track in sorted(self.tracks.values(), key=lambda item: int(item.identifier)):
+            entry = self._append_stored_entry(track.record, track.contour_material, contours)
+            entry["关联证据"] = None
+            if track.missing_frames:
+                entry["帧内簇编号"] = None
+                entry["变化类型"] = "Occluded"
+                entry["跟踪状态"] = "Occluded"
+                entry["颜色摘要"]["可比性"] = "未知"
+                entry["距离"] = {"模式": "UnknownDistance", "值米": None, "区间米": None,
+                                   "不确定度米": None, "依据": "证据不足"}
+                entry["三维中心米"] = None
+                entry["尺寸米"] = None
+                entry["深度证据"] = {"当前实测像素数": 0, "历史候选像素数": entry["像素数"],
+                                     "估算像素数": 0, "缺失像素数": 0, "范围外像素数": 0}
+                entry["运动"] = None
+                entry["遮挡"] = {"状态": "Occluded", "比例": None,
+                                  "依据": "full_snapshot_preserves_unexpired_occluded_candidate"}
+                entry["时效"] = {"连续可见帧数": 0, "连续缺失帧数": track.missing_frames,
+                                 "证据年龄毫秒": None}
+            entries.append(entry)
+        return entries, bytes(contours)
+
+    def update(self, packet: dict, contour_material: bytes | None = None) -> dict:
         if packet["包类型"] != "FullSnapshot":
             raise ValueError("Tracker input must be a full snapshot")
         current = packet["簇变化"]
@@ -220,9 +278,11 @@ class ClusterTracker:
                 entry["时效"] = {"连续可见帧数": visible_frames, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 association_cost = edges[(matched_by_cluster[cluster_index], cluster_index)]
                 entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": association_cost}
+                stored_entry, stored_contours = self._store_entry(entry, contour_material)
                 if association_cost <= self.maximum_tentative_match_cost:
-                    track.association_record = copy.deepcopy(entry)
-                track.record, track.visible_frames, track.missing_frames = copy.deepcopy(entry), visible_frames, 0
+                    track.association_record = copy.deepcopy(stored_entry)
+                track.record, track.contour_material = stored_entry, stored_contours
+                track.visible_frames, track.missing_frames = visible_frames, 0
                 track.occlusion_published = False
                 if not unchanged or was_missing or became_confirmed:
                     meaningful_change = True
@@ -239,7 +299,9 @@ class ClusterTracker:
                 entry["跟踪状态"] = "Active" if confirmed else "Tentative"
                 entry["时效"] = {"连续可见帧数": 1, "连续缺失帧数": 0, "证据年龄毫秒": None}
                 entry["关联证据"] = None
-                self.tracks[identifier] = Track(identifier, copy.deepcopy(entry), copy.deepcopy(entry), 1, confirmed)
+                stored_entry, stored_contours = self._store_entry(entry, contour_material)
+                self.tracks[identifier] = Track(identifier, stored_entry, copy.deepcopy(stored_entry),
+                                                stored_contours, 1, confirmed)
                 meaningful_change = True
             changes.append(entry)
         for track_index, track in enumerate(prior):
@@ -292,23 +354,35 @@ class ClusterTracker:
         output["指标"]["本帧过滤新候选像素数"] = filtered_new_pixels
         output["包标识"] = "tracked-" + packet["输出序号"]
         output["任务意图"] = "Mixed"
+        self.last_output_contours = contour_material
         if self.base_sequence is None:
             output["包类型"], output["依赖全量序号"], self.base_sequence = "FullSnapshot", None, output["输出序号"]
+            output["前置场景版本"] = None
             self.scene_version = 1
             output["簇变化"] = changes
+            output["指标"]["重同步全量"] = False
+        elif self.full_snapshot_requested:
+            output["包类型"], output["依赖全量序号"], self.base_sequence = "FullSnapshot", None, output["输出序号"]
+            output["前置场景版本"] = None
+            output["簇变化"], self.last_output_contours = self._snapshot_entries()
+            output["指标"]["重同步全量"] = True
+            self.full_snapshot_requested = False
         elif not meaningful_change:
             # The source-time header proves that the supply chain is alive.  The
             # current schema cannot refresh per-track evidence age in a heartbeat,
             # so no hidden per-track measurement claim is made here.
             output["包类型"], output["依赖全量序号"], output["簇变化"] = "Heartbeat", self.base_sequence, []
+            output["前置场景版本"] = str(self.scene_version)
         else:
             output["包类型"], output["依赖全量序号"], output["簇变化"] = "Delta", self.base_sequence, changes
+            output["前置场景版本"] = str(self.scene_version)
             self.scene_version += 1
         output["场景版本"] = str(self.scene_version)
         return output
 
     def active_snapshot(self) -> dict[str, dict]:
-        return {identifier: copy.deepcopy(track.record) for identifier, track in self.tracks.items()}
+        entries, _ = self._snapshot_entries()
+        return {entry["相机跟踪候选编号"]: entry for entry in entries}
 
 
 def reconstruct(packets: list[dict]) -> dict[str, dict]:
@@ -327,6 +401,8 @@ def reconstruct(packets: list[dict]) -> dict[str, dict]:
             if entry["帧内簇编号"] is None:
                 if entry["变化类型"] in {"Lost", "Removed"}:
                     state.pop(identifier, None)
+                elif packet["包类型"] == "FullSnapshot" and entry["变化类型"] == "Occluded":
+                    state[identifier] = copy.deepcopy(entry)
                 elif identifier in state:
                     state[identifier]["跟踪状态"] = "Occluded"
                     state[identifier]["时效"] = copy.deepcopy(entry["时效"])
@@ -351,11 +427,18 @@ def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames
         for index, path in enumerate(input_paths, start=1):
             validate_cluster_packet(path)
             source = json.loads(path.read_text(encoding="utf-8"))
-            output = tracker.update(source)
+            source_descriptor = source["材料"]["精确轮廓链"]
+            source_contours = (path.parent / source_descriptor["文件"]).read_bytes()
+            output = tracker.update(source, source_contours)
             target = output_root / f"packet_{index:06d}"
             target.mkdir()
             descriptor = output["材料"]["精确轮廓链"]
-            shutil.copy2(path.parent / descriptor["文件"], target / descriptor["文件"])
+            output_contours = tracker.last_output_contours
+            if output_contours is None:
+                raise ValueError("Tracker did not provide output contour material")
+            descriptor["字节数"] = len(output_contours)
+            descriptor["SHA256"] = hashlib.sha256(output_contours).hexdigest()
+            (target / descriptor["文件"]).write_bytes(output_contours)
             target_packet = target / "packet.json"
             target_packet.write_text(json.dumps(output, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             validate_cluster_packet(target_packet)

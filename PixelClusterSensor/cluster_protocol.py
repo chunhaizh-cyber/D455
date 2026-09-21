@@ -26,7 +26,7 @@ TRACK_STATES = {"Tentative", "Active", "PartOccluded", "Occluded", "Reappeared",
 DISTANCE_MODES = {"PreciseDepth3D", "ApproxStereoContour", "ImageOnlyContour", "UnknownDistance"}
 
 TOP_LEVEL_KEYS = {
-    "格式", "发布状态", "包标识", "会话标识", "跟踪时期", "输出序号", "场景版本", "包类型", "任务意图", "依赖全量序号",
+    "格式", "发布状态", "包标识", "会话标识", "跟踪时期", "输出序号", "场景版本", "前置场景版本", "包类型", "任务意图", "依赖全量序号",
     "源时间", "发布Unix毫秒", "结果年龄毫秒", "配置版本", "标定版本", "坐标系", "图像尺寸WH", "相机姿态", "处理区域",
     "输入质量", "全局覆盖摘要", "材料", "簇变化", "指标",
 }
@@ -182,8 +182,10 @@ def _validate_header(packet: dict) -> tuple[int, int]:
     dependency = packet["依赖全量序号"]
     if packet["包类型"] == "FullSnapshot":
         check(dependency is None, "Full snapshot must not depend on another snapshot")
+        check(packet["前置场景版本"] is None, "Full snapshot must not depend on a previous scene version")
     else:
         _decimal(dependency, "Base snapshot sequence", 1)
+        _decimal(packet["前置场景版本"], "Previous scene version", 1)
     source_time = packet["源时间"]
     _only_keys(source_time, {"值", "单位", "时间域"}, "Source time")
     _finite(source_time.get("值"), "Source time value")
@@ -219,7 +221,8 @@ def _validate_header(packet: dict) -> tuple[int, int]:
     return width, height
 
 
-def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, active_track_ids: set[str]) -> dict:
+def _validate_cluster(entry: dict, width: int, height: int, contours: bytes,
+                      active_track_ids: set[str], packet_type: str) -> dict:
     _only_keys(entry, CLUSTER_KEYS, "Cluster entry")
     check(CLUSTER_KEYS <= set(entry), "Cluster entry is missing required fields")
     track = entry["相机跟踪候选编号"]
@@ -235,7 +238,10 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
         check(entry["变化类型"] == "Reappeared" and entry["跟踪状态"] == "Reappeared" and
               entry["帧内簇编号"] is not None,
               "Reappearance change and state must agree on a current cluster")
-    if entry["帧内簇编号"] is None:
+    historical_occluded = (packet_type == "FullSnapshot" and entry["帧内簇编号"] is None and
+                           entry["变化类型"] == "Occluded" and entry["跟踪状态"] == "Occluded" and
+                           entry["范围XYWH"] is not None)
+    if entry["帧内簇编号"] is None and not historical_occluded:
         check(entry["变化类型"] in {"Occluded", "Lost", "Removed"} and track is not None and entry["跟踪状态"] in {"Occluded", "Lost", "Retired"},
               "Absent-cluster event needs a tracked candidate")
         if entry["变化类型"] == "Occluded":
@@ -258,7 +264,10 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
             _finite(freshness["证据年龄毫秒"], "Evidence age", 0)
         check(entry["关联证据"] is None and entry["详细材料句柄"] is None, "Tombstone cannot carry current association or material")
         return {"frame_cluster_id": None, "track_id": track, "pixels": 0}
-    _integer(entry["帧内簇编号"], "Frame cluster ID", 1, MAX_CLUSTERS)
+    if historical_occluded:
+        check(track is not None, "Historical occluded snapshot needs a tracking candidate ID")
+    else:
+        _integer(entry["帧内簇编号"], "Frame cluster ID", 1, MAX_CLUSTERS)
     rect = _rect(entry["范围XYWH"], "Cluster bounding box", width, height)
     center = entry["图像中心XY"]
     check(isinstance(center, list) and len(center) == 2, "Cluster center must be XY")
@@ -349,6 +358,11 @@ def _validate_cluster(entry: dict, width: int, height: int, contours: bytes, act
     _integer(freshness.get("连续缺失帧数"), "Missing frame count", 0, 1_000_000)
     if freshness.get("证据年龄毫秒") is not None:
         _finite(freshness["证据年龄毫秒"], "Evidence age", 0)
+    if historical_occluded:
+        check(freshness["连续可见帧数"] == 0 and freshness["连续缺失帧数"] > 0,
+              "Historical occluded snapshot needs a positive missing count")
+        check(entry["遮挡"]["状态"] == "Occluded" and entry["深度证据"]["当前实测像素数"] == 0,
+              "Historical occluded snapshot cannot claim current visible or depth evidence")
     return {"frame_cluster_id": entry["帧内簇编号"], "track_id": track, "pixels": entry["像素数"]}
 
 
@@ -367,7 +381,8 @@ def validate_cluster_packet(path: Path) -> dict:
     if packet["包类型"] == "Heartbeat":
         check(not changes, "Heartbeat cannot carry cluster changes")
     active_tracks: set[str] = set()
-    records = [_validate_cluster(entry, width, height, contours, active_tracks) for entry in changes]
+    records = [_validate_cluster(entry, width, height, contours, active_tracks, packet["包类型"])
+               for entry in changes]
     frame_ids = [record["frame_cluster_id"] for record in records if record["frame_cluster_id"] is not None]
     check(len(frame_ids) == len(set(frame_ids)), "Duplicate frame-local cluster ID")
     return {"status": "pass", "format": packet["格式"], "packet_type": packet["包类型"], "intent": packet["任务意图"],

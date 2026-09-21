@@ -196,7 +196,7 @@ def convert(source_path: Path, output: Path, minimum_cluster_pixels: int = 1) ->
         packet = {
             "格式": "PCS.ClusterObservation/1", "发布状态": "完整", "包标识": "cluster-" + manifest["输出序号"],
             "会话标识": manifest["会话标识"], "跟踪时期": "1", "输出序号": manifest["输出序号"], "场景版本": manifest["输出序号"],
-            "包类型": "FullSnapshot", "任务意图": "Scan", "依赖全量序号": None,
+            "包类型": "FullSnapshot", "任务意图": "Scan", "依赖全量序号": None, "前置场景版本": None,
             "源时间": source_time(source), "发布Unix毫秒": str(manifest["输出Unix毫秒"]), "结果年龄毫秒": None,
             "配置版本": manifest["配置版本"], "标定版本": canonical_json_hash(manifest["标定"]), "坐标系": "D455_Color_Optical",
             "图像尺寸WH": [width, height], "相机姿态": None,

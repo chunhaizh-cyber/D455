@@ -26,6 +26,7 @@ python .\PixelClusterSensor\validate_packet.py PATH\frame.json --output .codex_t
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
 python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
+python .\PixelClusterSensor\test_cluster_resync.py --output .codex_tmp\PixelClusterSensor\cluster_resync_tests_new
 python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new
 python .\PixelClusterSensor\convert_cluster_observation.py PATH\frame.json --output .codex_tmp\PixelClusterSensor\cluster_packet_new
 python .\PixelClusterSensor\cluster_tracker.py PATH\packet_1.json PATH\packet_2.json --output .codex_tmp\PixelClusterSensor\tracked_packets_new
@@ -55,6 +56,8 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 `cluster_stream.py` 是 P3 Python 影子/评测桥：它通过既有 `Client` 启动唯一持有相机的 `PixelClusterSensor.exe`，逐帧转换并跟踪，将簇级包和 `run_manifest.json`、`packet_metrics.csv`、`events.csv` 写到新目录。首帧发布全量快照；无簇级变化的后续帧发布空 `Heartbeat`，不重复发送静态轮廓；新增、移动、遮挡、重现和丢失仍发布 `Delta`。默认要求候选连续出现5帧才从 `Tentative` 晋为 `Active`；未确认阶段除满足新候选像素阈值外，每次关联代价还必须不高于 `--maximum-tentative-match-cost=200000`，防止相邻小碎片靠高代价接力被错误确认。每条轨迹另保留一份可靠关联参考：只有低代价匹配才更新参考，高代价当前观测可以发布但不能逐帧拖走后续关联基准。未确认候选消失时发布 `Removed/Retired`；已确认候选默认连续缺失2包才发布 `Occluded`，第1包缺失只通过增量语义保留旧状态，不发布新测量、不刷新证据年龄；连续缺失3包发布 `Lost`。只有已对外发布遮挡后的返回才标记 `Reappeared`。这些阈值会影响动态发现和陈旧证据年龄，必须在动态集另行验收。它不拥有相机、不修改 `PCS.Observation/1`，也不是 C++ 实时接线或扫描/观察/跟踪调度实现。
 
+`cluster_receiver.py` 是 P2 的严格影子接收器。它按 `会话标识 + 跟踪时期 + 输出序号 + 前置场景版本 + 依赖全量序号` 应用包；增量缺口、未见过的迟到包、基线不符、场景版本不符、同序号冲突内容和包标识复用都会停止拼接并请求全量。完全相同的重复包幂等返回，不改状态。`cluster_tracker.py` 可将下一帧强制发布为自包含 `FullSnapshot`，并把未超期遮挡候选的最后轮廓重打包为历史证据，当前深度计数归零，不把旧测量冒充当前值。T9 合成故障注入已覆盖丢增量、重复、乱序、时期切换、进程重启和直接状态对照；这不证明 USB 物理断连恢复或正式消费者接线。
+
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 
 `evaluate_cluster_stability.py` 读取一个或多个已完成的 `cluster_stream.py` 输出目录，产出 `run_decision.json`、逐包指标和事件表。硬判据是严格包读回、连续输出序号、全量加增量重建、同输入多次运行的归一化包序列一致，以及静态输入中不出现 `Lost`、`Reappeared`、`Occluded` 生命周期事件。`本帧簇编号` 只在单帧有效，跨帧重用不能作为候选号切换证据；评估器把它写为 `frame_local_id_reassignment_count` 诊断项，但不将其计入通过条件。归一化只排除包标识、会话标识、发布宿主时间和上游观察包的会话相关清单 SHA256；源时间、簇、轮廓、证据、输出序号和跟踪关联仍必须一致。它只评价已给定流的静态一致性，不能证明物理场景静止、动态跟踪、世界身份或绝对深度精度。
@@ -63,7 +66,7 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 
 `run_cluster_stability_matrix.py` 是静态稳定性验收入口。它要求真实或合成的完整 `PCS.RawSequence/1`，默认顺序运行 600 帧、3 次重复并调用稳定性决策器；根目录写入输入清单 SHA256、Git 修订、配置快照、实际 `聚簇模式`、确认帧数和每次子运行状态。`--clustering-mode 深度主导|轮廓主导` 可在同一原始序列上严格比较两条路径；`--start-frame` 可从同一原始序列选择独立窗口，跳过的观察材料会立即释放，簇级输出序号仍从1连续开始。决策器逐包重建活跃状态，并要求每次运行至少出现一个候选，空输出不能通过。它另外记录 `tentative_removed_count` 和 `added_candidate_count`，防止把短命候选从遮挡状态机移除后误称为分割稳定。它拒绝帧数不足的输入，不能以旧 `datasets/*` 或名义帧率填补时间、标定证据。已用 600 帧合成静态输入完成 3 次重复：包验证、归一化确定性、重建、跟踪号切换和生命周期事件均通过。
 
-真实静态序列的首轮600帧暴露了两类长期问题：已确认轨迹会被高代价小碎片逐帧拖离可靠主体；单包分割缺失会立即误报遮挡/重现。加入可靠关联参考和2包遮挡确认、3包丢失期限后，同一 `PCS.RawSequence/1` 顺序运行3次，每次600帧，包验证、规范化确定性、增量重建、候选存在和静态生命周期门禁全部通过；`static_lifecycle_event_count=0`、`run_max_active_tracks=[8,8,8]`。三轮仍有363次未确认候选移除、381次新增和2907次帧内局部号重用诊断，底层分割噪声没有消失，帧内号重用也不等于跨帧 ID 切换。该结果只证明固定真实静态回放的发布稳定性；轮廓相似度/中心抖动指标、T9 重同步、真实动态发现和跟踪仍未通过。
+真实静态序列的首轮600帧暴露了两类长期问题：已确认轨迹会被高代价小碎片逐帧拖离可靠主体；单包分割缺失会立即误报遮挡/重现。加入可靠关联参考和2包遮挡确认、3包丢失期限后，同一 `PCS.RawSequence/1` 顺序运行3次，每次600帧，包验证、规范化确定性、增量重建、候选存在和静态生命周期门禁全部通过；`static_lifecycle_event_count=0`、`run_max_active_tracks=[8,8,8]`。三轮仍有363次未确认候选移除、381次新增和2907次帧内局部号重用诊断，底层分割噪声没有消失，帧内号重用也不等于跨帧 ID 切换。结合 T9 合成故障注入，P2 Python 影子链的 T1/T2/T9 退出门禁已通过；轮廓相似度/中心抖动、真实动态发现、物理断连和 C++ 实时恢复仍未验证。
 
 `capture_and_verify_static.py` 将真实静态采集和验收串成一项有界操作：通过 C++ 服务采集一份受限 RGBD 原始序列，再以同一序列运行指定次数的稳定性矩阵；顶层 `run_manifest.json` 链接导出清单和矩阵决策。`--replay-source` 只用于合成集成测试，真实验收必须使用 `--camera`。它不会在相机缺失、采集失败、帧数不足或矩阵失败时输出通过结论。
 

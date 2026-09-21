@@ -60,6 +60,7 @@ def package(root: Path, packet_type: str = "FullSnapshot") -> Path:
         "格式": "PCS.ClusterObservation/1", "发布状态": "完整", "包标识": "packet-1", "会话标识": "session-1",
         "跟踪时期": "1", "输出序号": "1", "场景版本": "1", "包类型": packet_type, "任务意图": "Scan",
         "依赖全量序号": None if packet_type == "FullSnapshot" else "1",
+        "前置场景版本": None if packet_type == "FullSnapshot" else "1",
         "源时间": {"值": 1.0, "单位": "ms", "时间域": "synthetic"}, "发布Unix毫秒": "9999999999999", "结果年龄毫秒": None,
         "配置版本": "1", "标定版本": "sha256:synthetic", "坐标系": "Synthetic_Color_Optical", "图像尺寸WH": [8, 8],
         "相机姿态": None,
@@ -120,6 +121,8 @@ def main() -> None:
         run("reject_broken_material_hash", lambda: expect_invalid(mutate(base, root / "hash", lambda x: x["材料"]["精确轮廓链"].update({"SHA256": "0" * 64})), "Bad material hash accepted"))
         run("reject_bad_coverage_partition", lambda: expect_invalid(mutate(base, root / "coverage", lambda x: x["全局覆盖摘要"].update({"未处理像素数": 1})), "Bad coverage accepted"))
         run("reject_delta_without_base", lambda: expect_invalid(mutate(delta, root / "delta_base", lambda x: x.update({"依赖全量序号": None})), "Delta without base accepted"))
+        run("reject_delta_without_previous_scene", lambda: expect_invalid(mutate(delta, root / "delta_scene", lambda x: x.update({"前置场景版本": None})), "Delta without previous scene accepted"))
+        run("reject_full_with_previous_scene", lambda: expect_invalid(mutate(base, root / "full_scene", lambda x: x.update({"前置场景版本": "1"})), "Full snapshot with previous scene accepted"))
         run("reject_heartbeat_payload", lambda: expect_invalid(mutate(heartbeat, root / "heartbeat_payload", lambda x: x.update({"簇变化": json.loads(base.read_text(encoding="utf-8"))["簇变化"]})), "Heartbeat payload accepted"))
         run("reject_reappearance_state_mismatch", lambda: expect_invalid(mutate(base, root / "reappearance_mismatch", lambda x: x["簇变化"][0].update({"跟踪状态": "Reappeared"})), "Mismatched reappearance accepted"))
         run("reject_noncanonical_contour", lambda: expect_invalid(mutate(base, root / "noncanonical", lambda x: x["簇变化"][0]["轮廓"][0].update({"起点XY": [3, 2]})), "Noncanonical contour accepted"))

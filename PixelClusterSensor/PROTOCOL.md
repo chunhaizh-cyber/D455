@@ -111,7 +111,8 @@
 已提供独立严格读回器 `cluster_protocol.py`、无状态转换器 `convert_cluster_observation.py` 与离线短期跟踪器 `cluster_tracker.py`。转换器只将一份完整 `PCS.Observation/1` 转成 `FullSnapshot + Scan` 簇级包；跟踪器再将连续的全量快照转成首帧全量、后续增量：
 
 - P2 按包围矩 IoU、中心位移、颜色差、面积比和 32x32 形状指纹作硬门禁与代价。对每个有限联通竞争组使用全局最小代价一对一分配；节点数超过 64 的组不关联，宁可显式新建候选也不拿不可审核的贪心结果冒充确认。未确认候选的关联还受最大代价门禁，默认 `200000/1000000`。轨迹的可靠关联参考只在代价不高于该门槛时更新；高代价当前观测不再逐帧拖动后续关联基准。当前真实静态600帧x3通过，仍未经真实动态回放验收。
-- 首帧返回 `FullSnapshot`，后续帧返回带基线序号的 `Delta`。新候选和 `Tentative` 关联必须达到新候选像素阈值；候选连续达到配置的确认帧数后才进入 `Active`。只有 `Active` 轨迹可以使用较低保留像素阈值。未确认候选消失时发布 `Removed/Retired`。已确认轨迹第1包缺失默认只保留既有增量状态，不发布当前测量、不刷新证据年龄；连续缺失达到2包才发布 `Occluded`，达到3包发布 `Lost/Retired`。在遮挡尚未对外发布前返回仍是普通 `Updated/Moved + Active`；已发布遮挡后的返回必须同时使用 `变化类型=Reappeared` 和 `跟踪状态=Reappeared`。无帧内簇的状态记录不携带当前轮廓、深度或材料。
+- 首帧返回 `FullSnapshot`，后续帧返回带基线序号和前置场景版本的 `Delta`。新候选和 `Tentative` 关联必须达到新候选像素阈值；候选连续达到配置的确认帧数后才进入 `Active`。只有 `Active` 轨迹可以使用较低保留像素阈值。未确认候选消失时发布 `Removed/Retired`。已确认轨迹第1包缺失默认只保留既有增量状态；连续缺失达到2包才发布 `Occluded`，达到3包发布 `Lost/Retired`。增量遮挡墓碑不携带轮廓或当前深度；重同步全量可携带未超期遮挡候选的最后轮廓，但必须把它标为历史证据、当前深度计数归零且帧内簇编号为空。
+- P2 `cluster_receiver.py` 严格拒绝增量缺口、乱序、错误基线、错误前置场景版本、冲突重复和包标识复用；完全相同的重复包幂等。接收方进入待重同步状态后只接受 `FullSnapshot`。跟踪器可请求下一包全量，并为可见及未超期遮挡候选重新汇总轮廓材料。T9 合成故障注入已通过，物理断连和正式进程间接收尚未验证。
 - 未实现实时 C++ 供包接线、心跳生产、扫描/观察/跟踪调度指令、姿态补偿或详细材料租约。
 - 既有 `PCS.Observation/1` 的“配置范围内观测”不等于经标定证明的精确三维。因此转换器一律输出 `UnknownDistance`，同时保留当前实测、当前插值、缺失、范围外像素计数；不得伪造 `PreciseDepth3D`。
 - P1 形状指纹是 `label-mask-center-square/1`，保留当前标签图的结构。它不把拓扑内环自动认定为真实穿孔；物理孔洞仍需额外背景证据。
@@ -122,7 +123,7 @@
 
 ### 包头和簇记录
 
-包头必须含 `格式`、`发布状态=完整`、`包标识`、`会话标识`、`跟踪时期`、`输出序号`、`场景版本`、`包类型`、`任务意图`、`依赖全量序号`、`源时间`、`发布Unix毫秒`、`结果年龄毫秒`、`配置版本`、`标定版本`、`坐标系`、`图像尺寸WH`、`相机姿态`、`处理区域`、`输入质量`、`全局覆盖摘要`、`材料`和`簇变化`。读回器拒绝未知顶层字段、非法枚举、非有限数值、超界图像/材料和非规范十进制序号。
+包头必须含 `格式`、`发布状态=完整`、`包标识`、`会话标识`、`跟踪时期`、`输出序号`、`场景版本`、`前置场景版本`、`包类型`、`任务意图`、`依赖全量序号`、`源时间`、`发布Unix毫秒`、`结果年龄毫秒`、`配置版本`、`标定版本`、`坐标系`、`图像尺寸WH`、`相机姿态`、`处理区域`、`输入质量`、`全局覆盖摘要`、`材料`和`簇变化`。全量包的前置场景版本为空；增量和心跳必须声明接收前的场景版本。读回器拒绝未知顶层字段、非法枚举、非有限数值、超界图像/材料和非规范十进制序号。
 
 每个簇记录包含帧内编号、跟踪候选、变化/跟踪状态、图像范围、轮廓、分级形状指纹、颜色、距离模式、深度证据分账、运动、遮挡、关联证据、时效和详细材料句柄。P1 不具备的字段明确为 `null` 或已定义的 `Unknown` 状态，而不冒充具备证据。
 
@@ -134,6 +135,7 @@
 
 ```powershell
 python .\PixelClusterSensor\test_cluster_protocol.py --output .codex_tmp\PixelClusterSensor\cluster_protocol_tests_new
+python .\PixelClusterSensor\test_cluster_resync.py --output .codex_tmp\PixelClusterSensor\cluster_resync_tests_new
 python .\PixelClusterSensor\test_cluster_conversion.py --output .codex_tmp\PixelClusterSensor\cluster_conversion_tests_new
 python .\PixelClusterSensor\test_cluster_tracker.py --output .codex_tmp\PixelClusterSensor\cluster_tracker_tests_new
 python .\PixelClusterSensor\test_cluster_stream.py --output .codex_tmp\PixelClusterSensor\cluster_stream_tests_new
