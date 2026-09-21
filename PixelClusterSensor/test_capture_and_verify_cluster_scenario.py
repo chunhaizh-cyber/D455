@@ -66,6 +66,8 @@ def main() -> None:
         run("combined_gate_keeps_raw_and_decision_evidence", lambda: check(
             (root / "run/capture/sequence.json").is_file() and
             (root / "run/scenario_evaluation/scenario_decision.json").is_file() and
+            (root / "run/visual_review/review.html").is_file() and
+            (root / "run/visual_review/review_manifest.json").is_file() and
             (root / "run/control_gate/run_manifest.json").is_file(),
             "Combined scenario evidence is incomplete"))
         report["status"] = "pass"

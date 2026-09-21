@@ -32,6 +32,8 @@ python .\PixelClusterSensor\run_cluster_control_gate.py --replay PATH\sequence.j
 python .\PixelClusterSensor\test_run_cluster_control_gate.py --output .codex_tmp\PixelClusterSensor\cluster_control_gate_tests_new
 python .\PixelClusterSensor\evaluate_cluster_scenario_capture.py --sequence PATH\sequence.json --scenario T3_local_motion --output .codex_tmp\PixelClusterSensor\t3_content_gate_new
 python .\PixelClusterSensor\test_evaluate_cluster_scenario_capture.py --output .codex_tmp\PixelClusterSensor\scenario_content_tests_new
+python .\PixelClusterSensor\render_cluster_scenario_review.py --sequence PATH\sequence.json --scenario T3_local_motion --output .codex_tmp\PixelClusterSensor\t3_visual_review_new
+python .\PixelClusterSensor\test_render_cluster_scenario_review.py --output .codex_tmp\PixelClusterSensor\scenario_visual_review_tests_new
 python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T3_local_motion --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t3_real_capture_new
 python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T7_dark_depth_hole --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t7_real_capture_new
 python .\PixelClusterSensor\test_capture_and_verify_cluster_scenario.py --output .codex_tmp\PixelClusterSensor\scenario_gate_tests_new
@@ -73,6 +75,8 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 `evaluate_cluster_scenario_capture.py` 在算法评分前先验证实录是否真的包含目标场景。`T3_local_motion` 要求至少60帧、至少20%的相邻帧存在变化，且变化像素和包围框的 p95 分别不超过全画面35%和50%，避免把整帧平移误写成局部运动。`T7_dark_depth_hole` 要求暗区 p50 至少占画面0.3%，暗区内原始深度0像素达到分辨率归一化下限，并在至少80%的帧中存在。固定像素门槛已被移除，避免分辨率改变结论。它只验证“材料含有局部变化/暗区深度孔洞”，不确认现实对象身份、场景真值或分割正确性，输出仍标记人工视觉复核待完成。
 
 `capture_and_verify_cluster_scenario.py` 串联新采 `PCS.RawSequence/1`、上述内容门禁和簇级控制门禁，保存原始清单、内容指标、控制结果和顶层决策。60帧合成局部运动端到端测试已通过。真实 T3/T7 必须省略 `--replay-source` 从相机新采；旧 `d455_directory_replay_v1` 数据缺少完整标定与逐帧时间合同，不能转换后冒充本门禁通过。
+
+`render_cluster_scenario_review.py` 从每段序列最多抽取6个等距样本，保留原图并生成复核叠加图。T3 以红色显示相邻帧变化、绿色显示变化包围框；T7 以黄色显示暗区、红色显示暗区与原始深度0值交集。图片 SHA256、图例和固定复核问题写入 `review_manifest.json`，并生成本地 `review.html`。采集编排会自动生成这些材料，但状态始终为 `pending`，程序不会替人确认红色区域就是目标或真实孔洞。
 
 `export_raw_sequence.py` 是连续输入的受限导出器。它仍通过 `Client` 让 C++ 服务唯一持有相机，从每份已发布观察包只复制 `color.png`、`source_depth.png`，并提取实际内参、外参、深度单位、源帧号、逐流时间戳和共同时间域，生成可重放的 `PCS.RawSequence/1`。它不把补全深度、标签、轮廓、宿主发布时间或处理耗时写为源材料；输出的材料来源固定为 `历史回放`。合成“导出后回放”闭环已通过。当前源只含 RGBD，不含 IR 或 IMU，不能作为双目 IR 粗距、姿态补偿或绝对曝光时间的验证材料。
 

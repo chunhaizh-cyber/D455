@@ -8,6 +8,7 @@ from pathlib import Path
 
 from evaluate_cluster_scenario_capture import SCENARIOS, evaluate_capture
 from export_raw_sequence import export_sequence
+from render_cluster_scenario_review import render_review
 from run_cluster_control_gate import run_gate
 
 
@@ -24,13 +25,14 @@ def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames:
     output.mkdir(parents=True)
     report = {"格式": "PCS.ClusterScenarioGate/1", "状态": "运行中", "场景": scenario,
               "来源": "历史回放复验" if replay_source else "实时相机新采", "请求帧数": frames,
-              "采集": None, "场景内容门禁": None, "控制门禁": None,
+              "采集": None, "场景内容门禁": None, "视觉复核材料": None, "控制门禁": None,
               "自动门禁通过": False, "人工视觉复核": "pending", "错误": None}
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
                                   replay=replay_source, serial=serial)
         sequence = Path(capture["sequence"])
         scenario_result = evaluate_capture(sequence, scenario, output / "scenario_evaluation")
+        review = render_review(sequence, scenario, output / "visual_review")
         control_result = run_gate(executable=executable, output=output / "control_gate", frames=frames,
                                   replay=sequence, minimum_cluster_pixels=minimum_cluster_pixels,
                                   retained_cluster_pixels=retained_cluster_pixels,
@@ -39,6 +41,9 @@ def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames:
                           "帧数": len(capture["copied_frames"])}
         report["场景内容门禁"] = {"通过": scenario_result["通过"],
                                   "决策": str((output / "scenario_evaluation/scenario_decision.json").resolve())}
+        report["视觉复核材料"] = {"状态": review["人工复核状态"],
+                                  "页面": str((output / "visual_review/review.html").resolve()),
+                                  "清单": str((output / "visual_review/review_manifest.json").resolve())}
         report["控制门禁"] = {"通过": control_result["通过"],
                               "决策": str((output / "control_gate/run_manifest.json").resolve())}
         report["自动门禁通过"] = bool(scenario_result["通过"] and control_result["通过"])
