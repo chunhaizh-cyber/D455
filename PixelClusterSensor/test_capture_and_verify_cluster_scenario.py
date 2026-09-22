@@ -60,10 +60,15 @@ def main() -> None:
         replay = make_local_motion_replay(root / "source")
         result = scenario_gate.capture_and_verify(executable=args.exe, output=root / "run", scenario="T3_local_motion",
                                                   frames=60, replay_source=replay, minimum_cluster_pixels=1,
-                                                  retained_cluster_pixels=1, confirmation_frames=1)
+                                                  retained_cluster_pixels=1, confirmation_frames=1,
+                                                  allow_tentative_growth_association=True)
         run("capture_content_and_control_gates_pass_together", lambda: check(
             result["自动门禁通过"] and result["场景内容门禁"]["通过"] and result["控制门禁"]["通过"],
             "Combined scenario gate did not pass"))
+        control_manifest = json.loads((root / "run/control_gate/run_manifest.json").read_text(encoding="utf-8"))
+        run("scenario_gate_preserves_growth_probe_switch", lambda: check(
+            control_manifest["配置"]["允许未确认候选增长关联"] is True,
+            "Scenario gate dropped the growth-association switch"))
         run("combined_gate_keeps_raw_and_decision_evidence", lambda: check(
             (root / "run/capture/sequence.json").is_file() and
             (root / "run/scenario_evaluation/scenario_decision.json").is_file() and

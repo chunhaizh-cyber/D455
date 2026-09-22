@@ -20,7 +20,8 @@ def write_report(output: Path, report: dict) -> None:
 def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames: int,
                        replay_source: Path | None = None, serial: str = "",
                        minimum_cluster_pixels: int = 1, retained_cluster_pixels: int | None = None,
-                       confirmation_frames: int = 5) -> dict:
+                       confirmation_frames: int = 5,
+                       allow_tentative_growth_association: bool = False) -> dict:
     if scenario not in SCENARIOS:
         raise ValueError(f"Unknown scenario: {scenario}")
     if output.exists():
@@ -52,7 +53,8 @@ def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames:
         control_result = run_gate(executable=executable, output=output / "control_gate", frames=frames,
                                   replay=sequence, minimum_cluster_pixels=minimum_cluster_pixels,
                                   retained_cluster_pixels=retained_cluster_pixels,
-                                  confirmation_frames=confirmation_frames)
+                                  confirmation_frames=confirmation_frames,
+                                  allow_tentative_growth_association=allow_tentative_growth_association)
         report["控制门禁"] = {"通过": control_result["通过"],
                               "决策": str((output / "control_gate/run_manifest.json").resolve())}
         write_report(output, report)
@@ -79,13 +81,15 @@ def main() -> None:
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1024)
     parser.add_argument("--retained-cluster-pixels", type=int, default=512)
     parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--allow-tentative-growth-association", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(capture_and_verify(executable=args.exe, output=args.output, scenario=args.scenario,
                                         frames=args.frames, replay_source=args.replay_source,
                                         serial=args.serial, minimum_cluster_pixels=args.minimum_cluster_pixels,
                                         retained_cluster_pixels=args.retained_cluster_pixels,
-                                        confirmation_frames=args.confirmation_frames),
+                                        confirmation_frames=args.confirmation_frames,
+                                        allow_tentative_growth_association=args.allow_tentative_growth_association),
                      ensure_ascii=False, indent=2))
 
 

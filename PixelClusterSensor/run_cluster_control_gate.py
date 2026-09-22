@@ -31,7 +31,8 @@ def percentile(values: list[float], fraction: float) -> float | None:
 
 def run_gate(*, executable: Path, output: Path, frames: int, replay: Path | None,
              camera: bool = False, serial: str = "", minimum_cluster_pixels: int = 1,
-             retained_cluster_pixels: int | None = None, confirmation_frames: int = 5) -> dict:
+             retained_cluster_pixels: int | None = None, confirmation_frames: int = 5,
+             allow_tentative_growth_association: bool = False) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 2 <= frames <= 600:
@@ -49,7 +50,8 @@ def run_gate(*, executable: Path, output: Path, frames: int, replay: Path | None
         "输入清单": None if replay is None else str(replay.resolve()),
         "输入清单SHA256": None if replay is None else hashlib.sha256(replay.resolve().read_bytes()).hexdigest(),
         "配置": {"最小簇像素数": minimum_cluster_pixels, "保留簇像素数": retained,
-                 "确认帧数": confirmation_frames},
+                 "确认帧数": confirmation_frames,
+                 "允许未确认候选增长关联": allow_tentative_growth_association},
     }
     metrics = []
     controller = ClusterControlSession(
@@ -57,7 +59,8 @@ def run_gate(*, executable: Path, output: Path, frames: int, replay: Path | None
         ClusterTracker(max_missing_frames=3, confirmation_frames=confirmation_frames,
                        minimum_new_cluster_pixels=minimum_cluster_pixels,
                        minimum_retained_cluster_pixels=retained,
-                       occlusion_confirmation_frames=2),
+                       occlusion_confirmation_frames=2,
+                       allow_tentative_growth_association=allow_tentative_growth_association),
         maximum_results_per_task=min(1024, frames + 8),
         maximum_result_age_frames=max(120, frames + 8),
     )
@@ -168,13 +171,15 @@ def main() -> None:
     parser.add_argument("--minimum-cluster-pixels", type=int, default=1)
     parser.add_argument("--retained-cluster-pixels", type=int)
     parser.add_argument("--confirmation-frames", type=int, default=5)
+    parser.add_argument("--allow-tentative-growth-association", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(run_gate(executable=args.exe, output=args.output, frames=args.frames, replay=args.replay,
                               camera=args.camera, serial=args.serial,
                               minimum_cluster_pixels=args.minimum_cluster_pixels,
                               retained_cluster_pixels=args.retained_cluster_pixels,
-                              confirmation_frames=args.confirmation_frames), ensure_ascii=False, indent=2))
+                              confirmation_frames=args.confirmation_frames,
+                              allow_tentative_growth_association=args.allow_tentative_growth_association), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

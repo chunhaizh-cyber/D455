@@ -196,6 +196,15 @@ python .\PixelClusterSensor\test_dynamic_accumulation.py --output .codex_tmp/Pix
 
 完整静态 `600x3` 已在同一真实 `PCS.RawSequence/1` 上复验：三轮闭合前景 IoU p50 均为 `99.3139%`，中心位移 p95 均为 `1.8028px`，生命周期事件为0，规范化确定性、包校验和重建均通过。三轮 C++ 源处理 p95 为 `92.30/89.15/84.44ms`，现有100ms p95门槛通过；p99 为 `104.97/103.10/93.93ms`，仍分别有 `12/10/3` 帧超过100ms。Python 影子链 p95 为 `1189.42/1087.89/1077.34ms`。这关闭的是固定静态材料的长门禁，不是动态稳定性或生产实时门禁；旧 `datasets/*` 动态回放仍因缺少实际标定和逐帧时间合同而不能转换成该门禁证据。
 
+真实 T3 局部运动开发片段暴露出目标进入画面时轮廓快速增长、普通 IoU 代价超过未确认候选门槛而反复换号的问题。实验开关 `--allow-tentative-growth-association` 增加受控关联：仅作用于未确认候选，要求中心位移不超过画面对角线12%、像素面积比在0.25至4.0、明显增长或收缩、较小包围矩至少75%被覆盖、归一化颜色差不超过0.15，并且前后候选都至少达到新候选像素门槛的3倍。特例观测会更新下一帧的关联参考并重置确认累计；增长结束后必须重新取得完整的连续普通命中，不能靠特例晋级 `Active`。
+
+```powershell
+python .\PixelClusterSensor\run_cluster_control_gate.py --replay PATH\sequence.json --frames 60 --minimum-cluster-pixels 1024 --retained-cluster-pixels 512 --confirmation-frames 5 --allow-tentative-growth-association --output .codex_tmp\PixelClusterSensor\t3_growth_probe
+python .\PixelClusterSensor\evaluate_t3_motion_tracking.py --sequence PATH\sequence.json --control-run .codex_tmp\PixelClusterSensor\t3_growth_probe --output .codex_tmp\PixelClusterSensor\t3_growth_diagnostic
+```
+
+同一真实 T3 开发片段中，全阶段所选候选号种类从9降到4，相邻活动样本换号从9降到4，`Active` 候选号种类保持3；由于增长后重新累计确认，`Active` 命中帧从19降到18，主导号占比从84.21%轻微降到83.33%。真实静态 `600x3` 保存快照离线复算中三轮均零触发，生命周期统计与默认路径相同。该开关默认关闭，尚缺独立 T3 留出片段，不能据此晋级为默认跟踪方法；影子链耗时也不作为生产性能证据。
+
 影子链现记录来源请求、转换、跟踪、跟踪包写出和材料释放耗时；转换内部继续拆为源包验证、簇条目构建、包写出和簇包验证。转换器复用完整验证已经读回并校验的材料，不再重复解码；8/16/32形状指纹使用与原半开分箱逐尺寸等价的向量化映射。30帧对照中转换 p95 从约 `903ms` 降至 `783ms`，总链 p95 从约 `1135ms` 降至 `1027ms`。剩余转换成本以源包独立验证为主，10帧探针 p50约 `564ms`；该步骤校验材料哈希、像素账本、轮廓、深度来源和标定重投影，当前不从证据链删除。生产实时化需要C++簇包直出及异步/抽样深审计，而不是把无验证的Python路径标为通过。
 
 ## 默认配置

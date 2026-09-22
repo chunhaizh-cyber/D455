@@ -27,10 +27,12 @@ def main() -> None:
         source = make_static_sequence(root / "source", 4)
         report = capture_and_verify(executable=args.exe, output=root / "run", frames=4, repetitions=3,
                                     replay_source=source, minimum_cluster_pixels=10,
-                                    retained_cluster_pixels=5, maximum_tentative_match_cost=123_456)
+                                    retained_cluster_pixels=5, maximum_tentative_match_cost=123_456,
+                                    allow_tentative_growth_association=True)
         check(report["status"] == "pass" and report["matrix"]["decision"]["pass"], "Capture-to-gate did not pass")
         check(report["minimum_cluster_pixels"] == 10 and report["retained_cluster_pixels"] == 5 and
               report["maximum_tentative_match_cost"] == 123_456 and report["max_missing_frames"] == 3 and
+              report["allow_tentative_growth_association"] is True and
               report["occlusion_confirmation_frames"] == 2,
               "Capture orchestrator did not preserve tracker gate configuration")
         for name in ("capture/sequence.json", "capture/export_manifest.json", "matrix/run_manifest.json", "matrix/decision/run_decision.json", "run_manifest.json"):

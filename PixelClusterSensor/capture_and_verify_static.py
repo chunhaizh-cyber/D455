@@ -18,7 +18,8 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                        retained_cluster_pixels: int | None = None,
                        maximum_tentative_match_cost: int = 200_000,
                        max_missing_frames: int = 3,
-                       occlusion_confirmation_frames: int = 2) -> dict:
+                       occlusion_confirmation_frames: int = 2,
+                       allow_tentative_growth_association: bool = False) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if minimum_cluster_pixels < 1:
@@ -46,6 +47,7 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
         "maximum_tentative_match_cost": maximum_tentative_match_cost,
         "max_missing_frames": max_missing_frames,
         "occlusion_confirmation_frames": occlusion_confirmation_frames,
+        "allow_tentative_growth_association": allow_tentative_growth_association,
     }
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
@@ -56,7 +58,8 @@ def capture_and_verify(*, executable: Path, output: Path, frames: int = 600,
                             retained_cluster_pixels=retained_cluster_pixels,
                             maximum_tentative_match_cost=maximum_tentative_match_cost,
                             max_missing_frames=max_missing_frames,
-                            occlusion_confirmation_frames=occlusion_confirmation_frames)
+                            occlusion_confirmation_frames=occlusion_confirmation_frames,
+                            allow_tentative_growth_association=allow_tentative_growth_association)
         report["capture"] = capture
         report["matrix"] = {"status": matrix["status"], "decision": matrix.get("decision")}
         report["status"] = "pass" if matrix["status"] == "pass" else "fail"
@@ -87,6 +90,7 @@ def main() -> None:
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     parser.add_argument("--max-missing-frames", type=int, default=3)
     parser.add_argument("--occlusion-confirmation-frames", type=int, default=2)
+    parser.add_argument("--allow-tentative-growth-association", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(capture_and_verify(executable=args.exe, output=args.output.resolve(), frames=args.frames,
@@ -97,7 +101,8 @@ def main() -> None:
                                         retained_cluster_pixels=args.retained_cluster_pixels,
                                         maximum_tentative_match_cost=args.maximum_tentative_match_cost,
                                         max_missing_frames=args.max_missing_frames,
-                                        occlusion_confirmation_frames=args.occlusion_confirmation_frames), ensure_ascii=False, indent=2))
+                                        occlusion_confirmation_frames=args.occlusion_confirmation_frames,
+                                        allow_tentative_growth_association=args.allow_tentative_growth_association), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

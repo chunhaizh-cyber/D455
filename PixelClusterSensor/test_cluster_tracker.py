@@ -64,6 +64,19 @@ def moved_snapshot(root: Path) -> tuple[Path, Path]:
     return base, path
 
 
+def growth_snapshots(root: Path, changed_color: bool = False) -> tuple[dict, dict]:
+    base = json.loads(package(root / "base").read_text(encoding="utf-8"))
+    first = with_cluster_pixels(base, 4, 1)
+    first["簇变化"][0]["范围XYWH"] = [2, 2, 2, 2]
+    first["簇变化"][0]["图像中心XY"] = [3.0, 3.0]
+    second = with_cluster_pixels(base, 16, 2)
+    second["簇变化"][0]["范围XYWH"] = [1, 1, 5, 5]
+    second["簇变化"][0]["图像中心XY"] = [3.0, 3.0]
+    if changed_color:
+        second["簇变化"][0]["颜色摘要"]["RGB均值"] = [200, 210, 220]
+    return first, second
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     project = Path(__file__).resolve().parent.parent
@@ -237,6 +250,49 @@ def main() -> None:
             any(entry["变化类型"] == "Added" and entry["相机跟踪候选编号"] == "2"
                 for entry in tentative_moved[1]["簇变化"]),
             "High-cost tentative association retained a drifting candidate"))
+        growth_first, growth_second = growth_snapshots(root / "growth")
+        default_growth_tracker = ClusterTracker(confirmation_frames=3)
+        default_growth_tracker.update(growth_first)
+        default_growth = default_growth_tracker.update(growth_second)
+        run("tentative_growth_probe_is_disabled_by_default", lambda: check(
+            any(entry["变化类型"] == "Removed" and entry["相机跟踪候选编号"] == "1"
+                for entry in default_growth["簇变化"]) and
+            any(entry["变化类型"] == "Added" and entry["相机跟踪候选编号"] == "2"
+                for entry in default_growth["簇变化"]),
+            "Tentative growth behavior changed without the probe switch"))
+        growth_tracker = ClusterTracker(confirmation_frames=3, allow_tentative_growth_association=True)
+        growth_tracker.update(growth_first)
+        accepted_growth = growth_tracker.update(growth_second)
+        run("contained_tentative_growth_keeps_track_id_when_enabled", lambda: check(
+            accepted_growth["簇变化"][0]["相机跟踪候选编号"] == "1" and
+            accepted_growth["簇变化"][0]["跟踪状态"] == "Tentative" and
+            accepted_growth["簇变化"][0]["关联证据"]["算法"] == "bbox-contained-growth-assignment/1" and
+            accepted_growth["指标"]["本帧未确认候选增长关联数"] == 1 and
+            growth_tracker.tracks["1"].confirmation_hits == 0,
+            "Bounded tentative growth did not retain the entering candidate"))
+        color_first, color_second = growth_snapshots(root / "growth_color_reject", changed_color=True)
+        color_tracker = ClusterTracker(confirmation_frames=3, allow_tentative_growth_association=True)
+        color_tracker.update(color_first)
+        rejected_color_growth = color_tracker.update(color_second)
+        run("different_color_large_region_cannot_absorb_tentative_track", lambda: check(
+            any(entry["变化类型"] == "Removed" and entry["相机跟踪候选编号"] == "1"
+                for entry in rejected_color_growth["簇变化"]) and
+            any(entry["变化类型"] == "Added" and entry["相机跟踪候选编号"] == "2"
+                for entry in rejected_color_growth["簇变化"]) and
+            rejected_color_growth["指标"]["本帧未确认候选增长关联数"] == 0,
+            "A different-color large region absorbed the tentative candidate"))
+        small_first, small_second = growth_snapshots(root / "growth_small_reject")
+        small_first = with_cluster_pixels(small_first, 12, 1)
+        small_second = with_cluster_pixels(small_second, 36, 2)
+        small_tracker = ClusterTracker(confirmation_frames=3, minimum_new_cluster_pixels=10,
+                                       allow_tentative_growth_association=True)
+        small_tracker.update(small_first)
+        rejected_small_growth = small_tracker.update(small_second)
+        run("small_fragment_growth_cannot_use_probe_exception", lambda: check(
+            any(entry["变化类型"] == "Removed" and entry["相机跟踪候选编号"] == "1"
+                for entry in rejected_small_growth["簇变化"]) and
+            rejected_small_growth["指标"]["本帧未确认候选增长关联数"] == 0,
+            "A fragment below three admission thresholds used the growth exception"))
         moved_paths = write_packets([move_base, move_shifted], root / "movement_tracked", confirmation_frames=1)
         moved = [json.loads(path.read_text(encoding="utf-8")) for path in moved_paths]
         run("small_position_shift_keeps_track_id", lambda: check(moved[0]["簇变化"][0]["相机跟踪候选编号"] == "1" and

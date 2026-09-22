@@ -34,6 +34,15 @@ def bbox_iou(first: list[int], second: list[int]) -> float:
     return intersection / union if union else 0.0
 
 
+def bbox_smaller_coverage(first: list[int], second: list[int]) -> float:
+    left, top = max(first[0], second[0]), max(first[1], second[1])
+    right = min(first[0] + first[2], second[0] + second[2])
+    bottom = min(first[1] + first[3], second[1] + second[3])
+    intersection = max(0, right - left) * max(0, bottom - top)
+    smaller = min(first[2] * first[3], second[2] * second[3])
+    return intersection / smaller if smaller else 0.0
+
+
 def match_cost(previous: dict, current: dict, diagonal: float) -> int | None:
     a, b = previous["范围XYWH"], current["范围XYWH"]
     old_center, new_center = previous["图像中心XY"], current["图像中心XY"]
@@ -50,6 +59,23 @@ def match_cost(previous: dict, current: dict, diagonal: float) -> int | None:
     shape_b = current["形状指纹"]["层级"][-1]["位图SHA256"]
     shape = 0.0 if shape_a == shape_b else 0.5
     return int(round((0.45 * center + 0.40 * (1.0 - iou) + 0.10 * color + 0.05 * shape) * 1_000_000))
+
+
+def tentative_growth_match(previous: dict, current: dict, diagonal: float, minimum_pixels: int) -> bool:
+    """Accept bounded entry/exit growth without relaxing the general tentative gate."""
+    if min(previous["像素数"], current["像素数"]) < minimum_pixels:
+        return False
+    if math.dist(previous["图像中心XY"], current["图像中心XY"]) / diagonal > 0.12:
+        return False
+    area_ratio = current["像素数"] / previous["像素数"]
+    if not 0.25 <= area_ratio <= 4.0 or 0.85 < area_ratio < 1.25:
+        return False
+    if bbox_smaller_coverage(previous["范围XYWH"], current["范围XYWH"]) < 0.75:
+        return False
+    color_a = previous["颜色摘要"]["RGB均值"]
+    color_b = current["颜色摘要"]["RGB均值"]
+    color_delta = sum(abs(x - y) for x, y in zip(color_a, color_b)) / (3 * 255)
+    return color_delta <= 0.15
 
 
 def same_observation(previous: dict, current: dict) -> bool:
@@ -151,6 +177,7 @@ class Track:
     contour_material: bytes | None
     visible_frames: int
     confirmed: bool
+    confirmation_hits: int
     missing_frames: int = 0
     occlusion_published: bool = False
 
@@ -159,7 +186,8 @@ class ClusterTracker:
     def __init__(self, max_missing_frames: int = 2, confirmation_frames: int = 5,
                  minimum_new_cluster_pixels: int = 1, minimum_retained_cluster_pixels: int = 1,
                  maximum_tentative_match_cost: int = 200_000,
-                 occlusion_confirmation_frames: int = 1):
+                 occlusion_confirmation_frames: int = 1,
+                 allow_tentative_growth_association: bool = False):
         if not 1 <= max_missing_frames <= 120:
             raise ValueError("max_missing_frames must be 1..120")
         if not 1 <= confirmation_frames <= 30:
@@ -176,6 +204,7 @@ class ClusterTracker:
         self.minimum_retained_cluster_pixels = minimum_retained_cluster_pixels
         self.maximum_tentative_match_cost = maximum_tentative_match_cost
         self.occlusion_confirmation_frames = occlusion_confirmation_frames
+        self.allow_tentative_growth_association = allow_tentative_growth_association
         self.tracks: dict[str, Track] = {}
         self.next_identifier = 1
         self.base_sequence: str | None = None
@@ -245,6 +274,7 @@ class ClusterTracker:
         diagonal = math.hypot(width, height)
         prior = sorted(self.tracks.values(), key=lambda item: int(item.identifier))
         edges = {}
+        growth_edges = set()
         for track_index, track in enumerate(prior):
             for cluster_index, entry in enumerate(current):
                 association_pixels = (self.minimum_retained_cluster_pixels if track.confirmed
@@ -252,37 +282,52 @@ class ClusterTracker:
                 if entry["像素数"] < association_pixels:
                     continue
                 cost = match_cost(track.association_record, entry, diagonal)
-                if cost is not None and (track.confirmed or cost <= self.maximum_tentative_match_cost):
+                growth_match = bool(cost is not None and not track.confirmed and
+                                    self.allow_tentative_growth_association and
+                                    tentative_growth_match(track.association_record, entry, diagonal,
+                                                           self.minimum_new_cluster_pixels * 3))
+                if cost is not None and (track.confirmed or cost <= self.maximum_tentative_match_cost or growth_match):
                     edges[(track_index, cluster_index)] = cost
+                    if growth_match and cost > self.maximum_tentative_match_cost:
+                        growth_edges.add((track_index, cluster_index))
         matched = component_matches(edges, len(prior), len(current))
         matched_by_track = {track: cluster for track, cluster in matched}
         matched_by_cluster = {cluster: track for track, cluster in matched}
         changes = []
         filtered_new_clusters = 0
         filtered_new_pixels = 0
+        tentative_growth_matches = 0
         meaningful_change = False
         for cluster_index, source in enumerate(current):
             entry = copy.deepcopy(source)
             if cluster_index in matched_by_cluster:
-                track = prior[matched_by_cluster[cluster_index]]
+                track_index = matched_by_cluster[cluster_index]
+                track = prior[track_index]
+                edge = (track_index, cluster_index)
+                growth_match = edge in growth_edges
                 shift = math.dist(track.record["图像中心XY"], entry["图像中心XY"])
                 unchanged = same_observation(track.record, entry)
                 was_missing = track.missing_frames > 0
                 visible_frames = 1 if was_missing else track.visible_frames + 1
-                became_confirmed = not track.confirmed and visible_frames >= self.confirmation_frames
+                confirmation_hits = (0 if growth_match else
+                                     (1 if was_missing else track.confirmation_hits + 1))
+                became_confirmed = not track.confirmed and confirmation_hits >= self.confirmation_frames
                 track.confirmed = track.confirmed or became_confirmed
                 entry["相机跟踪候选编号"] = track.identifier
                 reappeared = track.occlusion_published and track.confirmed
                 entry["变化类型"] = "Reappeared" if reappeared else ("Moved" if shift >= 1.0 else "Updated")
                 entry["跟踪状态"] = "Reappeared" if reappeared else ("Active" if track.confirmed else "Tentative")
                 entry["时效"] = {"连续可见帧数": visible_frames, "连续缺失帧数": 0, "证据年龄毫秒": None}
-                association_cost = edges[(matched_by_cluster[cluster_index], cluster_index)]
-                entry["关联证据"] = {"算法": "bbox-color-shape-assignment/1", "代价": association_cost}
+                association_cost = edges[edge]
+                if growth_match:
+                    tentative_growth_matches += 1
+                entry["关联证据"] = {"算法": ("bbox-contained-growth-assignment/1" if growth_match else
+                                               "bbox-color-shape-assignment/1"), "代价": association_cost}
                 stored_entry, stored_contours = self._store_entry(entry, contour_material)
-                if association_cost <= self.maximum_tentative_match_cost:
+                if association_cost <= self.maximum_tentative_match_cost or growth_match:
                     track.association_record = copy.deepcopy(stored_entry)
                 track.record, track.contour_material = stored_entry, stored_contours
-                track.visible_frames, track.missing_frames = visible_frames, 0
+                track.visible_frames, track.confirmation_hits, track.missing_frames = visible_frames, confirmation_hits, 0
                 track.occlusion_published = False
                 if not unchanged or was_missing or became_confirmed:
                     meaningful_change = True
@@ -301,7 +346,7 @@ class ClusterTracker:
                 entry["关联证据"] = None
                 stored_entry, stored_contours = self._store_entry(entry, contour_material)
                 self.tracks[identifier] = Track(identifier, stored_entry, copy.deepcopy(stored_entry),
-                                                stored_contours, 1, confirmed)
+                                                stored_contours, 1, confirmed, 1)
                 meaningful_change = True
             changes.append(entry)
         for track_index, track in enumerate(prior):
@@ -348,6 +393,8 @@ class ClusterTracker:
         output.setdefault("指标", {})["跟踪新候选最小像素数"] = self.minimum_new_cluster_pixels
         output["指标"]["跟踪保留候选最小像素数"] = self.minimum_retained_cluster_pixels
         output["指标"]["未确认候选最大关联代价"] = self.maximum_tentative_match_cost
+        output["指标"]["允许未确认候选增长关联"] = self.allow_tentative_growth_association
+        output["指标"]["本帧未确认候选增长关联数"] = tentative_growth_matches
         output["指标"]["遮挡确认缺失帧数"] = self.occlusion_confirmation_frames
         output["指标"]["丢失判定缺失帧数"] = self.max_missing_frames
         output["指标"]["本帧过滤新候选数"] = filtered_new_clusters
@@ -423,12 +470,13 @@ def write_packets(input_paths: list[Path], output_root: Path, max_missing_frames
                   confirmation_frames: int = 5, minimum_new_cluster_pixels: int = 1,
                   minimum_retained_cluster_pixels: int = 1,
                   maximum_tentative_match_cost: int = 200_000,
-                  occlusion_confirmation_frames: int = 1) -> list[Path]:
+                  occlusion_confirmation_frames: int = 1,
+                  allow_tentative_growth_association: bool = False) -> list[Path]:
     if output_root.exists():
         raise ValueError(f"Output already exists: {output_root}")
     tracker = ClusterTracker(max_missing_frames, confirmation_frames, minimum_new_cluster_pixels,
                              minimum_retained_cluster_pixels, maximum_tentative_match_cost,
-                             occlusion_confirmation_frames)
+                             occlusion_confirmation_frames, allow_tentative_growth_association)
     output_root.mkdir(parents=True)
     results = []
     try:
@@ -467,10 +515,12 @@ def main() -> None:
     parser.add_argument("--minimum-retained-cluster-pixels", type=int, default=1)
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
     parser.add_argument("--occlusion-confirmation-frames", type=int, default=1)
+    parser.add_argument("--allow-tentative-growth-association", action="store_true")
     args = parser.parse_args()
     packets = write_packets(args.inputs, args.output, args.max_missing_frames, args.confirmation_frames,
                             args.minimum_new_cluster_pixels, args.minimum_retained_cluster_pixels,
-                            args.maximum_tentative_match_cost, args.occlusion_confirmation_frames)
+                            args.maximum_tentative_match_cost, args.occlusion_confirmation_frames,
+                            args.allow_tentative_growth_association)
     data = [json.loads(path.read_text(encoding="utf-8")) for path in packets]
     print(json.dumps({"status": "pass", "packets": [str(path) for path in packets], "active_tracks": len(reconstruct(data))}, ensure_ascii=False, indent=2))
 

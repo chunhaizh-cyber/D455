@@ -31,7 +31,8 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
                cross_color_merge_min_boundary_pixels: int = 8,
                allow_global_missing_depth_merge: bool = True,
                maximum_tentative_match_cost: int = 200_000,
-               occlusion_confirmation_frames: int = 2) -> dict:
+               occlusion_confirmation_frames: int = 2,
+               allow_tentative_growth_association: bool = False) -> dict:
     if output.exists():
         raise ValueError(f"Output already exists: {output}")
     if not 1 <= frames <= 2048:
@@ -79,6 +80,7 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
         "allow_global_missing_depth_merge": allow_global_missing_depth_merge,
         "confirmation_frames": confirmation_frames,
         "maximum_tentative_match_cost": maximum_tentative_match_cost,
+        "allow_tentative_growth_association": allow_tentative_growth_association,
         "occlusion_confirmation_frames": occlusion_confirmation_frames,
         "start_frame": start_frame,
         "git_revision": git_revision(project), "runs": [], "error": None,
@@ -95,7 +97,8 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
                                 allow_global_missing_depth_merge=allow_global_missing_depth_merge,
                                 start_frame=start_frame, retained_cluster_pixels=retained_cluster_pixels,
                                 maximum_tentative_match_cost=maximum_tentative_match_cost,
-                                occlusion_confirmation_frames=occlusion_confirmation_frames)
+                                occlusion_confirmation_frames=occlusion_confirmation_frames,
+                                allow_tentative_growth_association=allow_tentative_growth_association)
             manifest["runs"].append({"index": index, "path": str(target), "status": report["status"]})
             run_roots.append(target)
         decision = evaluate_runs(run_roots, output / "decision")
@@ -117,6 +120,7 @@ def run_matrix(*, executable: Path, replay: Path, output: Path, frames: int = 60
             "allow_global_missing_depth_merge": allow_global_missing_depth_merge,
             "confirmation_frames": confirmation_frames,
             "maximum_tentative_match_cost": maximum_tentative_match_cost,
+            "allow_tentative_growth_association": allow_tentative_growth_association,
             "occlusion_confirmation_frames": occlusion_confirmation_frames,
             "start_frame": start_frame,
             "source": "PCS.RawSequence/1", "evaluation": "static_stability_only",
@@ -141,6 +145,7 @@ def main() -> None:
     parser.add_argument("--disable-global-missing-depth-merge", action="store_true")
     parser.add_argument("--confirmation-frames", type=int, default=5)
     parser.add_argument("--maximum-tentative-match-cost", type=int, default=200_000)
+    parser.add_argument("--allow-tentative-growth-association", action="store_true")
     parser.add_argument("--start-frame", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -155,7 +160,8 @@ def main() -> None:
                                 start_frame=args.start_frame,
                                 retained_cluster_pixels=args.retained_cluster_pixels,
                                 maximum_tentative_match_cost=args.maximum_tentative_match_cost,
-                                occlusion_confirmation_frames=args.occlusion_confirmation_frames), ensure_ascii=False, indent=2))
+                                occlusion_confirmation_frames=args.occlusion_confirmation_frames,
+                                allow_tentative_growth_association=args.allow_tentative_growth_association), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
