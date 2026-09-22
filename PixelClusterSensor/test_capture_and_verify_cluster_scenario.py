@@ -10,7 +10,7 @@ import time
 import numpy as np
 from PIL import Image
 
-from capture_and_verify_cluster_scenario import capture_and_verify
+import capture_and_verify_cluster_scenario as scenario_gate
 from test_cluster_conversion import make_replay
 
 
@@ -57,9 +57,9 @@ def main() -> None:
 
     try:
         replay = make_local_motion_replay(root / "source")
-        result = capture_and_verify(executable=args.exe, output=root / "run", scenario="T3_local_motion",
-                                    frames=60, replay_source=replay, minimum_cluster_pixels=1,
-                                    retained_cluster_pixels=1, confirmation_frames=1)
+        result = scenario_gate.capture_and_verify(executable=args.exe, output=root / "run", scenario="T3_local_motion",
+                                                  frames=60, replay_source=replay, minimum_cluster_pixels=1,
+                                                  retained_cluster_pixels=1, confirmation_frames=1)
         run("capture_content_and_control_gates_pass_together", lambda: check(
             result["自动门禁通过"] and result["场景内容门禁"]["通过"] and result["控制门禁"]["通过"],
             "Combined scenario gate did not pass"))
@@ -70,6 +70,32 @@ def main() -> None:
             (root / "run/visual_review/review_manifest.json").is_file() and
             (root / "run/control_gate/run_manifest.json").is_file(),
             "Combined scenario evidence is incomplete"))
+
+        def interrupted_gate_keeps_completed_stages():
+            original = scenario_gate.run_gate
+            try:
+                scenario_gate.run_gate = lambda **_: (_ for _ in ()).throw(RuntimeError("forced control failure"))
+                try:
+                    scenario_gate.capture_and_verify(
+                        executable=args.exe, output=root / "interrupted", scenario="T3_local_motion",
+                        frames=60, replay_source=replay, minimum_cluster_pixels=1,
+                        retained_cluster_pixels=1, confirmation_frames=1)
+                except RuntimeError as error:
+                    check(str(error) == "forced control failure", "Unexpected interrupted-gate failure")
+                else:
+                    raise AssertionError("Interrupted gate unexpectedly passed")
+            finally:
+                scenario_gate.run_gate = original
+            manifest = json.loads((root / "interrupted/run_manifest.json").read_text(encoding="utf-8"))
+            check(manifest["状态"] == "失败" and manifest["采集"]["帧数"] == 60,
+                  "Interrupted gate lost completed capture evidence")
+            check(manifest["场景内容门禁"]["通过"] and manifest["视觉复核材料"]["状态"] == "pending",
+                  "Interrupted gate lost completed evaluation evidence")
+            check(manifest["控制门禁"] is None and manifest["错误"] == "forced control failure",
+                  "Interrupted gate recorded an invalid control result")
+            return {"capture_preserved": True, "content_gate_preserved": True,
+                    "visual_review_preserved": True, "control_gate": None}
+        run("interrupted_control_gate_preserves_completed_stages", interrupted_gate_keeps_completed_stages)
         report["status"] = "pass"
     except Exception as error:
         report["status"] = "fail"

@@ -13,7 +13,8 @@ import numpy as np
 from PIL import Image
 
 from client import Client
-from validate_packet import check, read_material, validate_packet
+from validate_packet import (REPROJECTION_ROUNDING_TOLERANCE_PX, check, read_material,
+                             validate_packet, validate_reprojection_error)
 
 
 def calibration(width=32, height=24):
@@ -211,6 +212,22 @@ def main():
             m["深度内参"].update({"畸变模型": 4, "畸变系数": [0.02, -0.01, 0.0001, -0.0002, 0.001]})
         run("brown_depth_inverse_brown_color", lambda: geometry_case("distortion", color, depth,
             lambda m, a: check(m["标定"]["彩图内参"]["畸变模型"] == 2, "Distortion model lost"), distorted))
+
+        def reprojection_rounding_boundary():
+            check(0.5 < REPROJECTION_ROUNDING_TOLERANCE_PX < 0.501,
+                  "Reprojection tolerance must remain a narrow float-rounding allowance")
+            maximum, boundary_samples = validate_reprojection_error(np.array([0.25, 0.5002]))
+            check(maximum == 0.5002 and boundary_samples == 1,
+                  "Observed half-pixel float disagreement was not classified")
+            try:
+                validate_reprojection_error(np.array([1.0]))
+            except ValueError as error:
+                check(str(error) == "Invalid source-to-color projection", "Unexpected one-pixel failure")
+            else:
+                raise AssertionError("One-pixel projection error was accepted")
+            return {"tolerance_px": REPROJECTION_ROUNDING_TOLERANCE_PX,
+                    "half_pixel_rounding_accepted": True, "one_pixel_error_rejected": True}
+        run("reprojection_float_rounding_boundary", reprojection_rounding_boundary)
 
         def protocol():
             path = fixture(root, "protocol", color, hole, frames=10)

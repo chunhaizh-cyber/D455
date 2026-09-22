@@ -12,6 +12,11 @@ from render_cluster_scenario_review import render_review
 from run_cluster_control_gate import run_gate
 
 
+def write_report(output: Path, report: dict) -> None:
+    (output / "run_manifest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                                               encoding="utf-8")
+
+
 def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames: int,
                        replay_source: Path | None = None, serial: str = "",
                        minimum_cluster_pixels: int = 1, retained_cluster_pixels: int | None = None,
@@ -27,25 +32,30 @@ def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames:
               "来源": "历史回放复验" if replay_source else "实时相机新采", "请求帧数": frames,
               "采集": None, "场景内容门禁": None, "视觉复核材料": None, "控制门禁": None,
               "自动门禁通过": False, "人工视觉复核": "pending", "错误": None}
+    write_report(output, report)
     try:
         capture = export_sequence(executable=executable, output=output / "capture", frames=frames,
                                   replay=replay_source, serial=serial)
         sequence = Path(capture["sequence"])
+        report["采集"] = {"状态": capture["status"], "清单": capture["sequence"],
+                          "帧数": len(capture["copied_frames"])}
+        write_report(output, report)
         scenario_result = evaluate_capture(sequence, scenario, output / "scenario_evaluation")
+        report["场景内容门禁"] = {"通过": scenario_result["通过"],
+                                  "决策": str((output / "scenario_evaluation/scenario_decision.json").resolve())}
+        write_report(output, report)
         review = render_review(sequence, scenario, output / "visual_review")
+        report["视觉复核材料"] = {"状态": review["人工复核状态"],
+                                  "页面": str((output / "visual_review/review.html").resolve()),
+                                  "清单": str((output / "visual_review/review_manifest.json").resolve())}
+        write_report(output, report)
         control_result = run_gate(executable=executable, output=output / "control_gate", frames=frames,
                                   replay=sequence, minimum_cluster_pixels=minimum_cluster_pixels,
                                   retained_cluster_pixels=retained_cluster_pixels,
                                   confirmation_frames=confirmation_frames)
-        report["采集"] = {"状态": capture["status"], "清单": capture["sequence"],
-                          "帧数": len(capture["copied_frames"])}
-        report["场景内容门禁"] = {"通过": scenario_result["通过"],
-                                  "决策": str((output / "scenario_evaluation/scenario_decision.json").resolve())}
-        report["视觉复核材料"] = {"状态": review["人工复核状态"],
-                                  "页面": str((output / "visual_review/review.html").resolve()),
-                                  "清单": str((output / "visual_review/review_manifest.json").resolve())}
         report["控制门禁"] = {"通过": control_result["通过"],
                               "决策": str((output / "control_gate/run_manifest.json").resolve())}
+        write_report(output, report)
         report["自动门禁通过"] = bool(scenario_result["通过"] and control_result["通过"])
         report["状态"] = "通过" if report["自动门禁通过"] else "失败"
     except Exception as error:
@@ -53,8 +63,7 @@ def capture_and_verify(*, executable: Path, output: Path, scenario: str, frames:
         report["错误"] = str(error)
         raise
     finally:
-        (output / "run_manifest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-                                                   encoding="utf-8")
+        write_report(output, report)
     return report
 
 

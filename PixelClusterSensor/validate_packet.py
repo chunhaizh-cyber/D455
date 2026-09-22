@@ -12,9 +12,23 @@ import numpy as np
 from PIL import Image
 
 
+REPROJECTION_ROUNDING_TOLERANCE_PX = 0.5005
+
+
 def check(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def validate_reprojection_error(errors: np.ndarray) -> tuple[float | None, int]:
+    errors = np.asarray(errors, dtype=np.float64)
+    check(errors.ndim == 1 and np.all(np.isfinite(errors)) and np.all(errors >= 0),
+          "Invalid reprojection residuals")
+    maximum = float(np.max(errors)) if len(errors) else None
+    rounding_boundary_samples = int(np.count_nonzero(errors > 0.5))
+    check(np.all(errors <= REPROJECTION_ROUNDING_TOLERANCE_PX),
+          "Invalid source-to-color projection")
+    return maximum, rounding_boundary_samples
 
 
 def read_material(root: Path, descriptor: dict):
@@ -134,6 +148,8 @@ def validate_packet(path: Path, *, reference=None, expected_color=None, expected
     check([raw_depth.shape[1], raw_depth.shape[0]] == [di["宽"], di["高"]], "Raw depth calibration mismatch")
     check([width, height] == [ci["宽"], ci["高"]], "Color calibration mismatch")
     geometry_checked = ci["畸变模型"] in (0, 2, 4) and di["畸变模型"] in (0, 2, 4)
+    reprojection_max_error_px = None
+    reprojection_rounding_boundary_samples = 0
     if geometry_checked:
         yy, xx = np.where(state != 0)
         indices = source_index[yy, xx]
@@ -165,7 +181,9 @@ def validate_packet(path: Path, *, reference=None, expected_color=None, expected
                 tx, ty = (xf, yf) if ci["畸变模型"] == 2 else (x, y)
                 x, y = xf + 2 * p1 * tx * ty + p2 * (r2 + 2 * tx * tx), yf + 2 * p2 * tx * ty + p1 * (r2 + 2 * ty * ty)
             uv = np.stack((x, y), axis=1) * [ci["焦距X"], ci["焦距Y"]] + [ci["主点X"], ci["主点Y"]]
-            check(np.all(np.abs(uv - np.stack((xx, yy), axis=1)) <= 0.5001), "Invalid source-to-color projection")
+            reprojection_error = np.max(np.abs(uv - np.stack((xx, yy), axis=1)), axis=1)
+            reprojection_max_error_px, reprojection_rounding_boundary_samples = \
+                validate_reprojection_error(reprojection_error)
 
     config = manifest["处理配置"]
     mode = config.get("聚簇模式")
@@ -183,6 +201,9 @@ def validate_packet(path: Path, *, reference=None, expected_color=None, expected
               "observed_usable_pixels": int(np.count_nonzero(state == 1)),
               "interpolated_pixels": int(np.count_nonzero(fill_state)),
               "independent_reprojection_checked": geometry_checked,
+              "reprojection_rounding_tolerance_px": REPROJECTION_ROUNDING_TOLERANCE_PX,
+              "reprojection_max_error_px": reprojection_max_error_px,
+              "reprojection_rounding_boundary_samples": reprojection_rounding_boundary_samples,
               "physical_segmentation_accuracy": "not_established",
               "absolute_metric_accuracy": "not_established"}
     if output:
