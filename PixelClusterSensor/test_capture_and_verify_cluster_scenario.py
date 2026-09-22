@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 import capture_and_verify_cluster_scenario as scenario_gate
+from evaluate_t3_motion_tracking import evaluate as evaluate_t3_tracking
 from test_cluster_conversion import make_replay
 
 
@@ -70,6 +71,13 @@ def main() -> None:
             (root / "run/visual_review/review_manifest.json").is_file() and
             (root / "run/control_gate/run_manifest.json").is_file(),
             "Combined scenario evidence is incomplete"))
+        diagnostic = evaluate_t3_tracking(root / "run/capture/sequence.json", root / "run/control_gate",
+                                          root / "motion_tracking_diagnostic")
+        run("T3_motion_tracking_diagnostic_reads_complete_control_stream", lambda: check(
+            diagnostic["状态"] == "diagnostic_not_gate" and diagnostic["帧数"] == 60 and
+            diagnostic["活动帧对数"] > 0 and
+            (root / "motion_tracking_diagnostic/frame_metrics.csv").is_file(),
+            "T3 motion tracking diagnostic did not preserve its evidence boundary"))
 
         def interrupted_gate_keeps_completed_stages():
             original = scenario_gate.run_gate

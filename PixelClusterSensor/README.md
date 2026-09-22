@@ -34,6 +34,7 @@ python .\PixelClusterSensor\evaluate_cluster_scenario_capture.py --sequence PATH
 python .\PixelClusterSensor\test_evaluate_cluster_scenario_capture.py --output .codex_tmp\PixelClusterSensor\scenario_content_tests_new
 python .\PixelClusterSensor\render_cluster_scenario_review.py --sequence PATH\sequence.json --scenario T3_local_motion --output .codex_tmp\PixelClusterSensor\t3_visual_review_new
 python .\PixelClusterSensor\test_render_cluster_scenario_review.py --output .codex_tmp\PixelClusterSensor\scenario_visual_review_tests_new
+python .\PixelClusterSensor\evaluate_t3_motion_tracking.py --sequence PATH\sequence.json --control-run PATH\control_gate --output .codex_tmp\PixelClusterSensor\t3_tracking_diagnostic_new
 python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T3_local_motion --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t3_real_capture_new
 python .\PixelClusterSensor\capture_and_verify_cluster_scenario.py --scenario T7_dark_depth_hole --frames 120 --serial 215122256633 --output .codex_tmp\PixelClusterSensor\t7_real_capture_new
 python .\PixelClusterSensor\test_capture_and_verify_cluster_scenario.py --output .codex_tmp\PixelClusterSensor\scenario_gate_tests_new
@@ -79,6 +80,10 @@ msbuild .\PixelClusterSensor\tests\SourceTimingTests.vcxproj /p:Configuration=Re
 `render_cluster_scenario_review.py` 从每段序列最多抽取6个等距样本，保留原图并生成复核叠加图。T3 以红色显示相邻帧变化、绿色显示变化包围框；T7 以黄色显示暗区、红色显示暗区与原始深度0值交集。图片 SHA256、图例和固定复核问题写入 `review_manifest.json`，并生成本地 `review.html`。采集编排会自动生成这些材料，但状态始终为 `pending`，程序不会替人确认红色区域就是目标或真实孔洞。
 
 2026-09-22 新采的真实 T3 序列为60帧，清单 SHA256=`655c498113c7fc2de41d032acd5c1cde4bc8bc2a5cb9fa1acb6b4e39571925d5`。内容门禁的 active/local pair 均为`72.8814%`，motion p95=`6.9987%`，bbox p95=`18.6699%`；6张样本人工确认相机固定，红色变化和绿色框来自左侧手臂/手部局部运动。使用相同序列的控制复验得到扫描60/60、跟踪结果59和观察材料校验通过，但自动观察目标仍是触边全画面最大候选`1`，不是手部。因此当前关闭的是 T3 原始材料、局部运动内容和供包连续性门禁，尚未关闭运动目标选择与目标级跟踪质量门禁。
+
+`evaluate_t3_motion_tracking.py` 用包内无损轮廓重建每帧候选掩码，与相邻彩图变化掩码逐像素求交；选择时排除触边且 bbox 超过全画面50%的账本候选，再按重叠余弦分数记录最相关跟踪号，并分开 `Tentative` 发现阶段与 `Active` 跟踪阶段。它不把运动像素自动解释为现实对象，也不把掩码相交当作跟踪正确。真实 T3 首轮诊断的43个活动帧对中，31帧存在非大范围触边候选重叠；全阶段涉及9个跟踪号，主导号`47`覆盖46.51%，而19个 `Active` 命中样本中主导号`47`为16次、占84.21%。换号主要集中在手臂进入、轮廓快速生长和退出时。最多6张叠加图确认所选绿色轮廓确实对应手臂/手部，但 T3 目标级通过门槛尚未冻结，当前只能记为“尚未通过”，不能把60/60扫描计数写成动态跟踪成功。
+
+同一开发序列的离线关联门槛矩阵表明，最大代价从`200k`提高到`225k`只把全阶段跟踪号种类从9降到8，`Active`主导占比仍为84.21%；提高到`250k/300k`后该占比降为71.43%。因此不修改默认`200k`。若继续优化，应新增可反例验证的进入期轮廓增长关联条件，并使用未参与设计的独立T3片段验收。
 
 首次 T3 控制复验在第22帧被一个投影临界样本拒绝。对60帧全部有效投影复算后，最大分量残差为`0.5001059px`，仅1个样本超过旧`0.5001px`；这是 RealSense C++ 单精度投影与独立双精度复算在半像素舍入边界两侧的数值歧义，不是整片标定失配。独立验证器现使用具名`0.5005px`容差，并输出`reprojection_max_error_px`和`reprojection_rounding_boundary_samples`；合成回归约束该值必须在`(0.5, 0.501)`内，一像素错投仍被拒绝。
 
